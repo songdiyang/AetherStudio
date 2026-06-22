@@ -1,19 +1,22 @@
-name: Release on Dev to Main Merge
+name: Release Demo Version
 
 on:
-  pull_request:
-    types: [closed]
-    branches: [main]
+  # 手动触发发布
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (留空则自动生成 vYYYY.MM.DD-build)'
+        required: false
+        default: ''
 
 jobs:
   release:
-    if: github.event.pull_request.merged == true && github.head_ref == 'dev'
     runs-on: windows-latest
     steps:
-      - name: Checkout main branch
+      - name: Checkout dev branch
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: dev
           fetch-depth: 0
 
       - name: Setup Rust
@@ -23,16 +26,17 @@ jobs:
         id: version
         shell: bash
         run: |
-          # 生成版本号: vYYYY.MM.DD-build
-          DATE_VERSION=$(date +%Y.%m.%d)
-          
-          # 检查已有的 release 版本，递增 build 号
-          BUILD=1
-          while gh release view "v${DATE_VERSION}-${BUILD}" &>/dev/null; do
-            BUILD=$((BUILD + 1))
-          done
-          
-          VERSION="v${DATE_VERSION}-${BUILD}"
+          # 如果手动输入了版本号则使用，否则自动生成
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            DATE_VERSION=$(date +%Y.%m.%d)
+            BUILD=1
+            while gh release view "v${DATE_VERSION}-${BUILD}" &>/dev/null; do
+              BUILD=$((BUILD + 1))
+            done
+            VERSION="v${DATE_VERSION}-${BUILD}"
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "date=$(date +%Y-%m-%d)" >> $GITHUB_OUTPUT
           echo "Generated version: $VERSION"
@@ -44,20 +48,14 @@ jobs:
           echo "## 📋 版本特性更新" > /tmp/release_notes.md
           echo "" >> /tmp/release_notes.md
           
-          # 尝试从 dev 分支获取特性记录
-          git fetch origin dev
-          git checkout origin/dev -- .github/features/ 2>/dev/null || true
-          
           if [ -d .github/features ] && [ "$(ls -A .github/features/*.md 2>/dev/null)" ]; then
             FEATURE_FILES=$(ls -1 .github/features/*.md 2>/dev/null | sort)
             echo "$FEATURE_FILES" | while read file; do
               PR_NUM=$(echo "$file" | grep -oE 'PR[0-9]+' | sed 's/PR//')
               echo "### PR #$PR_NUM" >> /tmp/release_notes.md
-              # 只提取特性部分
               sed -n '/## 更新的特性/,/## /p' "$file" | head -n -1 | tail -n +2 >> /tmp/release_notes.md
               echo "" >> /tmp/release_notes.md
             done
-            
             FEATURE_COUNT=$(echo "$FEATURE_FILES" | wc -l)
             echo "count=$FEATURE_COUNT" >> $GITHUB_OUTPUT
           else
@@ -100,7 +98,7 @@ jobs:
               name: `Aether Editor ${version}`,
               body: notes,
               draft: false,
-              prerelease: false
+              prerelease: true
             });
             
             console.log(`Created release: ${release.html_url}`);
@@ -125,11 +123,11 @@ jobs:
             
             console.log('Uploaded aether-app.exe');
             
-            // 在 PR 下评论
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
+            // 创建评论到 commit
+            await github.rest.repos.createCommitComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
+              commit_sha: context.sha,
               body: `🎉 **Release ${version} 已发布！**\n\n- 包含 ${count} 个特性更新\n- 下载: [aether-app.exe](${release.html_url})\n- 版本号: \`${version}\``
             });
 
@@ -137,12 +135,10 @@ jobs:
         if: success()
         shell: bash
         run: |
-          # 清空特性记录，为下一个版本周期做准备
-          git checkout main
           rm -rf .github/features
           mkdir -p .github/features
           git add .github/features/
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git commit -m "chore: clear feature records after release ${{ steps.version.outputs.version }}"
-          git push origin main
+          git push origin dev
