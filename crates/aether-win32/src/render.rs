@@ -176,6 +176,16 @@ impl EditorState {
             self.render_command_palette(&target, palette_x, palette_y, palette_width);
         }
 
+        // 9. SSH 连接对话框
+        if self.ssh_dialog.visible {
+            self.render_ssh_dialog(&target);
+        }
+
+        // 10. 克隆仓库对话框
+        if self.clone_dialog.visible {
+            self.render_clone_dialog(&target);
+        }
+
         match self.render_target.as_ref().unwrap().end_draw() {
             Ok(()) => {}
             Err(e) => {
@@ -258,6 +268,10 @@ impl EditorState {
                 crate::layout::SidebarContent::SettingsPanel => {
                     self.render_settings_sidebar(target, x, y, width, height, &text_brush);
                 }
+                crate::layout::SidebarContent::RemoteFileTree => {
+                    self.render_remote_file_tree_sidebar(target, x, y, width, height, &text_brush);
+                }
+                }
             }
         }
     }
@@ -292,12 +306,597 @@ impl EditorState {
         }
     }
 
-    fn render_source_control_sidebar(&mut self, target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget, x: f32, y: f32, width: f32, _height: f32, text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush) {
+    fn render_source_control_sidebar(&mut self, target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget, x: f32, y: f32, width: f32, height: f32, text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush) {
         unsafe {
             let ui_format = self.text_format_cache.get_format(12.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32, DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32).unwrap();
-            let text: Vec<u16> = "源代码管理".encode_utf16().chain(Some(0)).collect();
-            let text_rect = D2D_RECT_F { left: x + 10.0, top: y + 10.0, right: x + width - 10.0, bottom: y + 30.0 };
-            target.DrawText(&text, &ui_format, &text_rect, text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            let bold_format = self.text_format_cache.get_format(12.0, DWRITE_FONT_WEIGHT_BOLD.0 as u32, DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32).unwrap();
+            let mono_format = self.text_format_cache.get_format(11.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32, DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32).unwrap();
+            
+            let text_color = color_f(0.9, 0.9, 0.9, 1.0);
+            let text_br2 = self.brush_cache.get_brush(target, &text_color).unwrap();
+            let dim_color = color_f(0.5, 0.5, 0.5, 1.0);
+            let dim_brush = self.brush_cache.get_brush(target, &dim_color).unwrap();
+            let sel_color = color_f(0.0, 0.47, 0.83, 1.0);
+            let sel_brush = self.brush_cache.get_brush(target, &sel_color).unwrap();
+            let hover_color = color_f(0.2, 0.2, 0.2, 1.0);
+            let hover_brush = self.brush_cache.get_brush(target, &hover_color).unwrap();
+            let sep_color = color_f(0.2, 0.2, 0.2, 1.0);
+            let sep_brush = self.brush_cache.get_brush(target, &sep_color).unwrap();
+            let green_color = color_f(0.2, 0.8, 0.3, 1.0);
+            let green_brush = self.brush_cache.get_brush(target, &green_color).unwrap();
+            let yellow_color = color_f(0.9, 0.7, 0.2, 1.0);
+            let yellow_brush = self.brush_cache.get_brush(target, &yellow_color).unwrap();
+            let red_color = color_f(0.9, 0.2, 0.2, 1.0);
+            let red_brush = self.brush_cache.get_brush(target, &red_color).unwrap();
+            let btn_bg_color = color_f(0.2, 0.2, 0.2, 1.0);
+            let btn_bg_brush = self.brush_cache.get_brush(target, &btn_bg_color).unwrap();
+            let btn_hover_color = color_f(0.3, 0.3, 0.3, 1.0);
+            let btn_hover_brush = self.brush_cache.get_brush(target, &btn_hover_color).unwrap();
+            
+            let mut current_y = y + 10.0 - self.git.scroll_y;
+            
+            // 标题
+            let title: Vec<u16> = "源代码管理".encode_utf16().chain(Some(0)).collect();
+            let title_rect = D2D_RECT_F { left: x + 10.0, top: current_y, right: x + width - 10.0, bottom: current_y + 20.0 };
+            target.DrawText(&title, &bold_format, &title_rect, &text_br2, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            current_y += 24.0;
+            
+            if !self.git.is_repo() {
+                let msg: Vec<u16> = "当前文件夹不是 Git 仓库".encode_utf16().chain(Some(0)).collect();
+                let msg_rect = D2D_RECT_F { left: x + 10.0, top: current_y, right: x + width - 10.0, bottom: current_y + 20.0 };
+                target.DrawText(&msg, &ui_format, &msg_rect, &dim_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                return;
+            }
+            
+            // 分支名称
+            if let Some(branch) = self.git.current_branch_name() {
+                let branch_text: Vec<u16> = format!("{} {}", "🌿", branch).encode_utf16().chain(Some(0)).collect();
+                let branch_rect = D2D_RECT_F { left: x + 10.0, top: current_y, right: x + width - 10.0, bottom: current_y + 20.0 };
+                target.DrawText(&branch_text, &ui_format, &branch_rect, &green_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            }
+            current_y += 22.0;
+            
+            // 分隔线
+            let sep_rect = D2D_RECT_F { left: x + 10.0, top: current_y, right: x + width - 10.0, bottom: current_y + 1.0 };
+            target.FillRectangle(&sep_rect, &sep_brush);
+            current_y += 6.0;
+            
+            // Commit 消息输入框
+            let input_bg = D2D_RECT_F { left: x + 10.0, top: current_y, right: x + width - 10.0, bottom: current_y + 24.0 };
+            let input_bg_color = color_f(0.18, 0.18, 0.18, 1.0);
+            let input_bg_brush = self.brush_cache.get_brush(target, &input_bg_color).unwrap();
+            target.FillRectangle(&input_bg, &input_bg_brush);
+            let msg_label = if self.git.commit_message.is_empty() { "输入提交消息..." } else { &self.git.commit_message };
+            let msg_color = if self.git.commit_message.is_empty() { dim_brush.clone() } else { text_br2.clone() };
+            let msg_text: Vec<u16> = msg_label.encode_utf16().chain(Some(0)).collect();
+            let msg_rect = D2D_RECT_F { left: x + 14.0, top: current_y + 3.0, right: x + width - 14.0, bottom: current_y + 21.0 };
+            target.DrawText(&msg_text, &mono_format, &msg_rect, &msg_color, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            current_y += 30.0;
+            
+            // 按钮：Commit 和 Refresh
+            let btn_y = current_y;
+            let btn_h = 24.0;
+            let btn_w = 60.0;
+            
+            // Commit 按钮
+            let commit_btn_rect = D2D_RECT_F { left: x + 10.0, top: btn_y, right: x + 10.0 + btn_w, bottom: btn_y + btn_h };
+            let is_commit_hover = self.git.hover_button.as_ref().map(|s| s == "commit").unwrap_or(false);
+            target.FillRectangle(&commit_btn_rect, if is_commit_hover { &btn_hover_brush } else { &btn_bg_brush });
+            let commit_text: Vec<u16> = "提交".encode_utf16().chain(Some(0)).collect();
+            let commit_text_rect = D2D_RECT_F { left: x + 10.0, top: btn_y + 3.0, right: x + 10.0 + btn_w, bottom: btn_y + btn_h - 2.0 };
+            target.DrawText(&commit_text, &ui_format, &commit_text_rect, &text_br2, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            
+            // Refresh 按钮
+            let refresh_btn_rect = D2D_RECT_F { left: x + 80.0, top: btn_y, right: x + 80.0 + btn_w, bottom: btn_y + btn_h };
+            let is_refresh_hover = self.git.hover_button.as_ref().map(|s| s == "refresh").unwrap_or(false);
+            target.FillRectangle(&refresh_btn_rect, if is_refresh_hover { &btn_hover_brush } else { &btn_bg_brush });
+            let refresh_text: Vec<u16> = "刷新".encode_utf16().chain(Some(0)).collect();
+            let refresh_text_rect = D2D_RECT_F { left: x + 80.0, top: btn_y + 3.0, right: x + 80.0 + btn_w, bottom: btn_y + btn_h - 2.0 };
+            target.DrawText(&refresh_text, &ui_format, &refresh_text_rect, &text_br2, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            
+            current_y += 36.0;
+            
+            // 分隔线
+            let sep2_rect = D2D_RECT_F { left: x + 10.0, top: current_y, right: x + width - 10.0, bottom: current_y + 1.0 };
+            target.FillRectangle(&sep2_rect, &sep_brush);
+            current_y += 6.0;
+            
+            let item_h = 22.0;
+            let section_header_h = 20.0;
+            
+            // Staged Changes
+            let staged = self.git.staged_files();
+            if !staged.is_empty() {
+                let header_text: Vec<u16> = format!("已暂存的更改 ({})", staged.len()).encode_utf16().chain(Some(0)).collect();
+                let header_rect = D2D_RECT_F { left: x + 10.0, top: current_y, right: x + width - 10.0, bottom: current_y + section_header_h };
+                target.DrawText(&header_text, &bold_format, &header_rect, &text_br2, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                current_y += section_header_h;
+                
+                for (file, status) in &staged {
+                    if current_y + item_h > y + height { break; }
+                    if current_y + item_h >= y {
+                        let is_selected = self.git.selected_file.as_ref() == Some(file);
+                        let is_hover = self.git.hover_file.as_ref() == Some(file);
+                        let file_rect = D2D_RECT_F { left: x + 10.0, top: current_y, right: x + width - 30.0, bottom: current_y + item_h };
+                        if is_selected {
+                            target.FillRectangle(&file_rect, &sel_brush);
+                        } else if is_hover {
+                            target.FillRectangle(&file_rect, &hover_brush);
+                        }
+                        
+                        let icon = crate::git::GitRepository::status_icon(*status);
+                        let icon_color = crate::git::GitRepository::status_color(*status);
+                        let icon_brush = self.brush_cache.get_brush(target, &color_f(icon_color.0, icon_color.1, icon_color.2, 1.0)).unwrap();
+                        let icon_text: Vec<u16> = icon.encode_utf16().chain(Some(0)).collect();
+                        let icon_rect = D2D_RECT_F { left: x + 14.0, top: current_y + 2.0, right: x + 30.0, bottom: current_y + item_h - 2.0 };
+                        target.DrawText(&icon_text, &mono_format, &icon_rect, &icon_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                        
+                        let file_name: Vec<u16> = file.encode_utf16().chain(Some(0)).collect();
+                        let file_name_rect = D2D_RECT_F { left: x + 32.0, top: current_y + 2.0, right: x + width - 40.0, bottom: current_y + item_h - 2.0 };
+                        target.DrawText(&file_name, &mono_format, &file_name_rect, &text_br2, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                        
+                        // 取消暂存按钮 (-)
+                        let minus_rect = D2D_RECT_F { left: x + width - 28.0, top: current_y + 4.0, right: x + width - 10.0, bottom: current_y + item_h - 4.0 };
+                        let minus_text: Vec<u16> = "−".encode_utf16().chain(Some(0)).collect();
+                        target.DrawText(&minus_text, &ui_format, &minus_rect, &dim_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                    }
+                    current_y += item_h;
+                }
+                current_y += 6.0;
+            }
+            
+            // Changes (unstaged)
+            let unstaged = self.git.unstaged_files();
+            if !unstaged.is_empty() {
+                let header_text: Vec<u16> = format!("更改 ({})", unstaged.len()).encode_utf16().chain(Some(0)).collect();
+                let header_rect = D2D_RECT_F { left: x + 10.0, top: current_y, right: x + width - 10.0, bottom: current_y + section_header_h };
+                target.DrawText(&header_text, &bold_format, &header_rect, &text_br2, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                current_y += section_header_h;
+                
+                for (file, status) in &unstaged {
+                    if current_y + item_h > y + height { break; }
+                    if current_y + item_h >= y {
+                        let is_selected = self.git.selected_file.as_ref() == Some(file);
+                        let is_hover = self.git.hover_file.as_ref() == Some(file);
+                        let file_rect = D2D_RECT_F { left: x + 10.0, top: current_y, right: x + width - 30.0, bottom: current_y + item_h };
+                        if is_selected {
+                            target.FillRectangle(&file_rect, &sel_brush);
+                        } else if is_hover {
+                            target.FillRectangle(&file_rect, &hover_brush);
+                        }
+                        
+                        let icon = crate::git::GitRepository::status_icon(*status);
+                        let icon_color = crate::git::GitRepository::status_color(*status);
+                        let icon_brush = self.brush_cache.get_brush(target, &color_f(icon_color.0, icon_color.1, icon_color.2, 1.0)).unwrap();
+                        let icon_text: Vec<u16> = icon.encode_utf16().chain(Some(0)).collect();
+                        let icon_rect = D2D_RECT_F { left: x + 14.0, top: current_y + 2.0, right: x + 30.0, bottom: current_y + item_h - 2.0 };
+                        target.DrawText(&icon_text, &mono_format, &icon_rect, &icon_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                        
+                        let file_name: Vec<u16> = file.encode_utf16().chain(Some(0)).collect();
+                        let file_name_rect = D2D_RECT_F { left: x + 32.0, top: current_y + 2.0, right: x + width - 40.0, bottom: current_y + item_h - 2.0 };
+                        target.DrawText(&file_name, &mono_format, &file_name_rect, &text_br2, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                        
+                        // 暂存按钮 (+)
+                        let plus_rect = D2D_RECT_F { left: x + width - 28.0, top: current_y + 4.0, right: x + width - 10.0, bottom: current_y + item_h - 4.0 };
+                        let plus_text: Vec<u16> = "+".encode_utf16().chain(Some(0)).collect();
+                        target.DrawText(&plus_text, &ui_format, &plus_rect, &green_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                    }
+                    current_y += item_h;
+                }
+                current_y += 6.0;
+            }
+            
+            // Untracked Files
+            let untracked = self.git.untracked_files();
+            if !untracked.is_empty() {
+                let header_text: Vec<u16> = format!("未跟踪的文件 ({})", untracked.len()).encode_utf16().chain(Some(0)).collect();
+                let header_rect = D2D_RECT_F { left: x + 10.0, top: current_y, right: x + width - 10.0, bottom: current_y + section_header_h };
+                target.DrawText(&header_text, &bold_format, &header_rect, &text_br2, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                current_y += section_header_h;
+                
+                for file in &untracked {
+                    if current_y + item_h > y + height { break; }
+                    if current_y + item_h >= y {
+                        let is_selected = self.git.selected_file.as_ref() == Some(file);
+                        let is_hover = self.git.hover_file.as_ref() == Some(file);
+                        let file_rect = D2D_RECT_F { left: x + 10.0, top: current_y, right: x + width - 30.0, bottom: current_y + item_h };
+                        if is_selected {
+                            target.FillRectangle(&file_rect, &sel_brush);
+                        } else if is_hover {
+                            target.FillRectangle(&file_rect, &hover_brush);
+                        }
+                        
+                        let icon_text: Vec<u16> = "U".encode_utf16().chain(Some(0)).collect();
+                        let icon_rect = D2D_RECT_F { left: x + 14.0, top: current_y + 2.0, right: x + 30.0, bottom: current_y + item_h - 2.0 };
+                        target.DrawText(&icon_text, &mono_format, &icon_rect, &dim_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                        
+                        let file_name: Vec<u16> = file.encode_utf16().chain(Some(0)).collect();
+                        let file_name_rect = D2D_RECT_F { left: x + 32.0, top: current_y + 2.0, right: x + width - 40.0, bottom: current_y + item_h - 2.0 };
+                        target.DrawText(&file_name, &mono_format, &file_name_rect, &text_br2, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                        
+                        // 暂存按钮 (+)
+                        let plus_rect = D2D_RECT_F { left: x + width - 28.0, top: current_y + 4.0, right: x + width - 10.0, bottom: current_y + item_h - 4.0 };
+                        let plus_text: Vec<u16> = "+".encode_utf16().chain(Some(0)).collect();
+                        target.DrawText(&plus_text, &ui_format, &plus_rect, &green_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                    }
+                    current_y += item_h;
+                }
+            }
+        }
+    }
+
+    fn render_remote_file_tree_sidebar(&mut self, target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget, x: f32, y: f32, width: f32, height: f32, text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush) {
+        unsafe {
+            let ui_format = self.text_format_cache.get_format(12.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32, DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32).unwrap();
+            let tree_format = self.text_format_cache.get_format(13.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32, DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32).unwrap();
+            let dir_color = color_f(0.9, 0.9, 0.9, 1.0);
+            let dir_brush = self.brush_cache.get_brush(target, &dir_color).unwrap();
+            let sel_color = color_f(0.0, 0.47, 0.83, 1.0);
+            let sel_brush = self.brush_cache.get_brush(target, &sel_color).unwrap();
+            let hover_color = color_f(0.2, 0.2, 0.2, 1.0);
+            let hover_brush = self.brush_cache.get_brush(target, &hover_color).unwrap();
+            
+            // 标题
+            let title_text = if let Some(session) = &self.remote_session {
+                format!("远程: {}@{}:{}", session.config.username, session.config.host, session.config.port)
+            } else {
+                "远程文件".to_string()
+            };
+            let title: Vec<u16> = title_text.encode_utf16().chain(Some(0)).collect();
+            let title_rect = D2D_RECT_F { left: x + 10.0, top: y + 10.0, right: x + width - 10.0, bottom: y + 30.0 };
+            target.DrawText(&title, &ui_format, &title_rect, text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            
+            if let Some(tree) = &self.remote_file_tree {
+                let mut current_y = y + 40.0 - self.remote_scroll_y;
+                for (i, node) in tree.nodes.iter().enumerate() {
+                    if current_y > y + height { break; }
+                    if current_y + 20.0 < y { current_y += 20.0; continue; }
+                    
+                    let indent = node.depth as f32 * 16.0;
+                    let icon = if node.is_dir { if node.is_expanded { "📂" } else { "📁" } } else { "📄" };
+                    let arrow = if node.is_dir { if node.is_expanded { "▼ " } else { "▶ " } } else { "" };
+                    let display = format!("{}{} {}", arrow, icon, node.name);
+                    
+                    let item_left = x + 10.0 + indent;
+                    let item_right = x + width - 10.0;
+                    
+                    let is_hover = self.hover_remote_node == Some(i);
+                    if is_hover {
+                        let hover_rect = D2D_RECT_F { left: item_left - 4.0, top: current_y, right: item_right, bottom: current_y + 20.0 };
+                        target.FillRectangle(&hover_rect, &hover_brush);
+                    }
+                    
+                    let is_selected = self.selected_remote_node == Some(i) && !node.is_dir;
+                    if is_selected {
+                        let sel_rect = D2D_RECT_F { left: item_left - 4.0, top: current_y, right: item_right, bottom: current_y + 20.0 };
+                        target.FillRectangle(&sel_rect, &sel_brush);
+                    }
+                    
+                    let brush = if node.is_dir { &dir_brush } else { text_brush };
+                    let wide: Vec<u16> = display.encode_utf16().chain(Some(0)).collect();
+                    let text_rect = D2D_RECT_F { left: item_left, top: current_y, right: item_right, bottom: current_y + 20.0 };
+                    target.DrawText(&wide, &tree_format, &text_rect, brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                    
+                    current_y += 20.0;
+                }
+            } else {
+                let msg: Vec<u16> = "未连接远程服务器".encode_utf16().chain(Some(0)).collect();
+                let msg_rect = D2D_RECT_F { left: x + 10.0, top: y + 40.0, right: x + width - 10.0, bottom: y + 60.0 };
+                target.DrawText(&msg, &ui_format, &msg_rect, text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            }
+        }
+    }
+
+    fn render_ssh_dialog(&mut self, target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget) {
+        unsafe {
+            let width = 400.0f32;
+            let height = 420.0f32;
+            let x = (self.window_width as f32 - width) / 2.0;
+            let y = (self.window_height as f32 - height) / 2.0;
+            
+            let bg_color = color_f(0.18, 0.18, 0.18, 1.0);
+            let bg_brush = self.brush_cache.get_brush(target, &bg_color).unwrap();
+            let border_color = color_f(0.3, 0.3, 0.3, 1.0);
+            let border_brush = self.brush_cache.get_brush(target, &border_color).unwrap();
+            let text_color = color_f(0.9, 0.9, 0.9, 1.0);
+            let text_brush = self.brush_cache.get_brush(target, &text_color).unwrap();
+            let dim_color = color_f(0.5, 0.5, 0.5, 1.0);
+            let dim_brush = self.brush_cache.get_brush(target, &dim_color).unwrap();
+            let input_bg_color = color_f(0.12, 0.12, 0.12, 1.0);
+            let input_bg_brush = self.brush_cache.get_brush(target, &input_bg_color).unwrap();
+            let btn_bg_color = color_f(0.0, 0.47, 0.83, 1.0);
+            let btn_bg_brush = self.brush_cache.get_brush(target, &btn_bg_color).unwrap();
+            let btn_hover_color = color_f(0.0, 0.55, 0.95, 1.0);
+            let btn_hover_brush = self.brush_cache.get_brush(target, &btn_hover_color).unwrap();
+            let overlay_color = color_f(0.0, 0.0, 0.0, 0.5);
+            let overlay_brush = self.brush_cache.get_brush(target, &overlay_color).unwrap();
+            
+            let format = self.text_format_cache.get_format(13.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32, DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32).unwrap();
+            let title_format = self.text_format_cache.get_format(14.0, DWRITE_FONT_WEIGHT_BOLD.0 as u32, DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32).unwrap();
+            
+            // 遮罩层
+            let overlay_rect = D2D_RECT_F { left: 0.0, top: 0.0, right: self.window_width as f32, bottom: self.window_height as f32 };
+            target.FillRectangle(&overlay_rect, &overlay_brush);
+            
+            // 对话框背景
+            let dialog_rect = D2D_RECT_F { left: x, top: y, right: x + width, bottom: y + height };
+            target.FillRectangle(&dialog_rect, &bg_brush);
+            let border_rect = D2D_RECT_F { left: x, top: y, right: x + width, bottom: y + height };
+            target.DrawRectangle(&border_rect, &border_brush, 1.0, None);
+            
+            let mut cy = y + 16.0;
+            
+            // 标题
+            let title: Vec<u16> = "SSH 连接".encode_utf16().chain(Some(0)).collect();
+            let title_rect = D2D_RECT_F { left: x + 16.0, top: cy, right: x + width - 16.0, bottom: cy + 22.0 };
+            target.DrawText(&title, &title_format, &title_rect, &text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            cy += 32.0;
+            
+            // 错误消息
+            if let Some(err) = &self.ssh_dialog.error_message {
+                let err_text: Vec<u16> = err.encode_utf16().chain(Some(0)).collect();
+                let err_rect = D2D_RECT_F { left: x + 16.0, top: cy, right: x + width - 16.0, bottom: cy + 18.0 };
+                let err_color = color_f(0.9, 0.2, 0.2, 1.0);
+                let err_brush = self.brush_cache.get_brush(target, &err_color).unwrap();
+                target.DrawText(&err_text, &format, &err_rect, &err_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                cy += 22.0;
+            }
+            
+            // 字段标签和输入框
+            let fields = vec![
+                ("主机:", &self.ssh_dialog.host, 0),
+                ("端口:", &self.ssh_dialog.port, 1),
+                ("用户名:", &self.ssh_dialog.username, 2),
+            ];
+            
+            for (label, value, idx) in &fields {
+                let label_text: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
+                let label_rect = D2D_RECT_F { left: x + 16.0, top: cy, right: x + 80.0, bottom: cy + 18.0 };
+                target.DrawText(&label_text, &format, &label_rect, &dim_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                
+                let input_rect = D2D_RECT_F { left: x + 80.0, top: cy - 2.0, right: x + width - 16.0, bottom: cy + 20.0 };
+                target.FillRectangle(&input_rect, &input_bg_brush);
+                let val_text: Vec<u16> = value.encode_utf16().chain(Some(0)).collect();
+                let val_rect = D2D_RECT_F { left: x + 84.0, top: cy, right: x + width - 20.0, bottom: cy + 18.0 };
+                target.DrawText(&val_text, &format, &val_rect, &text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                
+                // 焦点指示器
+                if self.ssh_dialog.focus_field == *idx {
+                    let focus_rect = D2D_RECT_F { left: x + 80.0, top: cy - 2.0, right: x + width - 16.0, bottom: cy + 20.0 };
+                    let focus_color = color_f(0.0, 0.47, 0.83, 1.0);
+                    let focus_brush = self.brush_cache.get_brush(target, &focus_color).unwrap();
+                    target.DrawRectangle(&focus_rect, &focus_brush, 1.0, None);
+                }
+                
+                cy += 28.0;
+            }
+            
+            // 认证类型
+            let auth_label: Vec<u16> = "认证:".encode_utf16().chain(Some(0)).collect();
+            let auth_label_rect = D2D_RECT_F { left: x + 16.0, top: cy, right: x + 80.0, bottom: cy + 18.0 };
+            target.DrawText(&auth_label, &format, &auth_label_rect, &dim_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            
+            let auth_text = match self.ssh_dialog.auth_type {
+                crate::ssh::SshAuthType::Password => "密码",
+                crate::ssh::SshAuthType::Key => "私钥",
+                crate::ssh::SshAuthType::Agent => "SSH Agent",
+            };
+            let auth_val: Vec<u16> = auth_text.encode_utf16().chain(Some(0)).collect();
+            let auth_val_rect = D2D_RECT_F { left: x + 80.0, top: cy, right: x + width - 16.0, bottom: cy + 18.0 };
+            target.DrawText(&auth_val, &format, &auth_val_rect, &text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            cy += 28.0;
+            
+            // 根据认证类型显示不同字段
+            match self.ssh_dialog.auth_type {
+                crate::ssh::SshAuthType::Password => {
+                    let label_text: Vec<u16> = "密码:".encode_utf16().chain(Some(0)).collect();
+                    let label_rect = D2D_RECT_F { left: x + 16.0, top: cy, right: x + 80.0, bottom: cy + 18.0 };
+                    target.DrawText(&label_text, &format, &label_rect, &dim_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                    
+                    let input_rect = D2D_RECT_F { left: x + 80.0, top: cy - 2.0, right: x + width - 16.0, bottom: cy + 20.0 };
+                    target.FillRectangle(&input_rect, &input_bg_brush);
+                    let hidden = "*".repeat(self.ssh_dialog.password.len());
+                    let val_text: Vec<u16> = hidden.encode_utf16().chain(Some(0)).collect();
+                    let val_rect = D2D_RECT_F { left: x + 84.0, top: cy, right: x + width - 20.0, bottom: cy + 18.0 };
+                    target.DrawText(&val_text, &format, &val_rect, &text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                    
+                    if self.ssh_dialog.focus_field == 3 {
+                        let focus_rect = D2D_RECT_F { left: x + 80.0, top: cy - 2.0, right: x + width - 16.0, bottom: cy + 20.0 };
+                        let focus_color = color_f(0.0, 0.47, 0.83, 1.0);
+                        let focus_brush = self.brush_cache.get_brush(target, &focus_color).unwrap();
+                        target.DrawRectangle(&focus_rect, &focus_brush, 1.0, None);
+                    }
+                    cy += 28.0;
+                }
+                crate::ssh::SshAuthType::Key => {
+                    let label_text: Vec<u16> = "密钥路径:".encode_utf16().chain(Some(0)).collect();
+                    let label_rect = D2D_RECT_F { left: x + 16.0, top: cy, right: x + 80.0, bottom: cy + 18.0 };
+                    target.DrawText(&label_text, &format, &label_rect, &dim_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                    
+                    let input_rect = D2D_RECT_F { left: x + 80.0, top: cy - 2.0, right: x + width - 16.0, bottom: cy + 20.0 };
+                    target.FillRectangle(&input_rect, &input_bg_brush);
+                    let val_text: Vec<u16> = self.ssh_dialog.key_path.encode_utf16().chain(Some(0)).collect();
+                    let val_rect = D2D_RECT_F { left: x + 84.0, top: cy, right: x + width - 20.0, bottom: cy + 18.0 };
+                    target.DrawText(&val_text, &format, &val_rect, &text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                    
+                    if self.ssh_dialog.focus_field == 3 {
+                        let focus_rect = D2D_RECT_F { left: x + 80.0, top: cy - 2.0, right: x + width - 16.0, bottom: cy + 20.0 };
+                        let focus_color = color_f(0.0, 0.47, 0.83, 1.0);
+                        let focus_brush = self.brush_cache.get_brush(target, &focus_color).unwrap();
+                        target.DrawRectangle(&focus_rect, &focus_brush, 1.0, None);
+                    }
+                    cy += 28.0;
+                    
+                    let label2_text: Vec<u16> = "密码短语:".encode_utf16().chain(Some(0)).collect();
+                    let label2_rect = D2D_RECT_F { left: x + 16.0, top: cy, right: x + 80.0, bottom: cy + 18.0 };
+                    target.DrawText(&label2_text, &format, &label2_rect, &dim_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                    
+                    let input2_rect = D2D_RECT_F { left: x + 80.0, top: cy - 2.0, right: x + width - 16.0, bottom: cy + 20.0 };
+                    target.FillRectangle(&input2_rect, &input_bg_brush);
+                    let hidden2 = "*".repeat(self.ssh_dialog.key_passphrase.len());
+                    let val2_text: Vec<u16> = hidden2.encode_utf16().chain(Some(0)).collect();
+                    let val2_rect = D2D_RECT_F { left: x + 84.0, top: cy, right: x + width - 20.0, bottom: cy + 18.0 };
+                    target.DrawText(&val2_text, &format, &val2_rect, &text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                    
+                    if self.ssh_dialog.focus_field == 4 {
+                        let focus_rect = D2D_RECT_F { left: x + 80.0, top: cy - 2.0, right: x + width - 16.0, bottom: cy + 20.0 };
+                        let focus_color = color_f(0.0, 0.47, 0.83, 1.0);
+                        let focus_brush = self.brush_cache.get_brush(target, &focus_color).unwrap();
+                        target.DrawRectangle(&focus_rect, &focus_brush, 1.0, None);
+                    }
+                    cy += 28.0;
+                }
+                crate::ssh::SshAuthType::Agent => {}
+            }
+            
+            cy += 16.0;
+            
+            // 按钮：Connect 和 Cancel
+            let btn_w = 80.0;
+            let btn_h = 28.0;
+            
+            // Connect 按钮
+            let connect_btn_rect = D2D_RECT_F { left: x + width - 16.0 - btn_w * 2.0 - 8.0, top: cy, right: x + width - 16.0 - btn_w - 8.0, bottom: cy + btn_h };
+            let is_connect_hover = self.ssh_dialog.hover_button == Some(0);
+            target.FillRectangle(&connect_btn_rect, if is_connect_hover { &btn_hover_brush } else { &btn_bg_brush });
+            let connect_text: Vec<u16> = "连接".encode_utf16().chain(Some(0)).collect();
+            let connect_text_rect = D2D_RECT_F { left: connect_btn_rect.left, top: cy + 4.0, right: connect_btn_rect.right, bottom: cy + btn_h - 2.0 };
+            target.DrawText(&connect_text, &format, &connect_text_rect, &text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            
+            // Cancel 按钮
+            let cancel_btn_rect = D2D_RECT_F { left: x + width - 16.0 - btn_w, top: cy, right: x + width - 16.0, bottom: cy + btn_h };
+            let cancel_bg_color = color_f(0.25, 0.25, 0.25, 1.0);
+            let cancel_bg_brush = self.brush_cache.get_brush(target, &cancel_bg_color).unwrap();
+            let cancel_hover_color = color_f(0.35, 0.35, 0.35, 1.0);
+            let cancel_hover_brush = self.brush_cache.get_brush(target, &cancel_hover_color).unwrap();
+            let is_cancel_hover = self.ssh_dialog.hover_button == Some(1);
+            target.FillRectangle(&cancel_btn_rect, if is_cancel_hover { &cancel_hover_brush } else { &cancel_bg_brush });
+            let cancel_text: Vec<u16> = "取消".encode_utf16().chain(Some(0)).collect();
+            let cancel_text_rect = D2D_RECT_F { left: cancel_btn_rect.left, top: cy + 4.0, right: cancel_btn_rect.right, bottom: cy + btn_h - 2.0 };
+            target.DrawText(&cancel_text, &format, &cancel_text_rect, &text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            
+            // 存储按钮区域用于点击检测
+            self.ssh_dialog.connect_btn_rect = Some(crate::layout::Region::new(
+                connect_btn_rect.left, connect_btn_rect.top,
+                connect_btn_rect.right - connect_btn_rect.left,
+                connect_btn_rect.bottom - connect_btn_rect.top,
+            ));
+            self.ssh_dialog.cancel_btn_rect = Some(crate::layout::Region::new(
+                cancel_btn_rect.left, cancel_btn_rect.top,
+                cancel_btn_rect.right - cancel_btn_rect.left,
+                cancel_btn_rect.bottom - cancel_btn_rect.top,
+            ));
+        }
+    }
+
+    fn render_clone_dialog(&mut self, target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget) {
+        unsafe {
+            let width = 400.0f32;
+            let height = 200.0f32;
+            let x = (self.window_width as f32 - width) / 2.0;
+            let y = (self.window_height as f32 - height) / 2.0;
+            
+            let bg_color = color_f(0.18, 0.18, 0.18, 1.0);
+            let bg_brush = self.brush_cache.get_brush(target, &bg_color).unwrap();
+            let border_color = color_f(0.3, 0.3, 0.3, 1.0);
+            let border_brush = self.brush_cache.get_brush(target, &border_color).unwrap();
+            let text_color = color_f(0.9, 0.9, 0.9, 1.0);
+            let text_brush = self.brush_cache.get_brush(target, &text_color).unwrap();
+            let dim_color = color_f(0.5, 0.5, 0.5, 1.0);
+            let dim_brush = self.brush_cache.get_brush(target, &dim_color).unwrap();
+            let input_bg_color = color_f(0.12, 0.12, 0.12, 1.0);
+            let input_bg_brush = self.brush_cache.get_brush(target, &input_bg_color).unwrap();
+            let btn_bg_color = color_f(0.0, 0.47, 0.83, 1.0);
+            let btn_bg_brush = self.brush_cache.get_brush(target, &btn_bg_color).unwrap();
+            let btn_hover_color = color_f(0.0, 0.55, 0.95, 1.0);
+            let btn_hover_brush = self.brush_cache.get_brush(target, &btn_hover_color).unwrap();
+            let overlay_color = color_f(0.0, 0.0, 0.0, 0.5);
+            let overlay_brush = self.brush_cache.get_brush(target, &overlay_color).unwrap();
+            
+            let format = self.text_format_cache.get_format(13.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32, DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32).unwrap();
+            let title_format = self.text_format_cache.get_format(14.0, DWRITE_FONT_WEIGHT_BOLD.0 as u32, DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32).unwrap();
+            
+            // 遮罩层
+            let overlay_rect = D2D_RECT_F { left: 0.0, top: 0.0, right: self.window_width as f32, bottom: self.window_height as f32 };
+            target.FillRectangle(&overlay_rect, &overlay_brush);
+            
+            // 对话框背景
+            let dialog_rect = D2D_RECT_F { left: x, top: y, right: x + width, bottom: y + height };
+            target.FillRectangle(&dialog_rect, &bg_brush);
+            target.DrawRectangle(&dialog_rect, &border_brush, 1.0, None);
+            
+            let mut cy = y + 16.0;
+            
+            // 标题
+            let title: Vec<u16> = "克隆仓库".encode_utf16().chain(Some(0)).collect();
+            let title_rect = D2D_RECT_F { left: x + 16.0, top: cy, right: x + width - 16.0, bottom: cy + 22.0 };
+            target.DrawText(&title, &title_format, &title_rect, &text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            cy += 32.0;
+            
+            // URL 输入
+            let label_text: Vec<u16> = "仓库 URL:".encode_utf16().chain(Some(0)).collect();
+            let label_rect = D2D_RECT_F { left: x + 16.0, top: cy, right: x + 90.0, bottom: cy + 18.0 };
+            target.DrawText(&label_text, &format, &label_rect, &dim_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            
+            let input_rect = D2D_RECT_F { left: x + 90.0, top: cy - 2.0, right: x + width - 16.0, bottom: cy + 20.0 };
+            target.FillRectangle(&input_rect, &input_bg_brush);
+            let val_text: Vec<u16> = self.clone_dialog.url.encode_utf16().chain(Some(0)).collect();
+            let val_rect = D2D_RECT_F { left: x + 94.0, top: cy, right: x + width - 20.0, bottom: cy + 18.0 };
+            target.DrawText(&val_text, &format, &val_rect, &text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            
+            if self.clone_dialog.focus_field == 0 {
+                let focus_rect = D2D_RECT_F { left: x + 90.0, top: cy - 2.0, right: x + width - 16.0, bottom: cy + 20.0 };
+                let focus_color = color_f(0.0, 0.47, 0.83, 1.0);
+                let focus_brush = self.brush_cache.get_brush(target, &focus_color).unwrap();
+                target.DrawRectangle(&focus_rect, &focus_brush, 1.0, None);
+            }
+            cy += 36.0;
+            
+            // 错误消息
+            if let Some(err) = &self.clone_dialog.error_message {
+                let err_text: Vec<u16> = err.encode_utf16().chain(Some(0)).collect();
+                let err_rect = D2D_RECT_F { left: x + 16.0, top: cy, right: x + width - 16.0, bottom: cy + 18.0 };
+                let err_color = color_f(0.9, 0.2, 0.2, 1.0);
+                let err_brush = self.brush_cache.get_brush(target, &err_color).unwrap();
+                target.DrawText(&err_text, &format, &err_rect, &err_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                cy += 22.0;
+            }
+            
+            cy += 16.0;
+            
+            // 按钮：Clone 和 Cancel
+            let btn_w = 80.0;
+            let btn_h = 28.0;
+            
+            let clone_btn_rect = D2D_RECT_F { left: x + width - 16.0 - btn_w * 2.0 - 8.0, top: cy, right: x + width - 16.0 - btn_w - 8.0, bottom: cy + btn_h };
+            let is_clone_hover = self.clone_dialog.hover_button == Some(0);
+            target.FillRectangle(&clone_btn_rect, if is_clone_hover { &btn_hover_brush } else { &btn_bg_brush });
+            let clone_text: Vec<u16> = "克隆".encode_utf16().chain(Some(0)).collect();
+            let clone_text_rect = D2D_RECT_F { left: clone_btn_rect.left, top: cy + 4.0, right: clone_btn_rect.right, bottom: cy + btn_h - 2.0 };
+            target.DrawText(&clone_text, &format, &clone_text_rect, &text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            
+            let cancel_btn_rect = D2D_RECT_F { left: x + width - 16.0 - btn_w, top: cy, right: x + width - 16.0, bottom: cy + btn_h };
+            let cancel_bg_color = color_f(0.25, 0.25, 0.25, 1.0);
+            let cancel_bg_brush = self.brush_cache.get_brush(target, &cancel_bg_color).unwrap();
+            let cancel_hover_color = color_f(0.35, 0.35, 0.35, 1.0);
+            let cancel_hover_brush = self.brush_cache.get_brush(target, &cancel_hover_color).unwrap();
+            let is_cancel_hover = self.clone_dialog.hover_button == Some(1);
+            target.FillRectangle(&cancel_btn_rect, if is_cancel_hover { &cancel_hover_brush } else { &cancel_bg_brush });
+            let cancel_text: Vec<u16> = "取消".encode_utf16().chain(Some(0)).collect();
+            let cancel_text_rect = D2D_RECT_F { left: cancel_btn_rect.left, top: cy + 4.0, right: cancel_btn_rect.right, bottom: cy + btn_h - 2.0 };
+            target.DrawText(&cancel_text, &format, &cancel_text_rect, &text_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            
+            // 存储按钮区域用于点击检测
+            self.clone_dialog.clone_btn_rect = Some(crate::layout::Region::new(
+                clone_btn_rect.left, clone_btn_rect.top,
+                clone_btn_rect.right - clone_btn_rect.left,
+                clone_btn_rect.bottom - clone_btn_rect.top,
+            ));
+            self.clone_dialog.cancel_btn_rect = Some(crate::layout::Region::new(
+                cancel_btn_rect.left, cancel_btn_rect.top,
+                cancel_btn_rect.right - cancel_btn_rect.left,
+                cancel_btn_rect.bottom - cancel_btn_rect.top,
+            ));
         }
     }
 
@@ -1062,6 +1661,12 @@ impl EditorState {
                 Language::Image => "Image",
             };
             status.update_language(lang_name);
+            let branch = if self.git.is_repo() {
+                self.git.current_branch_name()
+            } else {
+                None
+            };
+            status.update_git_branch(branch.as_deref());
 
             let text_format = self.text_format_cache.get_format(12.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32, DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32, DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32).unwrap();
 

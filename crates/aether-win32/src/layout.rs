@@ -61,6 +61,8 @@ pub enum SidebarContent {
     SourceControlPanel,
     TerminalPanel,
     SettingsPanel,
+    RemoteFileTree,
+}
 }
 
 impl SidebarContent {

@@ -22,6 +22,7 @@ use crate::status_bar::StatusBar;
 use crate::tabs::{Tab, TabLayout};
 use crate::command_palette::CommandPalette;
 use crate::git::GitIntegration;
+use crate::ssh::{SshConnectionDialog, RemoteSession, RemoteFileTree, CloneRepoDialog};
 use crate::terminal::TerminalPanel;
 use aether_shared::settings::AppSettings;
 use crate::settings::SettingsPanel;
@@ -97,6 +98,20 @@ pub struct EditorState {
     pub git: GitIntegration,
     /// 终端面板
     pub terminal_panel: TerminalPanel,
+    /// SSH 连接对话框
+    pub ssh_dialog: SshConnectionDialog,
+    /// 远程会话
+    pub remote_session: Option<RemoteSession>,
+    /// 远程文件树
+    pub remote_file_tree: Option<RemoteFileTree>,
+    /// 选中的远程文件节点
+    pub selected_remote_node: Option<usize>,
+    /// 悬停的远程文件节点
+    pub hover_remote_node: Option<usize>,
+    /// 远程文件树滚动偏移
+    pub remote_scroll_y: f32,
+    /// 克隆仓库对话框
+    pub clone_dialog: CloneRepoDialog,
     /// D2D 画刷缓存
     pub brush_cache: BrushCache,
     /// DirectWrite 文本格式缓存
@@ -346,6 +361,13 @@ impl EditorState {
             terminal_panel: TerminalPanel::new(),
             settings_panel: SettingsPanel::from_settings(&app_settings),
             app_settings,
+            ssh_dialog: SshConnectionDialog::new(),
+            remote_session: None,
+            remote_file_tree: None,
+            selected_remote_node: None,
+            hover_remote_node: None,
+            remote_scroll_y: 0.0,
+            clone_dialog: CloneRepoDialog::new(),
             brush_cache: BrushCache::new(),
             text_format_cache: TextFormatCache::new().unwrap_or_else(|_| TextFormatCache::new().unwrap()),
             is_maximized: false,
@@ -560,6 +582,26 @@ impl EditorState {
     pub fn save_file(&mut self) -> bool {
         if let Some(path) = &self.file_path {
             let text = self.buffer.get_all_text();
+            // 处理远程文件保存
+            if let Some(remote_path) = path.to_str().and_then(|s| s.strip_prefix("remote:")) {
+                if let Some(session) = &self.remote_session {
+                    match session.write_remote_file(remote_path, text.as_bytes()) {
+                        Ok(()) => {
+                            self.is_dirty = false;
+                            self.sync_to_tab();
+                            self.status_message = format!("已保存到远程: {}", remote_path);
+                            return true;
+                        }
+                        Err(e) => {
+                            self.status_message = format!("保存远程文件失败: {}", e);
+                            return false;
+                        }
+                    }
+                } else {
+                    self.status_message = "远程会话未连接".to_string();
+                    return false;
+                }
+            }
             match std::fs::write(path, text) {
                 Ok(()) => {
                     self.is_dirty = false;
@@ -704,19 +746,46 @@ impl EditorState {
 
     /// 侧边栏滚动（文件树虚拟滚动）
     pub fn scroll_sidebar(&mut self, delta_y: f32) {
-        // 估算文件树总高度：每个节点 20px，加上顶部 padding
-        // 精确计算需要遍历树，但这里用近似值即可
-        let node_height = 20.0;
-        let estimated_nodes = if let Some(tree) = &self.file_tree {
-            tree.len() as f32
-        } else {
-            0.0
-        };
-        let total_height = estimated_nodes * node_height + 20.0; // +20 for top padding
-        let sidebar_region = self.layout.sidebar_region();
-        let visible_height = sidebar_region.height;
-        let max_scroll = (total_height - visible_height).max(0.0);
-        self.sidebar_scroll_y = (self.sidebar_scroll_y + delta_y).clamp(0.0, max_scroll);
+        match &self.sidebar_content {
+            crate::layout::SidebarContent::FileTree => {
+                let node_height = 20.0;
+                let estimated_nodes = if let Some(tree) = &self.file_tree {
+                    tree.len() as f32
+                } else {
+                    0.0
+                };
+                let total_height = estimated_nodes * node_height + 20.0;
+                let sidebar_region = self.layout.sidebar_region();
+                let visible_height = sidebar_region.height;
+                let max_scroll = (total_height - visible_height).max(0.0);
+                self.sidebar_scroll_y = (self.sidebar_scroll_y + delta_y).clamp(0.0, max_scroll);
+            }
+            crate::layout::SidebarContent::RemoteFileTree => {
+                let node_height = 20.0;
+                let estimated_nodes = if let Some(tree) = &self.remote_file_tree {
+                    tree.nodes.len() as f32
+                } else {
+                    0.0
+                };
+                let total_height = estimated_nodes * node_height + 40.0;
+                let sidebar_region = self.layout.sidebar_region();
+                let visible_height = sidebar_region.height;
+                let max_scroll = (total_height - visible_height).max(0.0);
+                self.remote_scroll_y = (self.remote_scroll_y + delta_y).clamp(0.0, max_scroll);
+            }
+            crate::layout::SidebarContent::SourceControlPanel => {
+                let item_height = 22.0;
+                let staged = self.git.staged_files().len() as f32;
+                let unstaged = self.git.unstaged_files().len() as f32;
+                let untracked = self.git.untracked_files().len() as f32;
+                let total_height = 100.0 + (staged + unstaged + untracked) * item_height + 60.0;
+                let sidebar_region = self.layout.sidebar_region();
+                let visible_height = sidebar_region.height;
+                let max_scroll = (total_height - visible_height).max(0.0);
+                self.git.scroll_y = (self.git.scroll_y + delta_y).clamp(0.0, max_scroll);
+            }
+            _ => {}
+        }
     }
 
     /// 设置剪贴板文本
@@ -875,12 +944,34 @@ impl EditorState {
         }
         self.file_tree = Some(tree);
         self.current_folder = Some(path.clone());
+        // 检测 Git 仓库
+        self.git.detect(&path);
+        if let Some(branch) = self.git.current_branch_name() {
+            self.status_bar.update_git_branch(Some(&branch));
+        } else {
+            self.status_bar.update_git_branch(None);
+        }
         self.status_message = format!("已打开文件夹: {}", path.display());
         // 记录到最近项目列表
         self.recent_projects.add(&path);
     }
 
-    pub fn handle_sidebar_click(&mut self, _mouse_x: f32, mouse_y: f32) -> bool {
+    pub fn handle_sidebar_click(&mut self, mouse_x: f32, mouse_y: f32) -> bool {
+        match &self.sidebar_content {
+            crate::layout::SidebarContent::FileTree => {
+                self.handle_file_tree_click(mouse_x, mouse_y)
+            }
+            crate::layout::SidebarContent::SourceControlPanel => {
+                self.handle_git_panel_click(mouse_x, mouse_y)
+            }
+            crate::layout::SidebarContent::RemoteFileTree => {
+                self.handle_remote_tree_click(mouse_x, mouse_y)
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_file_tree_click(&mut self, _mouse_x: f32, mouse_y: f32) -> bool {
         let tree = match self.file_tree.as_ref() {
             Some(t) => t,
             None => return false,
@@ -912,8 +1003,214 @@ impl EditorState {
         false
     }
 
+    fn handle_git_panel_click(&mut self, mouse_x: f32, mouse_y: f32) -> bool {
+        if !self.git.is_repo() {
+            return false;
+        }
+        // Git 面板布局：分支(30px) + commit输入(30px) + 按钮(30px) + 分隔(5px) + staged + unstaged + untracked
+        // 简化实现：根据鼠标位置检测点击的文件或按钮
+        let mut current_y = 10.0f32;
+        let sidebar_width = self.layout.sidebar_width;
+        let item_height = 22.0f32;
+        let section_gap = 8.0f32;
+
+        // 跳过标题和分支区域 (约 70px)
+        current_y += 70.0;
+
+        // 检测按钮点击 (Commit, Refresh)
+        let button_y = current_y;
+        if mouse_y >= button_y && mouse_y < button_y + 26.0 {
+            if mouse_x >= 10.0 && mouse_x < 70.0 {
+                // Commit 按钮
+                if !self.git.commit_message.is_empty() {
+                    let msg = self.git.commit_message.clone();
+                    let _ = self.git.commit(&msg);
+                    self.git.commit_message.clear();
+                }
+                return true;
+            } else if mouse_x >= 80.0 && mouse_x < 140.0 {
+                // Refresh 按钮
+                self.git.refresh();
+                return true;
+            }
+        }
+        current_y += 36.0;
+
+        // 检测文件列表点击
+        let staged = self.git.staged_files();
+        let unstaged = self.git.unstaged_files();
+        let untracked = self.git.untracked_files();
+
+        // Staged Changes
+        if !staged.is_empty() {
+            current_y += section_gap + 20.0; // 标题
+            for (file, _status) in &staged {
+                if mouse_y >= current_y && mouse_y < current_y + item_height {
+                    if mouse_x >= sidebar_width - 30.0 && mouse_x < sidebar_width - 10.0 {
+                        // 点击取消暂存
+                        let _ = self.git.unstage_file(file);
+                    } else {
+                        // 点击选择文件，显示 diff
+                        self.git.selected_file = Some(file.clone());
+                        self.show_git_diff(file, true);
+                    }
+                    return true;
+                }
+                current_y += item_height;
+            }
+            current_y += section_gap;
+        }
+
+        // Changes (unstaged)
+        if !unstaged.is_empty() {
+            current_y += section_gap + 20.0;
+            for (file, _status) in &unstaged {
+                if mouse_y >= current_y && mouse_y < current_y + item_height {
+                    if mouse_x >= sidebar_width - 30.0 && mouse_x < sidebar_width - 10.0 {
+                        // 点击暂存
+                        let _ = self.git.stage_file(file);
+                    } else {
+                        self.git.selected_file = Some(file.clone());
+                        self.show_git_diff(file, false);
+                    }
+                    return true;
+                }
+                current_y += item_height;
+            }
+            current_y += section_gap;
+        }
+
+        // Untracked
+        if !untracked.is_empty() {
+            current_y += section_gap + 20.0;
+            for file in &untracked {
+                if mouse_y >= current_y && mouse_y < current_y + item_height {
+                    if mouse_x >= sidebar_width - 30.0 && mouse_x < sidebar_width - 10.0 {
+                        let _ = self.git.stage_file(file);
+                    } else {
+                        self.git.selected_file = Some(file.clone());
+                    }
+                    return true;
+                }
+                current_y += item_height;
+            }
+        }
+
+        false
+    }
+
+    fn handle_remote_tree_click(&mut self, _mouse_x: f32, mouse_y: f32) -> bool {
+        let tree = match self.remote_file_tree.as_ref() {
+            Some(t) => t,
+            None => return false,
+        };
+
+        let mut current_y = 10.0 - self.remote_scroll_y;
+        for (i, node) in tree.nodes.iter().enumerate() {
+            if mouse_y >= current_y && mouse_y < current_y + 20.0 {
+                if node.is_dir {
+                    // 展开/折叠目录
+                    if let Some(tree) = self.remote_file_tree.as_mut() {
+                        if let Some(n) = tree.nodes.get_mut(i) {
+                            n.is_expanded = !n.is_expanded;
+                        }
+                    }
+                } else {
+                    // 打开远程文件
+                    self.selected_remote_node = Some(i);
+                    if let Some(session) = &self.remote_session {
+                        let remote_path = node.path.clone();
+                        match session.read_remote_file(&remote_path) {
+                            Ok(content) => {
+                                let text = String::from_utf8_lossy(&content).to_string();
+                                let tab = crate::tabs::Tab {
+                                    file_path: Some(PathBuf::from(format!("remote:{}", remote_path))),
+                                    buffer: PieceTable::from_string(text),
+                                    cursor_line: 0,
+                                    cursor_col: 0,
+                                    selection_start: None,
+                                    selection_end: None,
+                                    scroll_y: 0.0,
+                                    history: History::new(),
+                                    is_dirty: false,
+                                    cached_lines: Vec::new(),
+                                    cached_tokens: Vec::new(),
+                                    line_cache_versions: Vec::new(),
+                                    buffer_version: 1,
+                                    language: Language::PlainText,
+                                };
+                                self.open_in_new_tab(tab);
+                                self.status_message = format!("已打开远程文件: {}", remote_path);
+                            }
+                            Err(e) => {
+                                self.status_message = format!("读取远程文件失败: {}", e);
+                            }
+                        }
+                    }
+                }
+                return true;
+            }
+            current_y += 20.0;
+        }
+        false
+    }
+
+    /// 显示 Git diff 视图
+    pub fn show_git_diff(&mut self, file: &str, staged: bool) {
+        if let Some(path) = &self.current_folder {
+            let args = if staged {
+                vec!["diff", "--cached", "--", file]
+            } else {
+                vec!["diff", "--", file]
+            };
+            let (stdout, stderr, success) = crate::git::GitCommand::exec(path, &args);
+            if success {
+                let diff_text = if stdout.is_empty() {
+                    format!("// 无差异: {}\n", file)
+                } else {
+                    stdout
+                };
+                let tab = crate::tabs::Tab {
+                    file_path: Some(PathBuf::from(format!("diff: {}", file))),
+                    buffer: PieceTable::from_string(diff_text),
+                    cursor_line: 0,
+                    cursor_col: 0,
+                    selection_start: None,
+                    selection_end: None,
+                    scroll_y: 0.0,
+                    history: History::new(),
+                    is_dirty: false,
+                    cached_lines: Vec::new(),
+                    cached_tokens: Vec::new(),
+                    line_cache_versions: Vec::new(),
+                    buffer_version: 1,
+                    language: Language::PlainText,
+                };
+                self.open_in_new_tab(tab);
+                self.status_message = format!("显示 {} 的差异", file);
+            } else {
+                self.status_message = format!("获取差异失败: {}", stderr);
+            }
+        }
+    }
+
     /// 更新文件树悬停状态，返回是否需要重绘
     pub fn update_file_tree_hover(&mut self, _mouse_x: f32, mouse_y: f32) -> bool {
+        match &self.sidebar_content {
+            crate::layout::SidebarContent::FileTree => {
+                self.update_local_tree_hover(_mouse_x, mouse_y)
+            }
+            crate::layout::SidebarContent::RemoteFileTree => {
+                self.update_remote_tree_hover(mouse_y)
+            }
+            _ => {
+                let old = self.hover_file_node.take();
+                old.is_some()
+            }
+        }
+    }
+
+    fn update_local_tree_hover(&mut self, _mouse_x: f32, mouse_y: f32) -> bool {
         let tree = match self.file_tree.as_ref() {
             Some(t) => t,
             None => {
@@ -929,6 +1226,111 @@ impl EditorState {
         let changed = self.hover_file_node != new_hover;
         self.hover_file_node = new_hover;
         changed
+    }
+
+    fn update_remote_tree_hover(&mut self, mouse_y: f32) -> bool {
+        let tree = match self.remote_file_tree.as_ref() {
+            Some(t) => t,
+            None => {
+                let old = self.hover_remote_node.take();
+                return old.is_some();
+            }
+        };
+
+        let mut current_y = 10.0 - self.remote_scroll_y;
+        let mut new_hover = None;
+        for (i, _node) in tree.nodes.iter().enumerate() {
+            if mouse_y >= current_y && mouse_y < current_y + 20.0 {
+                new_hover = Some(i);
+                break;
+            }
+            current_y += 20.0;
+        }
+        let changed = self.hover_remote_node != new_hover;
+        self.hover_remote_node = new_hover;
+        changed
+    }
+
+    /// 处理 SSH 对话框点击
+    pub fn handle_ssh_dialog_click(&mut self, mouse_x: f32, mouse_y: f32) -> Option<crate::ssh::DialogAction> {
+        if let Some(rect) = &self.ssh_dialog.connect_btn_rect {
+            if rect.contains(mouse_x, mouse_y) {
+                self.ssh_dialog.hover_button = Some(0);
+                return Some(crate::ssh::DialogAction::Connect);
+            }
+        }
+        if let Some(rect) = &self.ssh_dialog.cancel_btn_rect {
+            if rect.contains(mouse_x, mouse_y) {
+                self.ssh_dialog.hover_button = Some(1);
+                return Some(crate::ssh::DialogAction::Cancel);
+            }
+        }
+        self.ssh_dialog.hover_button = None;
+        Some(crate::ssh::DialogAction::None)
+    }
+
+    /// 处理克隆对话框点击
+    pub fn handle_clone_dialog_click(&mut self, mouse_x: f32, mouse_y: f32) -> Option<crate::ssh::DialogAction> {
+        if let Some(rect) = &self.clone_dialog.clone_btn_rect {
+            if rect.contains(mouse_x, mouse_y) {
+                self.clone_dialog.hover_button = Some(0);
+                return Some(crate::ssh::DialogAction::Connect);
+            }
+        }
+        if let Some(rect) = &self.clone_dialog.cancel_btn_rect {
+            if rect.contains(mouse_x, mouse_y) {
+                self.clone_dialog.hover_button = Some(1);
+                return Some(crate::ssh::DialogAction::Cancel);
+            }
+        }
+        self.clone_dialog.hover_button = None;
+        Some(crate::ssh::DialogAction::None)
+    }
+
+    /// 处理 SSH 对话框键盘输入
+    pub fn handle_ssh_dialog_key(&mut self, ch: char) {
+        match self.ssh_dialog.focus_field {
+            0 => self.ssh_dialog.host.push(ch),
+            1 => if ch.is_ascii_digit() { self.ssh_dialog.port.push(ch); }
+            2 => self.ssh_dialog.username.push(ch),
+            3 => {
+                match self.ssh_dialog.auth_type {
+                    crate::ssh::SshAuthType::Password => self.ssh_dialog.password.push(ch),
+                    crate::ssh::SshAuthType::Key => self.ssh_dialog.key_path.push(ch),
+                    crate::ssh::SshAuthType::Agent => {}
+                }
+            }
+            4 => self.ssh_dialog.key_passphrase.push(ch),
+            _ => {}
+        }
+    }
+
+    /// 处理 SSH 对话框退格
+    pub fn handle_ssh_dialog_backspace(&mut self) {
+        match self.ssh_dialog.focus_field {
+            0 => { self.ssh_dialog.host.pop(); }
+            1 => { self.ssh_dialog.port.pop(); }
+            2 => { self.ssh_dialog.username.pop(); }
+            3 => {
+                match self.ssh_dialog.auth_type {
+                    crate::ssh::SshAuthType::Password => { self.ssh_dialog.password.pop(); }
+                    crate::ssh::SshAuthType::Key => { self.ssh_dialog.key_path.pop(); }
+                    crate::ssh::SshAuthType::Agent => {}
+                }
+            }
+            4 => { self.ssh_dialog.key_passphrase.pop(); }
+            _ => {}
+        }
+    }
+
+    /// 处理克隆对话框键盘输入
+    pub fn handle_clone_dialog_key(&mut self, ch: char) {
+        self.clone_dialog.url.push(ch);
+    }
+
+    /// 处理克隆对话框退格
+    pub fn handle_clone_dialog_backspace(&mut self) {
+        self.clone_dialog.url.pop();
     }
 
     /// 根据当前打开的文件路径同步文件树选中状态

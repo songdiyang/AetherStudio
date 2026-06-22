@@ -172,6 +172,90 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         let mouse_y = raw_y / st.dpi_scale;
                         let layout = st.layout.clone();
 
+                        // 对话框优先拦截点击
+                        if st.ssh_dialog.visible {
+                            if let Some(action) = st.handle_ssh_dialog_click(mouse_x, mouse_y) {
+                                match action {
+                                    crate::ssh::DialogAction::Connect => {
+                                        if let Some(config) = st.ssh_dialog.to_config() {
+                                            let mut session = crate::ssh::RemoteSession::new(config);
+                                            match session.connect() {
+                                                Ok(()) => {
+                                                    st.remote_session = Some(session);
+                                                    // 尝试列出远程根目录
+                                                    if let Some(session) = st.remote_session.as_ref() {
+                                                        match session.list_current_dir() {
+                                                            Ok(entries) => {
+                                                                st.remote_file_tree = Some(crate::ssh::RemoteFileTree::from_entries("/", entries));
+                                                                st.sidebar_content = crate::layout::SidebarContent::RemoteFileTree;
+                                                                st.status_message = "SSH 连接成功".to_string();
+                                                            }
+                                                            Err(e) => {
+                                                                st.status_message = format!("SSH 连接成功，但无法列出目录: {}", e);
+                                                            }
+                                                        }
+                                                    }
+                                                    st.ssh_dialog.visible = false;
+                                                }
+                                                Err(e) => {
+                                                    st.ssh_dialog.error_message = Some(e);
+                                                }
+                                            }
+                                        } else {
+                                            st.ssh_dialog.error_message = Some("请填写主机和用户名".to_string());
+                                        }
+                                    }
+                                    crate::ssh::DialogAction::Cancel => {
+                                        st.ssh_dialog.visible = false;
+                                    }
+                                    crate::ssh::DialogAction::None => {}
+                                }
+                            }
+                            drop(st);
+                            state.borrow_mut().render();
+                            return;
+                        }
+
+                        if st.clone_dialog.visible {
+                            if let Some(action) = st.handle_clone_dialog_click(mouse_x, mouse_y) {
+                                match action {
+                                    crate::ssh::DialogAction::Connect => {
+                                        if st.clone_dialog.url.is_empty() {
+                                            st.clone_dialog.error_message = Some("请输入仓库 URL".to_string());
+                                        } else {
+                                            // 打开文件夹选择对话框
+                                            drop(st);
+                                            if let Some(target_path) = crate::dialogs::Dialogs::open_folder_dialog(hwnd, "选择克隆目标文件夹") {
+                                                let mut st = state.borrow_mut();
+                                                let url = st.clone_dialog.url.clone();
+                                                let result = crate::git::GitIntegration::clone_repo(&url, &target_path);
+                                                match result {
+                                                    Ok(_) => {
+                                                        st.clone_dialog.visible = false;
+                                                        st.status_message = format!("克隆成功: {}", target_path.display());
+                                                        st.open_folder(target_path);
+                                                    }
+                                                    Err(e) => {
+                                                        st.clone_dialog.error_message = Some(e);
+                                                    }
+                                                }
+                                            }
+                                            drop(st);
+                                            state.borrow_mut().render();
+                                            return;
+                                        }
+                                    }
+                                    crate::ssh::DialogAction::Cancel => {
+                                        st.clone_dialog.visible = false;
+                                    }
+                                    crate::ssh::DialogAction::None => {}
+                                }
+                            }
+                            drop(st);
+                            state.borrow_mut().render();
+                            return;
+                        }
+
                         // 0. 检测标题栏区域点击（包含菜单项和窗口控制按钮）
                         let titlebar_region = layout.title_bar_region();
                         if titlebar_region.contains(mouse_x, mouse_y) {
@@ -356,11 +440,13 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                             state.borrow_mut().render();
                                         }
                                         crate::welcome::WelcomeAction::CloneRepo => {
-                                            state.borrow_mut().status_message = "克隆仓库功能即将推出".to_string();
+                                            state.borrow_mut().clone_dialog.visible = true;
+                                            state.borrow_mut().clone_dialog.reset();
                                             state.borrow_mut().render();
                                         }
                                         crate::welcome::WelcomeAction::OpenRemote => {
-                                            state.borrow_mut().status_message = "SSH 连接功能即将推出".to_string();
+                                            state.borrow_mut().ssh_dialog.visible = true;
+                                            state.borrow_mut().ssh_dialog.reset();
                                             state.borrow_mut().render();
                                         }
                                         crate::welcome::WelcomeAction::OpenRecentProject(path_str) => {
@@ -400,6 +486,20 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         let mouse_x = raw_x / st.dpi_scale;
                         let mouse_y = raw_y / st.dpi_scale;
                         let layout = st.layout.clone();
+
+                        // 对话框悬停处理
+                        if st.ssh_dialog.visible {
+                            let _ = st.handle_ssh_dialog_click(mouse_x, mouse_y);
+                            drop(st);
+                            state.borrow_mut().render();
+                            return LRESULT(0);
+                        }
+                        if st.clone_dialog.visible {
+                            let _ = st.handle_clone_dialog_click(mouse_x, mouse_y);
+                            drop(st);
+                            state.borrow_mut().render();
+                            return LRESULT(0);
+                        }
 
                         // 更新标题栏区域悬停（包含菜单项和窗口控制按钮）
                         let old_titlebar_hover = st.titlebar_hover_button;
@@ -639,7 +739,27 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 state.borrow().sidebar_content == crate::layout::SidebarContent::TerminalPanel
                             }).unwrap_or(false)
                         });
-                        if command_palette_active {
+                        let ssh_dialog_active = EDITOR_STATE.with(|s| {
+                            s.borrow().as_ref().map(|state| state.borrow().ssh_dialog.visible).unwrap_or(false)
+                        });
+                        let clone_dialog_active = EDITOR_STATE.with(|s| {
+                            s.borrow().as_ref().map(|state| state.borrow().clone_dialog.visible).unwrap_or(false)
+                        });
+                        if ssh_dialog_active {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().handle_ssh_dialog_key(c);
+                                    state.borrow_mut().render();
+                                }
+                            });
+                        } else if clone_dialog_active {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().handle_clone_dialog_key(c);
+                                    state.borrow_mut().render();
+                                }
+                            });
+                        } else if command_palette_active {
                             EDITOR_STATE.with(|s| {
                                 if let Some(state) = s.borrow().as_ref() {
                                     state.borrow_mut().command_palette.append_query(c);
@@ -737,6 +857,142 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 let command_palette_active = EDITOR_STATE.with(|s| {
                     s.borrow().as_ref().map(|state| state.borrow().command_palette.visible).unwrap_or(false)
                 });
+
+                // SSH 对话框激活时优先处理键盘
+                let ssh_dialog_active = EDITOR_STATE.with(|s| {
+                    s.borrow().as_ref().map(|state| state.borrow().ssh_dialog.visible).unwrap_or(false)
+                });
+                let clone_dialog_active = EDITOR_STATE.with(|s| {
+                    s.borrow().as_ref().map(|state| state.borrow().clone_dialog.visible).unwrap_or(false)
+                });
+
+                if ssh_dialog_active {
+                    match vk {
+                        VK_ESCAPE => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().ssh_dialog.visible = false;
+                                    state.borrow_mut().render();
+                                }
+                            });
+                            return LRESULT(0);
+                        }
+                        VK_RETURN => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    let mut st = state.borrow_mut();
+                                    if let Some(config) = st.ssh_dialog.to_config() {
+                                        let mut session = crate::ssh::RemoteSession::new(config);
+                                        match session.connect() {
+                                            Ok(()) => {
+                                                st.remote_session = Some(session);
+                                                if let Some(session) = st.remote_session.as_ref() {
+                                                    match session.list_current_dir() {
+                                                        Ok(entries) => {
+                                                            st.remote_file_tree = Some(crate::ssh::RemoteFileTree::from_entries("/", entries));
+                                                            st.sidebar_content = crate::layout::SidebarContent::RemoteFileTree;
+                                                            st.status_message = "SSH 连接成功".to_string();
+                                                        }
+                                                        Err(e) => {
+                                                            st.status_message = format!("SSH 连接成功，但无法列出目录: {}", e);
+                                                        }
+                                                    }
+                                                }
+                                                st.ssh_dialog.visible = false;
+                                            }
+                                            Err(e) => {
+                                                st.ssh_dialog.error_message = Some(e);
+                                            }
+                                        }
+                                    } else {
+                                        st.ssh_dialog.error_message = Some("请填写主机和用户名".to_string());
+                                    }
+                                    drop(st);
+                                    state.borrow_mut().render();
+                                }
+                            });
+                            return LRESULT(0);
+                        }
+                        VK_TAB => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().ssh_dialog.next_field();
+                                    state.borrow_mut().render();
+                                }
+                            });
+                            return LRESULT(0);
+                        }
+                        VK_BACK => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().handle_ssh_dialog_backspace();
+                                    state.borrow_mut().render();
+                                }
+                            });
+                            return LRESULT(0);
+                        }
+                        _ => {}
+                    }
+                    return LRESULT(0);
+                }
+
+                if clone_dialog_active {
+                    match vk {
+                        VK_ESCAPE => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().clone_dialog.visible = false;
+                                    state.borrow_mut().render();
+                                }
+                            });
+                            return LRESULT(0);
+                        }
+                        VK_RETURN => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    let mut st = state.borrow_mut();
+                                    if st.clone_dialog.url.is_empty() {
+                                        st.clone_dialog.error_message = Some("请输入仓库 URL".to_string());
+                                    } else {
+                                        let url = st.clone_dialog.url.clone();
+                                        drop(st);
+                                        if let Some(target_path) = crate::dialogs::Dialogs::open_folder_dialog(hwnd, "选择克隆目标文件夹") {
+                                            let mut st = state.borrow_mut();
+                                            let result = crate::git::GitIntegration::clone_repo(&url, &target_path);
+                                            match result {
+                                                Ok(_) => {
+                                                    st.clone_dialog.visible = false;
+                                                    st.status_message = format!("克隆成功: {}", target_path.display());
+                                                    st.open_folder(target_path);
+                                                }
+                                                Err(e) => {
+                                                    st.clone_dialog.error_message = Some(e);
+                                                }
+                                            }
+                                            drop(st);
+                                            state.borrow_mut().render();
+                                            return LRESULT(0);
+                                        }
+                                    }
+                                    drop(st);
+                                    state.borrow_mut().render();
+                                }
+                            });
+                            return LRESULT(0);
+                        }
+                        VK_BACK => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().handle_clone_dialog_backspace();
+                                    state.borrow_mut().render();
+                                }
+                            });
+                            return LRESULT(0);
+                        }
+                        _ => {}
+                    }
+                    return LRESULT(0);
+                }
 
                 if command_palette_active {
                     match vk {
