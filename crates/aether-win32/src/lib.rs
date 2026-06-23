@@ -18,3 +18,4 @@ pub mod ssh;
 pub mod terminal;
 pub mod theme;
 pub mod settings;
+pub mod ai_panel;

@@ -27,6 +27,8 @@ pub struct TerminalPanel {
     pub running: bool,
     /// 工作目录
     pub cwd: String,
+    /// 是否聚焦
+    pub focused: bool,
 }
 
 impl TerminalPanel {
@@ -44,6 +46,7 @@ impl TerminalPanel {
             cwd: std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| ".".to_string()),
+            focused: false,
         }
     }
 

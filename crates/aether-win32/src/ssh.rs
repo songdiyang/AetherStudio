@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use aether_remote::ssh::{SshConfig, SshAuth, SshRemoteFs};
-use aether_remote::RemoteDirEntry;
+use aether_remote::{RemoteFs, RemoteDirEntry};
 
 /// SSH 认证类型（UI 层）
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

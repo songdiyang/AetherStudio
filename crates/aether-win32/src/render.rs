@@ -128,7 +128,7 @@ impl EditorState {
         // 3. 侧边栏（欢迎页显示时跳过，因欢迎页全屏覆盖）
         let showing_welcome = self.show_welcome();
         // 刷新终端输出
-        self.terminal_panel.flush_output();
+        self.terminal_panel.push_output("");
         if self.layout.sidebar_visible && !showing_welcome {
             self.render_sidebar(&target, &sidebar_region);
         }
@@ -330,6 +330,9 @@ impl EditorState {
                 }
                 crate::layout::SidebarContent::RemoteFileTree => {
                     self.render_remote_file_tree_sidebar(target, x, y, width, height, &text_brush);
+                }
+                crate::layout::SidebarContent::TerminalPanel => {
+                    // 终端面板在底部显示，侧边栏不渲染
                 }
             }
         }
