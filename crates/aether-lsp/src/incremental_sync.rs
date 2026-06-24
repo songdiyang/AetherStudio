@@ -1,14 +1,14 @@
 use lsp_types::*;
 
 /// 优化的增量变更计算器
-/// 
+///
 /// 使用基于PieceTable的编辑历史来精确计算LSP增量变更
 /// 避免全文对比，直接从编辑操作生成变更事件
 pub struct IncrementalChangeCalculator;
 
 impl IncrementalChangeCalculator {
     /// 从编辑操作直接生成LSP增量变更
-    /// 
+    ///
     /// 这是最高效的同步方式，无需文本对比
     pub fn from_edit_op(
         _edit_kind: EditKind,
@@ -31,7 +31,7 @@ impl IncrementalChangeCalculator {
     }
 
     /// 批量编辑优化 - 合并相邻的编辑操作
-    /// 
+    ///
     /// 减少LSP消息数量，提高同步效率
     pub fn merge_edits(
         edits: Vec<TextDocumentContentChangeEvent>,
@@ -88,7 +88,7 @@ pub trait LineIndexProvider {
 }
 
 /// 高效的行索引实现
-/// 
+///
 /// 基于预计算的行起始位置数组，支持O(1)转换
 pub struct FastLineIndex {
     line_starts: Vec<usize>,
@@ -142,14 +142,18 @@ impl LineIndexProvider for FastLineIndex {
 
     fn position_to_byte(&self, position: Position) -> usize {
         let line = position.line as usize;
-        let line_start = self.line_starts.get(line).copied().unwrap_or(self.total_bytes);
+        let line_start = self
+            .line_starts
+            .get(line)
+            .copied()
+            .unwrap_or(self.total_bytes);
         let character = position.character as usize;
         line_start + character
     }
 }
 
 /// LSP文档同步优化器
-/// 
+///
 /// 管理文档版本和增量同步状态
 pub struct OptimizedDocumentSync {
     uri: Url,
@@ -205,7 +209,10 @@ impl OptimizedDocumentSync {
     }
 
     /// 生成增量变更（从最近一次同步到现在）
-    pub fn generate_changes_since(&self, since_version: i32) -> Vec<TextDocumentContentChangeEvent> {
+    pub fn generate_changes_since(
+        &self,
+        since_version: i32,
+    ) -> Vec<TextDocumentContentChangeEvent> {
         self.edit_history
             .iter()
             .filter(|r| r.version > since_version)
@@ -254,12 +261,13 @@ impl OptimizedDocumentSync {
     /// 清理过期的历史记录
     pub fn cleanup_old_history(&mut self, max_age: std::time::Duration) {
         let now = std::time::Instant::now();
-        self.edit_history.retain(|r| now.duration_since(r.timestamp) < max_age);
+        self.edit_history
+            .retain(|r| now.duration_since(r.timestamp) < max_age);
     }
 }
 
 /// 大文件优化策略
-/// 
+///
 /// 对于超过一定大小的文件，使用特殊的同步策略
 pub struct LargeFileSyncStrategy {
     /// 大文件阈值（字节）
@@ -274,9 +282,9 @@ pub struct LargeFileSyncStrategy {
 impl LargeFileSyncStrategy {
     pub fn new() -> Self {
         Self {
-            large_file_threshold: 100_000, // 100KB
+            large_file_threshold: 100_000,       // 100KB
             change_accumulation_threshold: 1000, // 累积1000字节变更再同步
-            sync_interval_ms: 500, // 500ms同步间隔
+            sync_interval_ms: 500,               // 500ms同步间隔
         }
     }
 
@@ -319,9 +327,27 @@ mod tests {
         let text = "line1\nline2\nline3";
         let index = FastLineIndex::from_text(text);
 
-        assert_eq!(index.byte_to_position(0), Position { line: 0, character: 0 });
-        assert_eq!(index.byte_to_position(6), Position { line: 1, character: 0 });
-        assert_eq!(index.byte_to_position(7), Position { line: 1, character: 1 });
+        assert_eq!(
+            index.byte_to_position(0),
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(
+            index.byte_to_position(6),
+            Position {
+                line: 1,
+                character: 0
+            }
+        );
+        assert_eq!(
+            index.byte_to_position(7),
+            Position {
+                line: 1,
+                character: 1
+            }
+        );
     }
 
     #[test]
@@ -329,16 +355,28 @@ mod tests {
         let edits = vec![
             TextDocumentContentChangeEvent {
                 range: Some(Range {
-                    start: Position { line: 0, character: 0 },
-                    end: Position { line: 0, character: 5 },
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 5,
+                    },
                 }),
                 range_length: None,
                 text: "hello".to_string(),
             },
             TextDocumentContentChangeEvent {
                 range: Some(Range {
-                    start: Position { line: 1, character: 0 },
-                    end: Position { line: 1, character: 5 },
+                    start: Position {
+                        line: 1,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 1,
+                        character: 5,
+                    },
                 }),
                 range_length: None,
                 text: "world".to_string(),

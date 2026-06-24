@@ -2,8 +2,8 @@ use lsp_types::*;
 use std::collections::HashMap;
 use tokio::process::Child;
 
+use crate::transport::{spawn_server, LspTransport};
 use crate::types::*;
-use crate::transport::{LspTransport, spawn_server};
 
 /// 语言服务器实例管理
 /// 负责单个语言服务器的完整生命周期：发现→启动→初始化→运行→关闭
@@ -35,7 +35,7 @@ impl LanguageServer {
         let stdin = process.stdin.take().unwrap();
         let stdout = process.stdout.take().unwrap();
         let transport = LspTransport::new(stdin, stdout);
-        
+
         let mut server = Self {
             _process: process,
             transport,
@@ -47,27 +47,34 @@ impl LanguageServer {
             initialized: false,
             language_id,
         };
-        
+
         // 发送 initialize 请求
         server.initialize().await?;
-        
+
         Ok(server)
     }
 
     /// 发送 initialize 请求并等待响应
     #[allow(deprecated)]
     async fn initialize(&mut self) -> std::io::Result<()> {
-        let root_uri = self.config.root_uri.clone().unwrap_or_else(|| {
-            Url::parse("file:///").unwrap()
-        });
-        
+        let root_uri = self
+            .config
+            .root_uri
+            .clone()
+            .unwrap_or_else(|| Url::parse("file:///").unwrap());
+
         let params = InitializeParams {
             process_id: Some(std::process::id() as u32),
             root_path: None,
             root_uri: Some(root_uri.clone()),
             workspace_folders: Some(vec![WorkspaceFolder {
                 uri: root_uri.clone(),
-                name: self.config.root_uri.as_ref().map(|u| u.path().to_string()).unwrap_or_default(),
+                name: self
+                    .config
+                    .root_uri
+                    .as_ref()
+                    .map(|u| u.path().to_string())
+                    .unwrap_or_default(),
             }]),
             initialization_options: self.config.initialization_options.clone(),
             capabilities: ClientCapabilities {
@@ -98,7 +105,10 @@ impl LanguageServer {
                         completion_item: Some(CompletionItemCapability {
                             snippet_support: Some(true),
                             commit_characters_support: Some(true),
-                            documentation_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+                            documentation_format: Some(vec![
+                                MarkupKind::Markdown,
+                                MarkupKind::PlainText,
+                            ]),
                             deprecated_support: Some(true),
                             preselect_support: Some(true),
                             ..Default::default()
@@ -204,7 +214,7 @@ impl LanguageServer {
             locale: None,
             work_done_progress_params: WorkDoneProgressParams::default(),
         };
-        
+
         let id = self.id_generator.next();
         let request = LspMessage::Request(LspRequest {
             jsonrpc: "2.0".to_string(),
@@ -212,10 +222,11 @@ impl LanguageServer {
             method: "initialize".to_string(),
             params: Some(serde_json::to_value(params).unwrap()),
         });
-        
+
         self.transport.send(&request).await?;
-        self.pending_requests.insert(id.clone(), "initialize".to_string());
-        
+        self.pending_requests
+            .insert(id.clone(), "initialize".to_string());
+
         // 等待 initialize 响应
         loop {
             let message = self.transport.receive().await?;
@@ -231,7 +242,7 @@ impl LanguageServer {
                 _ => {}
             }
         }
-        
+
         // 发送 initialized 通知
         let notification = LspMessage::Notification(LspNotification {
             jsonrpc: "2.0".to_string(),
@@ -240,7 +251,7 @@ impl LanguageServer {
         });
         self.transport.send(&notification).await?;
         self.initialized = true;
-        
+
         Ok(())
     }
 
@@ -265,7 +276,13 @@ impl LanguageServer {
     }
 
     /// 打开文档
-    pub async fn open_document(&mut self, uri: Url, language_id: String, version: i32, text: String) -> std::io::Result<()> {
+    pub async fn open_document(
+        &mut self,
+        uri: Url,
+        language_id: String,
+        version: i32,
+        text: String,
+    ) -> std::io::Result<()> {
         let params = DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
                 uri: uri.clone(),
@@ -274,22 +291,25 @@ impl LanguageServer {
                 text: text.clone(),
             },
         };
-        
+
         let notification = LspMessage::Notification(LspNotification {
             jsonrpc: "2.0".to_string(),
             method: "textDocument/didOpen".to_string(),
             params: Some(serde_json::to_value(params).unwrap()),
         });
-        
+
         self.transport.send(&notification).await?;
-        
-        self.open_documents.insert(uri.clone(), DocumentState {
-            uri,
-            version,
-            language_id,
-            text,
-        });
-        
+
+        self.open_documents.insert(
+            uri.clone(),
+            DocumentState {
+                uri,
+                version,
+                language_id,
+                text,
+            },
+        );
+
         Ok(())
     }
 
@@ -298,21 +318,26 @@ impl LanguageServer {
         let params = DidCloseTextDocumentParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
         };
-        
+
         let notification = LspMessage::Notification(LspNotification {
             jsonrpc: "2.0".to_string(),
             method: "textDocument/didClose".to_string(),
             params: Some(serde_json::to_value(params).unwrap()),
         });
-        
+
         self.transport.send(&notification).await?;
         self.open_documents.remove(uri);
-        
+
         Ok(())
     }
 
     /// 发送文档变更通知（增量同步）
-    pub async fn change_document(&mut self, uri: &Url, version: i32, changes: Vec<TextDocumentContentChangeEvent>) -> std::io::Result<()> {
+    pub async fn change_document(
+        &mut self,
+        uri: &Url,
+        version: i32,
+        changes: Vec<TextDocumentContentChangeEvent>,
+    ) -> std::io::Result<()> {
         let params = DidChangeTextDocumentParams {
             text_document: VersionedTextDocumentIdentifier {
                 uri: uri.clone(),
@@ -320,24 +345,28 @@ impl LanguageServer {
             },
             content_changes: changes,
         };
-        
+
         let notification = LspMessage::Notification(LspNotification {
             jsonrpc: "2.0".to_string(),
             method: "textDocument/didChange".to_string(),
             params: Some(serde_json::to_value(params).unwrap()),
         });
-        
+
         self.transport.send(&notification).await?;
-        
+
         if let Some(doc) = self.open_documents.get_mut(uri) {
             doc.version = version;
         }
-        
+
         Ok(())
     }
 
     /// 请求代码补全
-    pub async fn request_completion(&mut self, uri: &Url, position: Position) -> std::io::Result<Option<CompletionResponse>> {
+    pub async fn request_completion(
+        &mut self,
+        uri: &Url,
+        position: Position,
+    ) -> std::io::Result<Option<CompletionResponse>> {
         let id = self.id_generator.next();
         let params = CompletionParams {
             text_document_position: TextDocumentPositionParams {
@@ -348,23 +377,27 @@ impl LanguageServer {
             partial_result_params: PartialResultParams::default(),
             context: None,
         };
-        
+
         let request = LspMessage::Request(LspRequest {
             jsonrpc: "2.0".to_string(),
             id: id.clone(),
             method: "textDocument/completion".to_string(),
             params: Some(serde_json::to_value(params).unwrap()),
         });
-        
+
         self.transport.send(&request).await?;
-        self.pending_requests.insert(id.clone(), "textDocument/completion".to_string());
-        
+        self.pending_requests
+            .insert(id.clone(), "textDocument/completion".to_string());
+
         // 等待响应（简化版：实际应在后台循环中处理）
         loop {
             let message = self.transport.receive().await?;
             match message {
                 LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp.result.map(|r| serde_json::from_value(r).unwrap()).unwrap_or(None));
+                    return Ok(resp
+                        .result
+                        .map(|r| serde_json::from_value(r).unwrap())
+                        .unwrap_or(None));
                 }
                 _ => {}
             }
@@ -372,7 +405,11 @@ impl LanguageServer {
     }
 
     /// 请求悬停提示
-    pub async fn request_hover(&mut self, uri: &Url, position: Position) -> std::io::Result<Option<Hover>> {
+    pub async fn request_hover(
+        &mut self,
+        uri: &Url,
+        position: Position,
+    ) -> std::io::Result<Option<Hover>> {
         let id = self.id_generator.next();
         let params = HoverParams {
             text_document_position_params: TextDocumentPositionParams {
@@ -381,22 +418,26 @@ impl LanguageServer {
             },
             work_done_progress_params: WorkDoneProgressParams::default(),
         };
-        
+
         let request = LspMessage::Request(LspRequest {
             jsonrpc: "2.0".to_string(),
             id: id.clone(),
             method: "textDocument/hover".to_string(),
             params: Some(serde_json::to_value(params).unwrap()),
         });
-        
+
         self.transport.send(&request).await?;
-        self.pending_requests.insert(id.clone(), "textDocument/hover".to_string());
-        
+        self.pending_requests
+            .insert(id.clone(), "textDocument/hover".to_string());
+
         loop {
             let message = self.transport.receive().await?;
             match message {
                 LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp.result.map(|r| serde_json::from_value(r).unwrap()).unwrap_or(None));
+                    return Ok(resp
+                        .result
+                        .map(|r| serde_json::from_value(r).unwrap())
+                        .unwrap_or(None));
                 }
                 _ => {}
             }
@@ -404,7 +445,11 @@ impl LanguageServer {
     }
 
     /// 请求跳转到定义
-    pub async fn request_definition(&mut self, uri: &Url, position: Position) -> std::io::Result<Option<GotoDefinitionResponse>> {
+    pub async fn request_definition(
+        &mut self,
+        uri: &Url,
+        position: Position,
+    ) -> std::io::Result<Option<GotoDefinitionResponse>> {
         let id = self.id_generator.next();
         let params = GotoDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
@@ -414,22 +459,26 @@ impl LanguageServer {
             work_done_progress_params: WorkDoneProgressParams::default(),
             partial_result_params: PartialResultParams::default(),
         };
-        
+
         let request = LspMessage::Request(LspRequest {
             jsonrpc: "2.0".to_string(),
             id: id.clone(),
             method: "textDocument/definition".to_string(),
             params: Some(serde_json::to_value(params).unwrap()),
         });
-        
+
         self.transport.send(&request).await?;
-        self.pending_requests.insert(id.clone(), "textDocument/definition".to_string());
-        
+        self.pending_requests
+            .insert(id.clone(), "textDocument/definition".to_string());
+
         loop {
             let message = self.transport.receive().await?;
             match message {
                 LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp.result.map(|r| serde_json::from_value(r).unwrap()).unwrap_or(None));
+                    return Ok(resp
+                        .result
+                        .map(|r| serde_json::from_value(r).unwrap())
+                        .unwrap_or(None));
                 }
                 _ => {}
             }
@@ -441,7 +490,7 @@ impl LanguageServer {
         if !self.initialized {
             return Ok(());
         }
-        
+
         let id = self.id_generator.next();
         let request = LspMessage::Request(LspRequest {
             jsonrpc: "2.0".to_string(),
@@ -449,9 +498,9 @@ impl LanguageServer {
             method: "shutdown".to_string(),
             params: None,
         });
-        
+
         self.transport.send(&request).await?;
-        
+
         // 等待 shutdown 响应
         loop {
             let message = self.transport.receive().await?;
@@ -462,7 +511,7 @@ impl LanguageServer {
                 _ => {}
             }
         }
-        
+
         // 发送 exit 通知
         let notification = LspMessage::Notification(LspNotification {
             jsonrpc: "2.0".to_string(),
@@ -471,7 +520,7 @@ impl LanguageServer {
         });
         self.transport.send(&notification).await?;
         self.initialized = false;
-        
+
         Ok(())
     }
 
@@ -496,7 +545,12 @@ impl LanguageServer {
     }
 
     /// 请求查找引用
-    pub async fn request_references(&mut self, uri: &Url, position: Position, include_declaration: bool) -> std::io::Result<Option<Vec<Location>>> {
+    pub async fn request_references(
+        &mut self,
+        uri: &Url,
+        position: Position,
+        include_declaration: bool,
+    ) -> std::io::Result<Option<Vec<Location>>> {
         let id = self.id_generator.next();
         let params = ReferenceParams {
             text_document_position: TextDocumentPositionParams {
@@ -518,13 +572,17 @@ impl LanguageServer {
         });
 
         self.transport.send(&request).await?;
-        self.pending_requests.insert(id.clone(), "textDocument/references".to_string());
+        self.pending_requests
+            .insert(id.clone(), "textDocument/references".to_string());
 
         loop {
             let message = self.transport.receive().await?;
             match message {
                 LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp.result.map(|r| serde_json::from_value(r).unwrap()).unwrap_or(None));
+                    return Ok(resp
+                        .result
+                        .map(|r| serde_json::from_value(r).unwrap())
+                        .unwrap_or(None));
                 }
                 _ => {}
             }
@@ -532,7 +590,12 @@ impl LanguageServer {
     }
 
     /// 请求重命名
-    pub async fn request_rename(&mut self, uri: &Url, position: Position, new_name: String) -> std::io::Result<Option<WorkspaceEdit>> {
+    pub async fn request_rename(
+        &mut self,
+        uri: &Url,
+        position: Position,
+        new_name: String,
+    ) -> std::io::Result<Option<WorkspaceEdit>> {
         let id = self.id_generator.next();
         let params = RenameParams {
             text_document_position: TextDocumentPositionParams {
@@ -551,13 +614,17 @@ impl LanguageServer {
         });
 
         self.transport.send(&request).await?;
-        self.pending_requests.insert(id.clone(), "textDocument/rename".to_string());
+        self.pending_requests
+            .insert(id.clone(), "textDocument/rename".to_string());
 
         loop {
             let message = self.transport.receive().await?;
             match message {
                 LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp.result.map(|r| serde_json::from_value(r).unwrap()).unwrap_or(None));
+                    return Ok(resp
+                        .result
+                        .map(|r| serde_json::from_value(r).unwrap())
+                        .unwrap_or(None));
                 }
                 _ => {}
             }
@@ -565,7 +632,12 @@ impl LanguageServer {
     }
 
     /// 请求代码操作
-    pub async fn request_code_actions(&mut self, uri: &Url, range: Range, diagnostics: Vec<Diagnostic>) -> std::io::Result<Option<CodeActionResponse>> {
+    pub async fn request_code_actions(
+        &mut self,
+        uri: &Url,
+        range: Range,
+        diagnostics: Vec<Diagnostic>,
+    ) -> std::io::Result<Option<CodeActionResponse>> {
         let id = self.id_generator.next();
         let params = CodeActionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -587,13 +659,17 @@ impl LanguageServer {
         });
 
         self.transport.send(&request).await?;
-        self.pending_requests.insert(id.clone(), "textDocument/codeAction".to_string());
+        self.pending_requests
+            .insert(id.clone(), "textDocument/codeAction".to_string());
 
         loop {
             let message = self.transport.receive().await?;
             match message {
                 LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp.result.map(|r| serde_json::from_value(r).unwrap()).unwrap_or(None));
+                    return Ok(resp
+                        .result
+                        .map(|r| serde_json::from_value(r).unwrap())
+                        .unwrap_or(None));
                 }
                 _ => {}
             }
@@ -601,7 +677,11 @@ impl LanguageServer {
     }
 
     /// 请求格式化
-    pub async fn request_formatting(&mut self, uri: &Url, options: FormattingOptions) -> std::io::Result<Option<Vec<TextEdit>>> {
+    pub async fn request_formatting(
+        &mut self,
+        uri: &Url,
+        options: FormattingOptions,
+    ) -> std::io::Result<Option<Vec<TextEdit>>> {
         let id = self.id_generator.next();
         let params = DocumentFormattingParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -617,13 +697,17 @@ impl LanguageServer {
         });
 
         self.transport.send(&request).await?;
-        self.pending_requests.insert(id.clone(), "textDocument/formatting".to_string());
+        self.pending_requests
+            .insert(id.clone(), "textDocument/formatting".to_string());
 
         loop {
             let message = self.transport.receive().await?;
             match message {
                 LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp.result.map(|r| serde_json::from_value(r).unwrap()).unwrap_or(None));
+                    return Ok(resp
+                        .result
+                        .map(|r| serde_json::from_value(r).unwrap())
+                        .unwrap_or(None));
                 }
                 _ => {}
             }
@@ -661,7 +745,10 @@ impl LanguageServer {
     }
 
     /// 请求完整语义令牌
-    pub async fn request_semantic_tokens_full(&mut self, uri: &Url) -> std::io::Result<Option<SemanticTokens>> {
+    pub async fn request_semantic_tokens_full(
+        &mut self,
+        uri: &Url,
+    ) -> std::io::Result<Option<SemanticTokens>> {
         let id = self.id_generator.next();
         let params = SemanticTokensParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -677,13 +764,17 @@ impl LanguageServer {
         });
 
         self.transport.send(&request).await?;
-        self.pending_requests.insert(id.clone(), "textDocument/semanticTokens/full".to_string());
+        self.pending_requests
+            .insert(id.clone(), "textDocument/semanticTokens/full".to_string());
 
         loop {
             let message = self.transport.receive().await?;
             match message {
                 LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp.result.map(|r| serde_json::from_value(r).unwrap()).unwrap_or(None));
+                    return Ok(resp
+                        .result
+                        .map(|r| serde_json::from_value(r).unwrap())
+                        .unwrap_or(None));
                 }
                 _ => {}
             }
@@ -691,7 +782,11 @@ impl LanguageServer {
     }
 
     /// 请求语义令牌delta更新
-    pub async fn request_semantic_tokens_delta(&mut self, uri: &Url, previous_result_id: String) -> std::io::Result<Option<SemanticTokensDelta>> {
+    pub async fn request_semantic_tokens_delta(
+        &mut self,
+        uri: &Url,
+        previous_result_id: String,
+    ) -> std::io::Result<Option<SemanticTokensDelta>> {
         let id = self.id_generator.next();
         let params = SemanticTokensDeltaParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -708,13 +803,19 @@ impl LanguageServer {
         });
 
         self.transport.send(&request).await?;
-        self.pending_requests.insert(id.clone(), "textDocument/semanticTokens/full/delta".to_string());
+        self.pending_requests.insert(
+            id.clone(),
+            "textDocument/semanticTokens/full/delta".to_string(),
+        );
 
         loop {
             let message = self.transport.receive().await?;
             match message {
                 LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp.result.map(|r| serde_json::from_value(r).unwrap()).unwrap_or(None));
+                    return Ok(resp
+                        .result
+                        .map(|r| serde_json::from_value(r).unwrap())
+                        .unwrap_or(None));
                 }
                 _ => {}
             }
@@ -722,7 +823,11 @@ impl LanguageServer {
     }
 
     /// 请求范围语义令牌
-    pub async fn request_semantic_tokens_range(&mut self, uri: &Url, range: Range) -> std::io::Result<Option<SemanticTokens>> {
+    pub async fn request_semantic_tokens_range(
+        &mut self,
+        uri: &Url,
+        range: Range,
+    ) -> std::io::Result<Option<SemanticTokens>> {
         let id = self.id_generator.next();
         let params = SemanticTokensRangeParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -739,13 +844,17 @@ impl LanguageServer {
         });
 
         self.transport.send(&request).await?;
-        self.pending_requests.insert(id.clone(), "textDocument/semanticTokens/range".to_string());
+        self.pending_requests
+            .insert(id.clone(), "textDocument/semanticTokens/range".to_string());
 
         loop {
             let message = self.transport.receive().await?;
             match message {
                 LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp.result.map(|r| serde_json::from_value(r).unwrap()).unwrap_or(None));
+                    return Ok(resp
+                        .result
+                        .map(|r| serde_json::from_value(r).unwrap())
+                        .unwrap_or(None));
                 }
                 _ => {}
             }
@@ -753,7 +862,11 @@ impl LanguageServer {
     }
 
     /// 请求内联提示
-    pub async fn request_inlay_hints(&mut self, uri: &Url, range: Range) -> std::io::Result<Option<Vec<InlayHint>>> {
+    pub async fn request_inlay_hints(
+        &mut self,
+        uri: &Url,
+        range: Range,
+    ) -> std::io::Result<Option<Vec<InlayHint>>> {
         let id = self.id_generator.next();
         let params = InlayHintParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -769,13 +882,17 @@ impl LanguageServer {
         });
 
         self.transport.send(&request).await?;
-        self.pending_requests.insert(id.clone(), "textDocument/inlayHint".to_string());
+        self.pending_requests
+            .insert(id.clone(), "textDocument/inlayHint".to_string());
 
         loop {
             let message = self.transport.receive().await?;
             match message {
                 LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp.result.map(|r| serde_json::from_value(r).unwrap()).unwrap_or(None));
+                    return Ok(resp
+                        .result
+                        .map(|r| serde_json::from_value(r).unwrap())
+                        .unwrap_or(None));
                 }
                 _ => {}
             }

@@ -2,10 +2,10 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM, RECT};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
-use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
+use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dialogs::Dialogs;
 use crate::editor::EditorState;
@@ -115,7 +115,8 @@ pub fn run() {
             None,
             instance,
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         // 启用 DWM Acrylic / Mica 效果
         enable_dwm_acrylic(hwnd);
@@ -265,12 +266,12 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             let close_x = titlebar_region.x + titlebar_region.width - btn_width;
                             let maximize_x = close_x - btn_width;
                             let minimize_x = maximize_x - btn_width;
-                            
+
                             // 先检测是否点击了窗口控制按钮区域
                             let panel_btn_width = 32.0;
                             let right_panel_btn_x = minimize_x - panel_btn_width;
                             let bottom_panel_btn_x = right_panel_btn_x - panel_btn_width;
-                            
+
                             if mouse_x >= minimize_x {
                                 if mouse_x >= close_x {
                                     // 关闭窗口
@@ -306,7 +307,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 state.borrow_mut().render();
                                 return;
                             }
-                            
+
                             // 检测是否点击了菜单项
                             if let Some(idx) = st.menu_bar.hit_test(mouse_x, mouse_y - titlebar_region.y, titlebar_region.height) {
                                 let was_active = st.menu_bar.active_index == Some(idx);
@@ -318,7 +319,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 state.borrow_mut().render();
                                 return;
                             }
-                            
+
                             // 标题栏拖动开始（点击了标题栏但非按钮/菜单区域）
                             st.menu_bar.close_all();
                             drop(st);
@@ -393,7 +394,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         if sidebar_region.contains(mouse_x, mouse_y) {
                             let sidebar_rel_x = mouse_x - sidebar_region.x;
                             let sidebar_rel_y = mouse_y - sidebar_region.y;
-                            
+
                             if st.sidebar_content == crate::layout::SidebarContent::SettingsPanel {
                                 let mut handled = false;
                                 if let Some(field) = st.settings_panel.hit_test_field(sidebar_rel_x, sidebar_rel_y) {
@@ -652,12 +653,12 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             let close_x = titlebar_region.x + titlebar_region.width - btn_width;
                             let maximize_x = close_x - btn_width;
                             let minimize_x = maximize_x - btn_width;
-                            
+
                             // 检测窗口控制按钮悬停
                             let panel_btn_width = 32.0;
                             let right_panel_btn_x = minimize_x - panel_btn_width;
                             let bottom_panel_btn_x = right_panel_btn_x - panel_btn_width;
-                            
+
                             if mouse_x >= minimize_x {
                                 if mouse_x >= close_x {
                                     st.titlebar_hover_button = Some(2);
@@ -682,10 +683,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         let old_menu_hover = st.menu_bar.hover_index;
                         if titlebar_region.contains(mouse_x, mouse_y) {
                             let btn_width = 46.0;
-                            let minimize_x = titlebar_region.x + titlebar_region.width - btn_width * 3.0;
+                            let minimize_x =
+                                titlebar_region.x + titlebar_region.width - btn_width * 3.0;
                             // 只有在非按钮区域才检测菜单悬停
                             if mouse_x < minimize_x {
-                                st.menu_bar.hover_index = st.menu_bar.hit_test(mouse_x, mouse_y - titlebar_region.y, titlebar_region.height);
+                                st.menu_bar.hover_index = st.menu_bar.hit_test(
+                                    mouse_x,
+                                    mouse_y - titlebar_region.y,
+                                    titlebar_region.height,
+                                );
                             } else {
                                 st.menu_bar.hover_index = None;
                             }
@@ -696,7 +702,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
                         // 更新活动栏悬停
                         let activity_region = layout.activity_bar_region();
-                        st.activity_bar.hover_index = st.activity_bar.hit_test(mouse_x, mouse_y, activity_region.y);
+                        st.activity_bar.hover_index =
+                            st.activity_bar
+                                .hit_test(mouse_x, mouse_y, activity_region.y);
 
                         // 更新标签栏悬停状态
                         let editor_content = layout.editor_content_region(st.tab_count() > 1);
@@ -711,7 +719,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             if st.sidebar_content == crate::layout::SidebarContent::SettingsPanel {
                                 false
                             } else {
-                                st.update_file_tree_hover(mouse_x - sidebar_region.x, mouse_y - sidebar_region.y)
+                                st.update_file_tree_hover(
+                                    mouse_x - sidebar_region.x,
+                                    mouse_y - sidebar_region.y,
+                                )
                             }
                         } else {
                             let old = st.hover_file_node.take();
@@ -725,7 +736,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             let old_hover = st.settings_panel.hover_button.clone();
                             let rel_x = mouse_x - sidebar_region.x;
                             let rel_y = mouse_y - sidebar_region.y;
-                            st.settings_panel.hover_button = st.settings_panel.hit_test_button(rel_x, rel_y);
+                            st.settings_panel.hover_button =
+                                st.settings_panel.hit_test_button(rel_x, rel_y);
                             old_hover != st.settings_panel.hover_button
                         } else {
                             false
@@ -750,7 +762,11 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 let row = i / 2;
                                 let bx = margin + col as f32 * (btn_w + btn_gap);
                                 let by = action_start_y + row as f32 * (btn_h + 6.0);
-                                if rel_x >= bx && rel_x < bx + btn_w && rel_y >= by && rel_y < by + btn_h {
+                                if rel_x >= bx
+                                    && rel_x < bx + btn_w
+                                    && rel_y >= by
+                                    && rel_y < by + btn_h
+                                {
                                     new_hover = Some(*action);
                                     break;
                                 }
@@ -761,9 +777,12 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             let apply_btn_h = 24.0;
                             let apply_btn_x = sidebar_region.width - margin - apply_btn_w;
                             let old_apply_hover = st.ai_panel.hover_apply_button;
-                            st.ai_panel.hover_apply_button = rel_x >= apply_btn_x && rel_x < apply_btn_x + apply_btn_w &&
-                                rel_y >= apply_y && rel_y < apply_y + apply_btn_h;
-                            let apply_hover_changed = old_apply_hover != st.ai_panel.hover_apply_button;
+                            st.ai_panel.hover_apply_button = rel_x >= apply_btn_x
+                                && rel_x < apply_btn_x + apply_btn_w
+                                && rel_y >= apply_y
+                                && rel_y < apply_y + apply_btn_h;
+                            let apply_hover_changed =
+                                old_apply_hover != st.ai_panel.hover_apply_button;
                             old_hover != new_hover || apply_hover_changed
                         } else {
                             let old = st.ai_panel.hover_apply_button;
@@ -773,21 +792,33 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
                         // 检测右侧面板拖拽边框（编辑器右边缘）
                         let editor_region = layout.editor_region();
-                        let right_panel_resize_zone = layout.right_panel_visible &&
-                            (mouse_x >= editor_region.right() - 4.0 && mouse_x <= editor_region.right() + 4.0) &&
-                            mouse_y >= editor_region.y && mouse_y < editor_region.y + editor_region.height;
+                        let right_panel_resize_zone = layout.right_panel_visible
+                            && (mouse_x >= editor_region.right() - 4.0
+                                && mouse_x <= editor_region.right() + 4.0)
+                            && mouse_y >= editor_region.y
+                            && mouse_y < editor_region.y + editor_region.height;
 
                         // 检测底部面板拖拽边框（编辑器底部边缘）
-                        let bottom_panel_resize_zone = layout.bottom_panel_visible &&
-                            (mouse_y >= editor_region.bottom() - 4.0 && mouse_y <= editor_region.bottom() + 4.0) &&
-                            mouse_x >= editor_region.x && mouse_x < editor_region.x + editor_region.width;
+                        let bottom_panel_resize_zone = layout.bottom_panel_visible
+                            && (mouse_y >= editor_region.bottom() - 4.0
+                                && mouse_y <= editor_region.bottom() + 4.0)
+                            && mouse_x >= editor_region.x
+                            && mouse_x < editor_region.x + editor_region.width;
 
                         // 设置拖拽光标
                         if right_panel_resize_zone || st.layout.right_panel_resizing {
-                            let hcursor = windows::Win32::UI::WindowsAndMessaging::LoadCursorW(None, windows::Win32::UI::WindowsAndMessaging::IDC_SIZEWE).unwrap_or_default();
+                            let hcursor = windows::Win32::UI::WindowsAndMessaging::LoadCursorW(
+                                None,
+                                windows::Win32::UI::WindowsAndMessaging::IDC_SIZEWE,
+                            )
+                            .unwrap_or_default();
                             let _ = windows::Win32::UI::WindowsAndMessaging::SetCursor(hcursor);
                         } else if bottom_panel_resize_zone || st.layout.bottom_panel_resizing {
-                            let hcursor = windows::Win32::UI::WindowsAndMessaging::LoadCursorW(None, windows::Win32::UI::WindowsAndMessaging::IDC_SIZENS).unwrap_or_default();
+                            let hcursor = windows::Win32::UI::WindowsAndMessaging::LoadCursorW(
+                                None,
+                                windows::Win32::UI::WindowsAndMessaging::IDC_SIZENS,
+                            )
+                            .unwrap_or_default();
                             let _ = windows::Win32::UI::WindowsAndMessaging::SetCursor(hcursor);
                         }
 
@@ -808,11 +839,22 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             }
                         }
 
-                        if old_menu_hover != new_menu_hover || old_hover != new_hover || old_titlebar_hover != new_titlebar_hover || tree_hover_changed || settings_hover_changed || ai_hover_changed {
+                        if old_menu_hover != new_menu_hover
+                            || old_hover != new_hover
+                            || old_titlebar_hover != new_titlebar_hover
+                            || tree_hover_changed
+                            || settings_hover_changed
+                            || ai_hover_changed
+                        {
                             drop(st);
                             state.borrow_mut().render();
                         } else if is_dragging {
-                            st.set_cursor_from_mouse(mouse_x, mouse_y, editor_content.x, editor_content.y);
+                            st.set_cursor_from_mouse(
+                                mouse_x,
+                                mouse_y,
+                                editor_content.x,
+                                editor_content.y,
+                            );
                             st.update_selection();
                             drop(st);
                             state.borrow_mut().render();
@@ -869,8 +911,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     let suggested_rect: *const RECT = lparam.0 as *const RECT;
                     let rect = &*suggested_rect;
                     let _ = SetWindowPos(
-                        hwnd, None,
-                        rect.left, rect.top,
+                        hwnd,
+                        None,
+                        rect.left,
+                        rect.top,
                         rect.right - rect.left,
                         rect.bottom - rect.top,
                         SWP_NOZORDER | SWP_NOACTIVATE,
@@ -882,7 +926,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         let mut st = state.borrow_mut();
                         st.dpi_scale = new_scale;
                         st.render_ctx.set_dpi(new_dpi);
-                        st.status_message = format!("DPI: {} ({}%)", new_dpi as u32, (new_scale * 100.0) as u32);
+                        st.status_message =
+                            format!("DPI: {} ({}%)", new_dpi as u32, (new_scale * 100.0) as u32);
                         drop(st);
                         state.borrow_mut().render();
                     }
@@ -913,13 +958,21 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
                     let mut result = HTCLIENT;
                     if top < border_size {
-                        if left < border_size { result = HTTOPLEFT; }
-                        else if right < border_size { result = HTTOPRIGHT; }
-                        else { result = HTTOP; }
+                        if left < border_size {
+                            result = HTTOPLEFT;
+                        } else if right < border_size {
+                            result = HTTOPRIGHT;
+                        } else {
+                            result = HTTOP;
+                        }
                     } else if bottom < border_size {
-                        if left < border_size { result = HTBOTTOMLEFT; }
-                        else if right < border_size { result = HTBOTTOMRIGHT; }
-                        else { result = HTBOTTOM; }
+                        if left < border_size {
+                            result = HTBOTTOMLEFT;
+                        } else if right < border_size {
+                            result = HTBOTTOMRIGHT;
+                        } else {
+                            result = HTBOTTOM;
+                        }
                     } else if left < border_size {
                         result = HTLEFT;
                     } else if right < border_size {
@@ -953,7 +1006,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     if let Some(c) = char::from_u32(ch as u32) {
                         // Settings panel active field routing
                         let settings_field_active = EDITOR_STATE.with(|s| {
-                            s.borrow().as_ref().map(|state| state.borrow().settings_panel.active_field.is_some()).unwrap_or(false)
+                            s.borrow()
+                                .as_ref()
+                                .map(|state| state.borrow().settings_panel.active_field.is_some())
+                                .unwrap_or(false)
                         });
                         if settings_field_active {
                             EDITOR_STATE.with(|s| {
@@ -967,19 +1023,29 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
                         // 命令面板激活时，输入字符进入搜索框
                         let command_palette_active = EDITOR_STATE.with(|s| {
-                            s.borrow().as_ref().map(|state| state.borrow().command_palette.visible).unwrap_or(false)
+                            s.borrow()
+                                .as_ref()
+                                .map(|state| state.borrow().command_palette.visible)
+                                .unwrap_or(false)
                         });
                         // 终端面板激活时，输入字符进入终端
                         let terminal_active = EDITOR_STATE.with(|s| {
-                            s.borrow().as_ref().map(|state| {
-                                state.borrow().terminal_panel.focused
-                            }).unwrap_or(false)
+                            s.borrow()
+                                .as_ref()
+                                .map(|state| state.borrow().terminal_panel.focused)
+                                .unwrap_or(false)
                         });
                         let ssh_dialog_active = EDITOR_STATE.with(|s| {
-                            s.borrow().as_ref().map(|state| state.borrow().ssh_dialog.visible).unwrap_or(false)
+                            s.borrow()
+                                .as_ref()
+                                .map(|state| state.borrow().ssh_dialog.visible)
+                                .unwrap_or(false)
                         });
                         let clone_dialog_active = EDITOR_STATE.with(|s| {
-                            s.borrow().as_ref().map(|state| state.borrow().clone_dialog.visible).unwrap_or(false)
+                            s.borrow()
+                                .as_ref()
+                                .map(|state| state.borrow().clone_dialog.visible)
+                                .unwrap_or(false)
                         });
                         if ssh_dialog_active {
                             EDITOR_STATE.with(|s| {
@@ -1003,9 +1069,14 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 }
                             });
                         } else if EDITOR_STATE.with(|s| {
-                            s.borrow().as_ref().map(|state| {
-                                state.borrow().find_visible && state.borrow().find_focus != crate::editor::FindReplaceFocus::None
-                            }).unwrap_or(false)
+                            s.borrow()
+                                .as_ref()
+                                .map(|state| {
+                                    state.borrow().find_visible
+                                        && state.borrow().find_focus
+                                            != crate::editor::FindReplaceFocus::None
+                                })
+                                .unwrap_or(false)
                         }) {
                             EDITOR_STATE.with(|s| {
                                 if let Some(state) = s.borrow().as_ref() {
@@ -1019,8 +1090,12 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                                 let (line, col) = state.borrow().find_results[0];
                                                 state.borrow_mut().cursor_line = line;
                                                 state.borrow_mut().cursor_col = col;
-                                                state.borrow_mut().selection_start = Some((line, col));
-                                                state.borrow_mut().selection_end = Some((line, col + state.borrow().find_query.len()));
+                                                state.borrow_mut().selection_start =
+                                                    Some((line, col));
+                                                state.borrow_mut().selection_end = Some((
+                                                    line,
+                                                    col + state.borrow().find_query.len(),
+                                                ));
                                             }
                                         }
                                         crate::editor::FindReplaceFocus::ReplaceText => {
@@ -1040,9 +1115,13 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 }
                             });
                         } else if EDITOR_STATE.with(|s| {
-                            s.borrow().as_ref().map(|state| {
-                                state.borrow().sidebar_content == crate::layout::SidebarContent::AiAssistantPanel
-                            }).unwrap_or(false)
+                            s.borrow()
+                                .as_ref()
+                                .map(|state| {
+                                    state.borrow().sidebar_content
+                                        == crate::layout::SidebarContent::AiAssistantPanel
+                                })
+                                .unwrap_or(false)
                         }) {
                             EDITOR_STATE.with(|s| {
                                 if let Some(state) = s.borrow().as_ref() {
@@ -1069,7 +1148,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
                 // Settings field active - intercept keyboard input
                 let settings_field_active = EDITOR_STATE.with(|s| {
-                    s.borrow().as_ref().map(|state| state.borrow().settings_panel.active_field.is_some()).unwrap_or(false)
+                    s.borrow()
+                        .as_ref()
+                        .map(|state| state.borrow().settings_panel.active_field.is_some())
+                        .unwrap_or(false)
                 });
                 if settings_field_active {
                     match vk {
@@ -1131,15 +1213,24 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
                 // 命令面板激活时优先处理键盘导航
                 let command_palette_active = EDITOR_STATE.with(|s| {
-                    s.borrow().as_ref().map(|state| state.borrow().command_palette.visible).unwrap_or(false)
+                    s.borrow()
+                        .as_ref()
+                        .map(|state| state.borrow().command_palette.visible)
+                        .unwrap_or(false)
                 });
 
                 // SSH 对话框激活时优先处理键盘
                 let ssh_dialog_active = EDITOR_STATE.with(|s| {
-                    s.borrow().as_ref().map(|state| state.borrow().ssh_dialog.visible).unwrap_or(false)
+                    s.borrow()
+                        .as_ref()
+                        .map(|state| state.borrow().ssh_dialog.visible)
+                        .unwrap_or(false)
                 });
                 let clone_dialog_active = EDITOR_STATE.with(|s| {
-                    s.borrow().as_ref().map(|state| state.borrow().clone_dialog.visible).unwrap_or(false)
+                    s.borrow()
+                        .as_ref()
+                        .map(|state| state.borrow().clone_dialog.visible)
+                        .unwrap_or(false)
                 });
 
                 if ssh_dialog_active {
@@ -1228,19 +1319,31 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 if let Some(state) = s.borrow().as_ref() {
                                     let mut st = state.borrow_mut();
                                     if st.clone_dialog.url.is_empty() {
-                                        st.clone_dialog.error_message = Some("请输入仓库 URL".to_string());
+                                        st.clone_dialog.error_message =
+                                            Some("请输入仓库 URL".to_string());
                                         drop(st);
                                         state.borrow_mut().render();
                                     } else {
                                         let url = st.clone_dialog.url.clone();
                                         drop(st);
-                                        if let Some(target_path) = crate::dialogs::Dialogs::open_folder_dialog(hwnd, "选择克隆目标文件夹") {
+                                        if let Some(target_path) =
+                                            crate::dialogs::Dialogs::open_folder_dialog(
+                                                hwnd,
+                                                "选择克隆目标文件夹",
+                                            )
+                                        {
                                             let mut st = state.borrow_mut();
-                                            let result = crate::git::GitIntegration::clone_repo(&url, &target_path);
+                                            let result = crate::git::GitIntegration::clone_repo(
+                                                &url,
+                                                &target_path,
+                                            );
                                             match result {
                                                 Ok(_) => {
                                                     st.clone_dialog.visible = false;
-                                                    st.status_message = format!("克隆成功: {}", target_path.display());
+                                                    st.status_message = format!(
+                                                        "克隆成功: {}",
+                                                        target_path.display()
+                                                    );
                                                     st.open_folder(target_path);
                                                 }
                                                 Err(e) => {
@@ -1287,7 +1390,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         VK_RETURN => {
                             EDITOR_STATE.with(|s| {
                                 if let Some(state) = s.borrow().as_ref() {
-                                    if let Some(cmd) = state.borrow().command_palette.selected_command() {
+                                    if let Some(cmd) =
+                                        state.borrow().command_palette.selected_command()
+                                    {
                                         let hwnd = state.borrow().hwnd;
                                         state.borrow_mut().execute_command(cmd, hwnd);
                                     }
@@ -1331,7 +1436,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 if ctrl {
                     match vk {
                         VK_O => {
-                            if let Some(path) = Dialogs::open_file_dialog(hwnd, "打开文件", &[]) {
+                            if let Some(path) = Dialogs::open_file_dialog(hwnd, "打开文件", &[])
+                            {
                                 EDITOR_STATE.with(|s| {
                                     if let Some(state) = s.borrow().as_ref() {
                                         state.borrow_mut().load_file(path);
@@ -1341,7 +1447,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             }
                         }
                         VK_K => {
-                            if let Some(path) = Dialogs::open_folder_dialog(hwnd, "打开文件夹") {
+                            if let Some(path) = Dialogs::open_folder_dialog(hwnd, "打开文件夹")
+                            {
                                 EDITOR_STATE.with(|s| {
                                     if let Some(state) = s.borrow().as_ref() {
                                         state.borrow_mut().open_folder(path);
@@ -1352,7 +1459,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         }
                         VK_S => {
                             if shift {
-                                if let Some(path) = Dialogs::save_file_dialog(hwnd, "另存为", "untitled.txt") {
+                                if let Some(path) =
+                                    Dialogs::save_file_dialog(hwnd, "另存为", "untitled.txt")
+                                {
                                     EDITOR_STATE.with(|s| {
                                         if let Some(state) = s.borrow().as_ref() {
                                             state.borrow_mut().save_as(path);
@@ -1362,10 +1471,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 }
                             } else {
                                 let need_dialog = EDITOR_STATE.with(|s| {
-                                    s.borrow().as_ref().map(|state| state.borrow().file_path.is_none()).unwrap_or(true)
+                                    s.borrow()
+                                        .as_ref()
+                                        .map(|state| state.borrow().file_path.is_none())
+                                        .unwrap_or(true)
                                 });
                                 if need_dialog {
-                                    if let Some(path) = Dialogs::save_file_dialog(hwnd, "保存文件", "untitled.txt") {
+                                    if let Some(path) =
+                                        Dialogs::save_file_dialog(hwnd, "保存文件", "untitled.txt")
+                                    {
                                         EDITOR_STATE.with(|s| {
                                             if let Some(state) = s.borrow().as_ref() {
                                                 state.borrow_mut().save_as(path);
@@ -1457,10 +1571,18 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             EDITOR_STATE.with(|s| {
                                 if let Some(state) = s.borrow().as_ref() {
                                     state.borrow_mut().layout.toggle_bottom_panel();
-                                    if state.borrow().layout.bottom_panel_visible && !state.borrow().terminal_panel.running {
+                                    if state.borrow().layout.bottom_panel_visible
+                                        && !state.borrow().terminal_panel.running
+                                    {
                                         let _ = state.borrow_mut().terminal_panel.start();
                                     }
-                                    state.borrow_mut().status_message = if state.borrow().layout.bottom_panel_visible { "终端已打开 (Ctrl+` 关闭)" } else { "终端已关闭" }.to_string();
+                                    state.borrow_mut().status_message =
+                                        if state.borrow().layout.bottom_panel_visible {
+                                            "终端已打开 (Ctrl+` 关闭)"
+                                        } else {
+                                            "终端已关闭"
+                                        }
+                                        .to_string();
                                     state.borrow_mut().render();
                                 }
                             });
@@ -1471,12 +1593,17 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 EDITOR_STATE.with(|s| {
                                     if let Some(state) = s.borrow().as_ref() {
                                         let mut st = state.borrow_mut();
-                                        if st.sidebar_content == crate::layout::SidebarContent::AiAssistantPanel && st.layout.sidebar_visible {
+                                        if st.sidebar_content
+                                            == crate::layout::SidebarContent::AiAssistantPanel
+                                            && st.layout.sidebar_visible
+                                        {
                                             st.layout.sidebar_visible = false;
                                             st.status_message = "AI 面板已关闭".to_string();
                                         } else {
-                                            st.activity_view = crate::layout::ActivityBarView::AiAssistant;
-                                            st.sidebar_content = crate::layout::SidebarContent::AiAssistantPanel;
+                                            st.activity_view =
+                                                crate::layout::ActivityBarView::AiAssistant;
+                                            st.sidebar_content =
+                                                crate::layout::SidebarContent::AiAssistantPanel;
                                             st.layout.sidebar_visible = true;
                                             st.status_message = "AI 面板已打开".to_string();
                                         }
@@ -1560,15 +1687,79 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                 }
                             });
                         }
-                        VK_1 | VK_NUMPAD1 => { EDITOR_STATE.with(|s| { if let Some(state) = s.borrow().as_ref() { state.borrow_mut().goto_tab(1); state.borrow_mut().render(); } }); }
-                        VK_2 | VK_NUMPAD2 => { EDITOR_STATE.with(|s| { if let Some(state) = s.borrow().as_ref() { state.borrow_mut().goto_tab(2); state.borrow_mut().render(); } }); }
-                        VK_3 | VK_NUMPAD3 => { EDITOR_STATE.with(|s| { if let Some(state) = s.borrow().as_ref() { state.borrow_mut().goto_tab(3); state.borrow_mut().render(); } }); }
-                        VK_4 | VK_NUMPAD4 => { EDITOR_STATE.with(|s| { if let Some(state) = s.borrow().as_ref() { state.borrow_mut().goto_tab(4); state.borrow_mut().render(); } }); }
-                        VK_5 | VK_NUMPAD5 => { EDITOR_STATE.with(|s| { if let Some(state) = s.borrow().as_ref() { state.borrow_mut().goto_tab(5); state.borrow_mut().render(); } }); }
-                        VK_6 | VK_NUMPAD6 => { EDITOR_STATE.with(|s| { if let Some(state) = s.borrow().as_ref() { state.borrow_mut().goto_tab(6); state.borrow_mut().render(); } }); }
-                        VK_7 | VK_NUMPAD7 => { EDITOR_STATE.with(|s| { if let Some(state) = s.borrow().as_ref() { state.borrow_mut().goto_tab(7); state.borrow_mut().render(); } }); }
-                        VK_8 | VK_NUMPAD8 => { EDITOR_STATE.with(|s| { if let Some(state) = s.borrow().as_ref() { state.borrow_mut().goto_tab(8); state.borrow_mut().render(); } }); }
-                        VK_9 | VK_NUMPAD9 => { EDITOR_STATE.with(|s| { if let Some(state) = s.borrow().as_ref() { let last = state.borrow().tab_count(); state.borrow_mut().goto_tab(last); state.borrow_mut().render(); } }); }
+                        VK_1 | VK_NUMPAD1 => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().goto_tab(1);
+                                    state.borrow_mut().render();
+                                }
+                            });
+                        }
+                        VK_2 | VK_NUMPAD2 => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().goto_tab(2);
+                                    state.borrow_mut().render();
+                                }
+                            });
+                        }
+                        VK_3 | VK_NUMPAD3 => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().goto_tab(3);
+                                    state.borrow_mut().render();
+                                }
+                            });
+                        }
+                        VK_4 | VK_NUMPAD4 => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().goto_tab(4);
+                                    state.borrow_mut().render();
+                                }
+                            });
+                        }
+                        VK_5 | VK_NUMPAD5 => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().goto_tab(5);
+                                    state.borrow_mut().render();
+                                }
+                            });
+                        }
+                        VK_6 | VK_NUMPAD6 => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().goto_tab(6);
+                                    state.borrow_mut().render();
+                                }
+                            });
+                        }
+                        VK_7 | VK_NUMPAD7 => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().goto_tab(7);
+                                    state.borrow_mut().render();
+                                }
+                            });
+                        }
+                        VK_8 | VK_NUMPAD8 => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    state.borrow_mut().goto_tab(8);
+                                    state.borrow_mut().render();
+                                }
+                            });
+                        }
+                        VK_9 | VK_NUMPAD9 => {
+                            EDITOR_STATE.with(|s| {
+                                if let Some(state) = s.borrow().as_ref() {
+                                    let last = state.borrow().tab_count();
+                                    state.borrow_mut().goto_tab(last);
+                                    state.borrow_mut().render();
+                                }
+                            });
+                        }
                         _ => {}
                     }
                     return LRESULT(0);
@@ -1576,22 +1767,31 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
                 // 非Ctrl按键
                 let terminal_active = EDITOR_STATE.with(|s| {
-                    s.borrow().as_ref().map(|state| {
-                        state.borrow().terminal_panel.focused
-                    }).unwrap_or(false)
+                    s.borrow()
+                        .as_ref()
+                        .map(|state| state.borrow().terminal_panel.focused)
+                        .unwrap_or(false)
                 });
-                let has_selection = |st: &EditorState| {
-                    st.selection_start.is_some() && st.selection_end.is_some()
-                };
+                let has_selection =
+                    |st: &EditorState| st.selection_start.is_some() && st.selection_end.is_some();
                 let ai_panel_active = EDITOR_STATE.with(|s| {
-                    s.borrow().as_ref().map(|state| {
-                        state.borrow().sidebar_content == crate::layout::SidebarContent::AiAssistantPanel
-                    }).unwrap_or(false)
+                    s.borrow()
+                        .as_ref()
+                        .map(|state| {
+                            state.borrow().sidebar_content
+                                == crate::layout::SidebarContent::AiAssistantPanel
+                        })
+                        .unwrap_or(false)
                 });
                 let find_active = EDITOR_STATE.with(|s| {
-                    s.borrow().as_ref().map(|state| {
-                        state.borrow().find_visible && state.borrow().find_focus != crate::editor::FindReplaceFocus::None
-                    }).unwrap_or(false)
+                    s.borrow()
+                        .as_ref()
+                        .map(|state| {
+                            state.borrow().find_visible
+                                && state.borrow().find_focus
+                                    != crate::editor::FindReplaceFocus::None
+                        })
+                        .unwrap_or(false)
                 });
                 match vk {
                     VK_RETURN => {
@@ -1599,7 +1799,10 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             EDITOR_STATE.with(|s| {
                                 if let Some(state) = s.borrow().as_ref() {
                                     let input = state.borrow().terminal_panel.input_line.clone();
-                                    state.borrow_mut().terminal_panel.push_output(&format!("> {}", input));
+                                    state
+                                        .borrow_mut()
+                                        .terminal_panel
+                                        .push_output(&format!("> {}", input));
                                     state.borrow_mut().terminal_panel.send_enter();
                                     state.borrow_mut().render();
                                 }
@@ -1633,7 +1836,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             EDITOR_STATE.with(|s| {
                                 if let Some(state) = s.borrow().as_ref() {
                                     let has_sel = has_selection(&state.borrow());
-                                    if has_sel { state.borrow_mut().delete_selection(); }
+                                    if has_sel {
+                                        state.borrow_mut().delete_selection();
+                                    }
                                     state.borrow_mut().insert_newline();
                                     state.borrow_mut().render();
                                 }
@@ -1647,7 +1852,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                     let mut st = state.borrow_mut();
                                     if !st.terminal_panel.input_line.is_empty() {
                                         st.terminal_panel.input_line.pop();
-                                        st.terminal_panel.cursor_pos = st.terminal_panel.cursor_pos.saturating_sub(1);
+                                        st.terminal_panel.cursor_pos =
+                                            st.terminal_panel.cursor_pos.saturating_sub(1);
                                     }
                                     st.render();
                                 }
@@ -1728,11 +1934,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             if let Some(state) = s.borrow().as_ref() {
                                 let mut st = state.borrow_mut();
                                 if shift {
-                                    if st.selection_start.is_none() { st.start_selection(); }
+                                    if st.selection_start.is_none() {
+                                        st.start_selection();
+                                    }
                                     st.move_cursor_left();
                                     st.update_selection();
                                 } else {
-                                    if st.selection_start.is_some() { st.clear_selection(); }
+                                    if st.selection_start.is_some() {
+                                        st.clear_selection();
+                                    }
                                     st.move_cursor_left();
                                 }
                                 drop(st);
@@ -1745,11 +1955,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             if let Some(state) = s.borrow().as_ref() {
                                 let mut st = state.borrow_mut();
                                 if shift {
-                                    if st.selection_start.is_none() { st.start_selection(); }
+                                    if st.selection_start.is_none() {
+                                        st.start_selection();
+                                    }
                                     st.move_cursor_right();
                                     st.update_selection();
                                 } else {
-                                    if st.selection_start.is_some() { st.clear_selection(); }
+                                    if st.selection_start.is_some() {
+                                        st.clear_selection();
+                                    }
                                     st.move_cursor_right();
                                 }
                                 drop(st);
@@ -1762,11 +1976,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             if let Some(state) = s.borrow().as_ref() {
                                 let mut st = state.borrow_mut();
                                 if shift {
-                                    if st.selection_start.is_none() { st.start_selection(); }
+                                    if st.selection_start.is_none() {
+                                        st.start_selection();
+                                    }
                                     st.move_cursor_up();
                                     st.update_selection();
                                 } else {
-                                    if st.selection_start.is_some() { st.clear_selection(); }
+                                    if st.selection_start.is_some() {
+                                        st.clear_selection();
+                                    }
                                     st.move_cursor_up();
                                 }
                                 drop(st);
@@ -1779,11 +1997,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             if let Some(state) = s.borrow().as_ref() {
                                 let mut st = state.borrow_mut();
                                 if shift {
-                                    if st.selection_start.is_none() { st.start_selection(); }
+                                    if st.selection_start.is_none() {
+                                        st.start_selection();
+                                    }
                                     st.move_cursor_down();
                                     st.update_selection();
                                 } else {
-                                    if st.selection_start.is_some() { st.clear_selection(); }
+                                    if st.selection_start.is_some() {
+                                        st.clear_selection();
+                                    }
                                     st.move_cursor_down();
                                 }
                                 drop(st);
@@ -1796,11 +2018,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             if let Some(state) = s.borrow().as_ref() {
                                 let mut st = state.borrow_mut();
                                 if shift {
-                                    if st.selection_start.is_none() { st.start_selection(); }
+                                    if st.selection_start.is_none() {
+                                        st.start_selection();
+                                    }
                                     st.move_cursor_home();
                                     st.update_selection();
                                 } else {
-                                    if st.selection_start.is_some() { st.clear_selection(); }
+                                    if st.selection_start.is_some() {
+                                        st.clear_selection();
+                                    }
                                     st.move_cursor_home();
                                 }
                                 drop(st);
@@ -1813,11 +2039,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             if let Some(state) = s.borrow().as_ref() {
                                 let mut st = state.borrow_mut();
                                 if shift {
-                                    if st.selection_start.is_none() { st.start_selection(); }
+                                    if st.selection_start.is_none() {
+                                        st.start_selection();
+                                    }
                                     st.move_cursor_end();
                                     st.update_selection();
                                 } else {
-                                    if st.selection_start.is_some() { st.clear_selection(); }
+                                    if st.selection_start.is_some() {
+                                        st.clear_selection();
+                                    }
                                     st.move_cursor_end();
                                 }
                                 drop(st);
@@ -1870,7 +2100,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             EDITOR_STATE.with(|s| {
                                 if let Some(state) = s.borrow().as_ref() {
                                     let has_sel = has_selection(&state.borrow());
-                                    if has_sel { state.borrow_mut().delete_selection(); }
+                                    if has_sel {
+                                        state.borrow_mut().delete_selection();
+                                    }
                                     state.borrow_mut().insert_tab();
                                     state.borrow_mut().render();
                                 }

@@ -36,7 +36,7 @@ impl CommandPalette {
     /// 构建所有可用命令列表
     fn build_command_list(&mut self) {
         use crate::menu_bar::CommandId;
-        
+
         self.items = vec![
             CommandPaletteItem {
                 label: "文件: 新建文件".to_string(),
@@ -262,7 +262,8 @@ impl CommandPalette {
 
     /// 获取当前选中的命令
     pub fn selected_command(&self) -> Option<CommandId> {
-        self.filtered_items.get(self.selected_index)
+        self.filtered_items
+            .get(self.selected_index)
             .and_then(|&idx| self.items.get(idx))
             .map(|item| item.command_id)
     }
@@ -274,15 +275,19 @@ impl CommandPalette {
             return;
         }
 
-        self.filtered_items = self.items.iter()
+        self.filtered_items = self
+            .items
+            .iter()
             .enumerate()
             .filter(|(_, item)| {
                 let label_lower = item.label.to_lowercase();
                 let desc_lower = item.description.as_ref().map(|d| d.to_lowercase());
-                
+
                 // 简单包含匹配（生产环境可用 fuzzy-matcher 库）
-                label_lower.contains(&self.query) || 
-                desc_lower.as_ref().map_or(false, |d| d.contains(&self.query))
+                label_lower.contains(&self.query)
+                    || desc_lower
+                        .as_ref()
+                        .map_or(false, |d| d.contains(&self.query))
             })
             .map(|(idx, _)| idx)
             .collect();
@@ -295,7 +300,8 @@ impl CommandPalette {
 
     /// 获取指定索引的条目（相对于过滤后的列表）
     pub fn get_item(&self, index: usize) -> Option<&CommandPaletteItem> {
-        self.filtered_items.get(index)
+        self.filtered_items
+            .get(index)
             .and_then(|&idx| self.items.get(idx))
     }
 }

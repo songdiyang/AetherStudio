@@ -1,17 +1,17 @@
+use aether_core::lexer::{LexemeSpan, TokenKind};
 use windows::core::Result;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_POINT_2F};
 use windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget;
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
-    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-    DWRITE_FONT_STRETCH_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_LEADING,
 };
-use aether_core::lexer::{LexemeSpan, TokenKind};
 
-use super::factory::{colors, color_f};
+use super::factory::{color_f, colors};
 
 /// GPU加速文本渲染器
-/// 
+///
 /// 优化策略：
 /// 1. 批量绘制：将同一颜色的token合并为一次DrawTextLayout调用
 /// 2. 文本布局缓存：复用IDWriteTextLayout对象
@@ -63,7 +63,7 @@ impl GpuTextRenderer {
     }
 
     /// 批量渲染单行文本 - 合并相同颜色的token减少Draw调用
-    /// 
+    ///
     /// 优化：将相邻的同色token合并为一个DrawTextLayout调用
     pub fn render_line_batch(
         &mut self,
@@ -95,7 +95,10 @@ impl GpuTextRenderer {
                     if current_group_start > 0 {
                         let brush = target.CreateSolidColorBrush(&current_group_color, None)?;
                         target.DrawTextLayout(
-                            D2D_POINT_2F { x: current_group_x, y },
+                            D2D_POINT_2F {
+                                x: current_group_x,
+                                y,
+                            },
                             &layout,
                             &brush,
                             windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
@@ -111,7 +114,10 @@ impl GpuTextRenderer {
             // 绘制最后一组
             let brush = target.CreateSolidColorBrush(&current_group_color, None)?;
             target.DrawTextLayout(
-                D2D_POINT_2F { x: current_group_x, y },
+                D2D_POINT_2F {
+                    x: current_group_x,
+                    y,
+                },
                 &layout,
                 &brush,
                 windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
@@ -122,7 +128,7 @@ impl GpuTextRenderer {
     }
 
     /// 优化的单行渲染 - 使用整行布局+颜色范围
-    /// 
+    ///
     /// 比逐token绘制减少90%的DrawTextLayout调用
     pub fn render_line_optimized(
         &mut self,
@@ -213,7 +219,8 @@ impl GpuTextRenderer {
         // 缓存布局（LRU策略）
         if self.layout_cache.len() >= self.cache_capacity {
             // 清除一半缓存
-            let keys_to_remove: Vec<String> = self.layout_cache
+            let keys_to_remove: Vec<String> = self
+                .layout_cache
                 .keys()
                 .take(self.cache_capacity / 2)
                 .cloned()
@@ -223,7 +230,8 @@ impl GpuTextRenderer {
             }
         }
 
-        self.layout_cache.insert(line_text.to_string(), layout.clone());
+        self.layout_cache
+            .insert(line_text.to_string(), layout.clone());
         Ok(layout)
     }
 
@@ -239,7 +247,9 @@ impl GpuTextRenderer {
             TokenKind::Identifier => colors::variable(),
             TokenKind::StringLiteral | TokenKind::CharLiteral => colors::string(),
             TokenKind::NumberLiteral => colors::number(),
-            TokenKind::LineComment | TokenKind::BlockComment | TokenKind::DocComment => colors::comment(),
+            TokenKind::LineComment | TokenKind::BlockComment | TokenKind::DocComment => {
+                colors::comment()
+            }
             TokenKind::Operator | TokenKind::Punctuation => colors::operator(),
             TokenKind::Preprocessor => colors::preprocessor(),
             TokenKind::Attribute => color_f(0.8, 0.6, 0.3, 1.0),
@@ -256,7 +266,9 @@ impl GpuTextRenderer {
             TokenKind::MdEmphasis => color_f(0.9, 0.7, 0.4, 1.0),
             TokenKind::JsonKey => color_f(0.6, 0.8, 0.9, 1.0),
             TokenKind::TomlTable => color_f(0.8, 0.5, 0.3, 1.0),
-            TokenKind::Whitespace | TokenKind::Newline | TokenKind::Unknown | TokenKind::EOF => colors::text_default(),
+            TokenKind::Whitespace | TokenKind::Newline | TokenKind::Unknown | TokenKind::EOF => {
+                colors::text_default()
+            }
         }
     }
 
@@ -289,6 +301,12 @@ pub struct Viewport {
 impl Viewport {
     pub fn new(x: f32, y: f32, width: f32, height: f32, char_width: f32) -> Self {
         let width_cols = (width / char_width) as usize;
-        Self { x, y, width, height, width_cols }
+        Self {
+            x,
+            y,
+            width,
+            height,
+            width_cols,
+        }
     }
 }

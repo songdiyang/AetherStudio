@@ -2,7 +2,7 @@ use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 
 use aether_core::lexer::TokenKind;
 
-use crate::d2d::factory::{colors, color_f};
+use crate::d2d::factory::{color_f, colors};
 
 /// 主题系统
 pub struct Theme {
@@ -167,30 +167,30 @@ impl Theme {
     pub fn glass() -> Self {
         Self {
             // 编辑器区域：非常微妙的半透明，确保文本可读性
-            editor_bg: color_f(0.118, 0.118, 0.118, 0.95),      // #1E1E1E @ 95%
-            line_highlight_bg: color_f(0.15, 0.15, 0.15, 0.90),  // 当前行高亮，半透明
-            line_number_fg: color_f(0.52, 0.52, 0.52, 1.0),       // 行号保持完全不透明，确保可读
-            line_number_bg: color_f(0.118, 0.118, 0.118, 0.95),  // 行号背景与编辑器一致
+            editor_bg: color_f(0.118, 0.118, 0.118, 0.95), // #1E1E1E @ 95%
+            line_highlight_bg: color_f(0.15, 0.15, 0.15, 0.90), // 当前行高亮，半透明
+            line_number_fg: color_f(0.52, 0.52, 0.52, 1.0), // 行号保持完全不透明，确保可读
+            line_number_bg: color_f(0.118, 0.118, 0.118, 0.95), // 行号背景与编辑器一致
             // 选择高亮：柔和蓝色光晕
-            selection_bg: color_f(0.25, 0.50, 0.75, 0.50),        // 半透明白光晕
-            cursor_color: color_f(0.8, 0.8, 0.8, 1.0),            // 光标保持不透明
+            selection_bg: color_f(0.25, 0.50, 0.75, 0.50), // 半透明白光晕
+            cursor_color: color_f(0.8, 0.8, 0.8, 1.0),     // 光标保持不透明
             // 侧边栏：半透明，让背后内容轻微透出
-            sidebar_bg: color_f(0.145, 0.145, 0.149, 0.80),       // #252526 @ 80%
+            sidebar_bg: color_f(0.145, 0.145, 0.149, 0.80), // #252526 @ 80%
             // 状态栏：半透明活跃强调色
-            statusbar_bg: color_f(0.0, 0.478, 0.8, 0.70),         // #007ACC @ 70%
+            statusbar_bg: color_f(0.0, 0.478, 0.8, 0.70), // #007ACC @ 70%
             // 标签栏
-            tab_active_bg: color_f(0.145, 0.145, 0.149, 0.85),   // 活跃标签稍亮
+            tab_active_bg: color_f(0.145, 0.145, 0.149, 0.85), // 活跃标签稍亮
             tab_inactive_bg: color_f(0.118, 0.118, 0.118, 0.70), // 非活跃标签更透明
             // 文本始终不透明，保证可读性
-            text_default: color_f(0.83, 0.83, 0.83, 1.0),        // #D4D4D4
+            text_default: color_f(0.83, 0.83, 0.83, 1.0), // #D4D4D4
             // Glass-specific additions
-            titlebar_bg: color_f(0.118, 0.118, 0.118, 0.85),     // 标题栏半透明暗色
+            titlebar_bg: color_f(0.118, 0.118, 0.118, 0.85), // 标题栏半透明暗色
             activity_bar_bg: color_f(0.118, 0.118, 0.118, 0.80), // 活动栏半透明
-            panel_border: color_f(1.0, 1.0, 1.0, 0.06),          // 柔和白色边框
-            shadow: color_f(0.0, 0.0, 0.0, 0.25),                // 柔和阴影
-            glow_selection: color_f(0.2, 0.5, 0.8, 0.45),        // 柔和蓝色光晕
-            command_palette_bg: color_f(0.18, 0.18, 0.18, 0.92),  // 命令面板
-            submenu_bg: color_f(0.20, 0.20, 0.20, 0.92),         // 子菜单
+            panel_border: color_f(1.0, 1.0, 1.0, 0.06),      // 柔和白色边框
+            shadow: color_f(0.0, 0.0, 0.0, 0.25),            // 柔和阴影
+            glow_selection: color_f(0.2, 0.5, 0.8, 0.45),    // 柔和蓝色光晕
+            command_palette_bg: color_f(0.18, 0.18, 0.18, 0.92), // 命令面板
+            submenu_bg: color_f(0.20, 0.20, 0.20, 0.92),     // 子菜单
             glass_enabled: true,
             syntax: SyntaxColors {
                 keyword: color_f(0.77, 0.52, 0.75, 1.0),
@@ -249,30 +249,34 @@ impl Theme {
     }
 
     /// 根据语义令牌类型索引获取颜色（用于避免循环依赖）
-    pub fn color_for_semantic_token_index(&self, type_index: u32, _modifier_bits: u32) -> D2D1_COLOR_F {
+    pub fn color_for_semantic_token_index(
+        &self,
+        type_index: u32,
+        _modifier_bits: u32,
+    ) -> D2D1_COLOR_F {
         match type_index {
-            0 => self.syntax.semantic_namespace,   // namespace
-            1 => self.syntax.semantic_type,         // type
-            2 => self.syntax.semantic_class,        // class
-            3 => self.syntax.semantic_enum,         // enum
-            4 => self.syntax.semantic_interface,    // interface
-            5 => self.syntax.semantic_struct,       // struct
-            6 => self.syntax.semantic_type_parameter, // typeParameter
-            7 => self.syntax.semantic_parameter,    // parameter
-            8 => self.syntax.semantic_variable_local, // variable
-            9 => self.syntax.semantic_property,      // property
-            10 => self.syntax.semantic_enum_member, // enumMember
-            11 => self.syntax.semantic_event,       // event
+            0 => self.syntax.semantic_namespace,             // namespace
+            1 => self.syntax.semantic_type,                  // type
+            2 => self.syntax.semantic_class,                 // class
+            3 => self.syntax.semantic_enum,                  // enum
+            4 => self.syntax.semantic_interface,             // interface
+            5 => self.syntax.semantic_struct,                // struct
+            6 => self.syntax.semantic_type_parameter,        // typeParameter
+            7 => self.syntax.semantic_parameter,             // parameter
+            8 => self.syntax.semantic_variable_local,        // variable
+            9 => self.syntax.semantic_property,              // property
+            10 => self.syntax.semantic_enum_member,          // enumMember
+            11 => self.syntax.semantic_event,                // event
             12 => self.syntax.semantic_function_declaration, // function
-            13 => self.syntax.semantic_method,      // method
-            14 => self.syntax.semantic_macro,       // macro
-            15 => self.syntax.semantic_keyword_control, // keyword
-            16 => self.syntax.semantic_modifier,    // modifier
-            17 => self.syntax.semantic_comment_doc, // comment
-            18 => self.syntax.semantic_string_format, // string
-            19 => self.syntax.semantic_number_hex,   // number
-            20 => self.syntax.semantic_regexp,      // regexp
-            21 => self.syntax.semantic_operator_logical, // operator
+            13 => self.syntax.semantic_method,               // method
+            14 => self.syntax.semantic_macro,                // macro
+            15 => self.syntax.semantic_keyword_control,      // keyword
+            16 => self.syntax.semantic_modifier,             // modifier
+            17 => self.syntax.semantic_comment_doc,          // comment
+            18 => self.syntax.semantic_string_format,        // string
+            19 => self.syntax.semantic_number_hex,           // number
+            20 => self.syntax.semantic_regexp,               // regexp
+            21 => self.syntax.semantic_operator_logical,     // operator
             _ => self.text_default,
         }
     }
@@ -285,7 +289,9 @@ impl Theme {
             TokenKind::StringLiteral => self.syntax.string,
             TokenKind::CharLiteral => self.syntax.string,
             TokenKind::NumberLiteral => self.syntax.number,
-            TokenKind::LineComment | TokenKind::BlockComment | TokenKind::DocComment => self.syntax.comment,
+            TokenKind::LineComment | TokenKind::BlockComment | TokenKind::DocComment => {
+                self.syntax.comment
+            }
             TokenKind::Operator => self.syntax.operator,
             TokenKind::Punctuation => self.syntax.operator,
             TokenKind::Preprocessor => self.syntax.preprocessor,
@@ -303,7 +309,9 @@ impl Theme {
             TokenKind::MdEmphasis => self.syntax.md_emphasis,
             TokenKind::JsonKey => self.syntax.json_key,
             TokenKind::TomlTable => self.syntax.toml_table,
-            TokenKind::Whitespace | TokenKind::Newline | TokenKind::Unknown | TokenKind::EOF => self.text_default,
+            TokenKind::Whitespace | TokenKind::Newline | TokenKind::Unknown | TokenKind::EOF => {
+                self.text_default
+            }
         }
     }
 }

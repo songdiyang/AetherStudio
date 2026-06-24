@@ -2,7 +2,7 @@ use crate::buffer::text_buffer::EditResult;
 use crate::lexer::{Language, LexemeSpan};
 
 /// 增量词法分析器
-/// 
+///
 /// 缓存每行的token结果，只在编辑时重新分析受影响的行
 /// 使用 Vec 存储（行号 = 索引），O(1) 访问，连续内存布局
 pub struct IncrementalLexer {
@@ -28,15 +28,13 @@ impl IncrementalLexer {
     /// 全量分析所有行（首次打开文件时使用）
     pub fn analyze_all(&mut self, lines: &[String]) {
         let lexer = self.language.create_lexer();
-        self.line_tokens = lines.iter()
-            .map(|line| lexer.lex_full(line))
-            .collect();
+        self.line_tokens = lines.iter().map(|line| lexer.lex_full(line)).collect();
         self.last_line_count = lines.len();
         self.version += 1;
     }
 
     /// 增量更新 - 根据编辑结果只重新分析受影响的行
-    /// 
+    ///
     /// 编辑后，受影响的行包括：
     /// 1. 编辑起始行（内容可能改变）
     /// 2. 编辑结束行（内容可能改变）
@@ -131,7 +129,7 @@ impl IncrementalLexer {
 }
 
 /// 增量词法分析管理器
-/// 
+///
 /// 管理多个文件的增量lexer，支持文件切换
 pub struct IncrementalLexerManager {
     lexers: std::collections::HashMap<String, IncrementalLexer>,
@@ -208,10 +206,7 @@ mod tests {
     #[test]
     fn test_incremental_update_insert() {
         let mut lexer = IncrementalLexer::new(Language::Rust);
-        let lines = vec![
-            "fn main() {".to_string(),
-            "}".to_string(),
-        ];
+        let lines = vec!["fn main() {".to_string(), "}".to_string()];
 
         lexer.analyze_all(&lines);
         let v1 = lexer.version();

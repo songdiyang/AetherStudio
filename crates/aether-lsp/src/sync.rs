@@ -15,12 +15,15 @@ impl DocumentSync {
     }
 
     pub fn open_document(&mut self, uri: Url, language_id: String, version: i32, text: String) {
-        self.documents.insert(uri.clone(), DocumentState {
-            uri,
-            language_id,
-            version,
-            text,
-        });
+        self.documents.insert(
+            uri.clone(),
+            DocumentState {
+                uri,
+                language_id,
+                version,
+                text,
+            },
+        );
     }
 
     pub fn close_document(&mut self, uri: &Url) {
@@ -86,14 +89,20 @@ pub fn compute_changes(old_text: &str, new_text: &str) -> Vec<TextDocumentConten
 
     // 找到第一个不同的行
     let mut first_diff = 0;
-    while first_diff < old_lines.len() && first_diff < new_lines.len() && old_lines[first_diff] == new_lines[first_diff] {
+    while first_diff < old_lines.len()
+        && first_diff < new_lines.len()
+        && old_lines[first_diff] == new_lines[first_diff]
+    {
         first_diff += 1;
     }
 
     // 找到最后一个不同的行
     let mut old_last = old_lines.len();
     let mut new_last = new_lines.len();
-    while old_last > first_diff && new_last > first_diff && old_lines[old_last - 1] == new_lines[new_last - 1] {
+    while old_last > first_diff
+        && new_last > first_diff
+        && old_lines[old_last - 1] == new_lines[new_last - 1]
+    {
         old_last -= 1;
         new_last -= 1;
     }
@@ -107,7 +116,11 @@ pub fn compute_changes(old_text: &str, new_text: &str) -> Vec<TextDocumentConten
     let start_line = first_diff;
     let start_char = 0;
     let end_line = old_last.saturating_sub(1);
-    let end_char = if end_line < old_lines.len() { old_lines[end_line].len() } else { 0 };
+    let end_char = if end_line < old_lines.len() {
+        old_lines[end_line].len()
+    } else {
+        0
+    };
 
     let replacement: String = if new_last > first_diff {
         new_lines[first_diff..new_last].join("\n")
@@ -117,8 +130,14 @@ pub fn compute_changes(old_text: &str, new_text: &str) -> Vec<TextDocumentConten
 
     vec![TextDocumentContentChangeEvent {
         range: Some(Range {
-            start: Position { line: start_line as u32, character: start_char as u32 },
-            end: Position { line: end_line as u32, character: end_char as u32 },
+            start: Position {
+                line: start_line as u32,
+                character: start_char as u32,
+            },
+            end: Position {
+                line: end_line as u32,
+                character: end_char as u32,
+            },
         }),
         range_length: None,
         text: replacement,

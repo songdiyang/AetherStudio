@@ -69,18 +69,36 @@ impl History {
 
     /// 记录一次编辑操作
     /// 调用时机：在编辑完成后，传入编辑前的状态
-    pub fn record(&mut self, before_pieces: Vec<Piece>, before_add_len: usize,
-                  cursor_before: CursorPosition, cursor_after: CursorPosition,
-                  op_type: OpType, edit_pos: usize) {
+    pub fn record(
+        &mut self,
+        before_pieces: Vec<Piece>,
+        before_add_len: usize,
+        cursor_before: CursorPosition,
+        cursor_after: CursorPosition,
+        op_type: OpType,
+        edit_pos: usize,
+    ) {
         let now = Instant::now();
 
         // 检查是否可以合并
         let should_merge = match (self.merge_state, op_type) {
-            (MergeState::Inserting { last_time, last_pos }, OpType::Insert) => {
+            (
+                MergeState::Inserting {
+                    last_time,
+                    last_pos,
+                },
+                OpType::Insert,
+            ) => {
                 let elapsed = now.duration_since(last_time).as_millis();
                 elapsed < 500 && edit_pos == last_pos
             }
-            (MergeState::Deleting { last_time, last_pos }, OpType::Delete) => {
+            (
+                MergeState::Deleting {
+                    last_time,
+                    last_pos,
+                },
+                OpType::Delete,
+            ) => {
                 let elapsed = now.duration_since(last_time).as_millis();
                 elapsed < 500 && edit_pos == last_pos
             }
@@ -113,16 +131,26 @@ impl History {
 
         // 更新合并状态
         self.merge_state = match op_type {
-            OpType::Insert => MergeState::Inserting { last_time: now, last_pos: edit_pos + 1 },
-            OpType::Delete => MergeState::Deleting { last_time: now, last_pos: edit_pos },
+            OpType::Insert => MergeState::Inserting {
+                last_time: now,
+                last_pos: edit_pos + 1,
+            },
+            OpType::Delete => MergeState::Deleting {
+                last_time: now,
+                last_pos: edit_pos,
+            },
             OpType::Replace => MergeState::Idle,
         };
     }
 
     /// 撤销一次操作
     /// 返回：编辑前的pieces状态（用于恢复）
-    pub fn undo(&mut self, current_pieces: Vec<Piece>, current_add_len: usize,
-                current_cursor: CursorPosition) -> Option<(Vec<Piece>, usize, CursorPosition)> {
+    pub fn undo(
+        &mut self,
+        current_pieces: Vec<Piece>,
+        current_add_len: usize,
+        current_cursor: CursorPosition,
+    ) -> Option<(Vec<Piece>, usize, CursorPosition)> {
         let record = self.undos.pop()?;
         let cursor = record.cursor_before.clone();
 
@@ -141,8 +169,12 @@ impl History {
     }
 
     /// 重做一次操作
-    pub fn redo(&mut self, current_pieces: Vec<Piece>, current_add_len: usize,
-                current_cursor: CursorPosition) -> Option<(Vec<Piece>, usize, CursorPosition)> {
+    pub fn redo(
+        &mut self,
+        current_pieces: Vec<Piece>,
+        current_add_len: usize,
+        current_cursor: CursorPosition,
+    ) -> Option<(Vec<Piece>, usize, CursorPosition)> {
         let record = self.redos.pop()?;
         let cursor = record.cursor_after.clone();
 
@@ -189,10 +221,27 @@ mod tests {
     #[test]
     fn test_undo_redo() {
         let mut history = History::new();
-        let pieces1 = vec![Piece { source: Source::Add, start: 0, len: 5, line_breaks: 0 }];
-        let pieces2 = vec![Piece { source: Source::Add, start: 0, len: 10, line_breaks: 0 }];
+        let pieces1 = vec![Piece {
+            source: Source::Add,
+            start: 0,
+            len: 5,
+            line_breaks: 0,
+        }];
+        let pieces2 = vec![Piece {
+            source: Source::Add,
+            start: 0,
+            len: 10,
+            line_breaks: 0,
+        }];
 
-        history.record(pieces1.clone(), 5, CursorPosition::new(0, 0), CursorPosition::new(0, 5), OpType::Insert, 0);
+        history.record(
+            pieces1.clone(),
+            5,
+            CursorPosition::new(0, 0),
+            CursorPosition::new(0, 5),
+            OpType::Insert,
+            0,
+        );
 
         let result = history.undo(pieces2.clone(), 10, CursorPosition::new(0, 10));
         assert!(result.is_some());
@@ -208,11 +257,30 @@ mod tests {
     #[test]
     fn test_merge_inserts() {
         let mut history = History::new();
-        let pieces = vec![Piece { source: Source::Add, start: 0, len: 0, line_breaks: 0 }];
+        let pieces = vec![Piece {
+            source: Source::Add,
+            start: 0,
+            len: 0,
+            line_breaks: 0,
+        }];
 
         // 快速连续插入应该合并
-        history.record(pieces.clone(), 0, CursorPosition::new(0, 0), CursorPosition::new(0, 1), OpType::Insert, 0);
-        history.record(pieces.clone(), 1, CursorPosition::new(0, 1), CursorPosition::new(0, 2), OpType::Insert, 1);
+        history.record(
+            pieces.clone(),
+            0,
+            CursorPosition::new(0, 0),
+            CursorPosition::new(0, 1),
+            OpType::Insert,
+            0,
+        );
+        history.record(
+            pieces.clone(),
+            1,
+            CursorPosition::new(0, 1),
+            CursorPosition::new(0, 2),
+            OpType::Insert,
+            1,
+        );
 
         assert_eq!(history.undos.len(), 1);
     }

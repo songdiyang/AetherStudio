@@ -10,7 +10,15 @@ impl PythonLexer {
 
     fn lex_next(&self, bytes: &[u8], pos: usize) -> (LexemeSpan, usize) {
         if pos >= bytes.len() {
-            return (LexemeSpan { start: pos, len: 0, kind: TokenKind::EOF, flags: 0 }, pos);
+            return (
+                LexemeSpan {
+                    start: pos,
+                    len: 0,
+                    kind: TokenKind::EOF,
+                    flags: 0,
+                },
+                pos,
+            );
         }
 
         let ch = bytes[pos];
@@ -18,48 +26,123 @@ impl PythonLexer {
         match ch {
             b' ' | b'\t' | b'\r' => {
                 let end = skip_whitespace(bytes, pos);
-                (LexemeSpan { start: pos, len: end - pos, kind: TokenKind::Whitespace, flags: 0 }, end)
+                (
+                    LexemeSpan {
+                        start: pos,
+                        len: end - pos,
+                        kind: TokenKind::Whitespace,
+                        flags: 0,
+                    },
+                    end,
+                )
             }
-            b'\n' => {
-                (LexemeSpan { start: pos, len: 1, kind: TokenKind::Newline, flags: 0 }, pos + 1)
-            }
+            b'\n' => (
+                LexemeSpan {
+                    start: pos,
+                    len: 1,
+                    kind: TokenKind::Newline,
+                    flags: 0,
+                },
+                pos + 1,
+            ),
             b'#' => {
                 let end = skip_line_comment(bytes, pos);
-                (LexemeSpan { start: pos, len: end - pos, kind: TokenKind::LineComment, flags: 0 }, end)
+                (
+                    LexemeSpan {
+                        start: pos,
+                        len: end - pos,
+                        kind: TokenKind::LineComment,
+                        flags: 0,
+                    },
+                    end,
+                )
             }
             b'"' => {
                 if pos + 2 < bytes.len() && bytes[pos + 1] == b'"' && bytes[pos + 2] == b'"' {
                     let end = skip_triple_quoted(bytes, pos, b'"');
-                    let kind = if bytes[pos..end].starts_with(b"\"\"\"f") || bytes[pos..end].starts_with(b"\"\"\"F") {
+                    let kind = if bytes[pos..end].starts_with(b"\"\"\"f")
+                        || bytes[pos..end].starts_with(b"\"\"\"F")
+                    {
                         TokenKind::FormatString
                     } else {
                         TokenKind::StringLiteral
                     };
-                    (LexemeSpan { start: pos, len: end - pos, kind, flags: 0 }, end)
+                    (
+                        LexemeSpan {
+                            start: pos,
+                            len: end - pos,
+                            kind,
+                            flags: 0,
+                        },
+                        end,
+                    )
                 } else {
                     let end = skip_string(bytes, pos, b'"');
-                    (LexemeSpan { start: pos, len: end - pos, kind: TokenKind::StringLiteral, flags: 0 }, end)
+                    (
+                        LexemeSpan {
+                            start: pos,
+                            len: end - pos,
+                            kind: TokenKind::StringLiteral,
+                            flags: 0,
+                        },
+                        end,
+                    )
                 }
             }
             b'\'' => {
                 if pos + 2 < bytes.len() && bytes[pos + 1] == b'\'' && bytes[pos + 2] == b'\'' {
                     let end = skip_triple_quoted(bytes, pos, b'\'');
-                    (LexemeSpan { start: pos, len: end - pos, kind: TokenKind::StringLiteral, flags: 0 }, end)
+                    (
+                        LexemeSpan {
+                            start: pos,
+                            len: end - pos,
+                            kind: TokenKind::StringLiteral,
+                            flags: 0,
+                        },
+                        end,
+                    )
                 } else {
                     let end = skip_string(bytes, pos, b'\'');
-                    (LexemeSpan { start: pos, len: end - pos, kind: TokenKind::StringLiteral, flags: 0 }, end)
+                    (
+                        LexemeSpan {
+                            start: pos,
+                            len: end - pos,
+                            kind: TokenKind::StringLiteral,
+                            flags: 0,
+                        },
+                        end,
+                    )
                 }
             }
             b'0'..=b'9' => {
                 let end = skip_number(bytes, pos);
-                (LexemeSpan { start: pos, len: end - pos, kind: TokenKind::NumberLiteral, flags: 0 }, end)
+                (
+                    LexemeSpan {
+                        start: pos,
+                        len: end - pos,
+                        kind: TokenKind::NumberLiteral,
+                        flags: 0,
+                    },
+                    end,
+                )
             }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 // 检测 f-string: f"..." 或 f'...'
-                if (bytes[pos] == b'f' || bytes[pos] == b'F') && pos + 1 < bytes.len() && (bytes[pos + 1] == b'"' || bytes[pos + 1] == b'\'') {
+                if (bytes[pos] == b'f' || bytes[pos] == b'F')
+                    && pos + 1 < bytes.len()
+                    && (bytes[pos + 1] == b'"' || bytes[pos + 1] == b'\'')
+                {
                     let quote = bytes[pos + 1];
                     let end = skip_string(bytes, pos + 1, quote);
-                    (LexemeSpan { start: pos, len: end - pos, kind: TokenKind::FormatString, flags: 0 }, end)
+                    (
+                        LexemeSpan {
+                            start: pos,
+                            len: end - pos,
+                            kind: TokenKind::FormatString,
+                            flags: 0,
+                        },
+                        end,
+                    )
                 } else {
                     let end = skip_identifier(bytes, pos);
                     let text = std::str::from_utf8(&bytes[pos..end]).unwrap_or("");
@@ -70,17 +153,48 @@ impl PythonLexer {
                     } else {
                         TokenKind::Identifier
                     };
-                    (LexemeSpan { start: pos, len: end - pos, kind, flags: 0 }, end)
+                    (
+                        LexemeSpan {
+                            start: pos,
+                            len: end - pos,
+                            kind,
+                            flags: 0,
+                        },
+                        end,
+                    )
                 }
             }
-            b'+' | b'-' | b'*' | b'/' | b'%' | b'=' | b'!' | b'<' | b'>' | b'&' | b'|' | b'^' | b'~' => {
+            b'+' | b'-' | b'*' | b'/' | b'%' | b'=' | b'!' | b'<' | b'>' | b'&' | b'|' | b'^'
+            | b'~' => {
                 let end = skip_operator(bytes, pos);
-                (LexemeSpan { start: pos, len: end - pos, kind: TokenKind::Operator, flags: 0 }, end)
+                (
+                    LexemeSpan {
+                        start: pos,
+                        len: end - pos,
+                        kind: TokenKind::Operator,
+                        flags: 0,
+                    },
+                    end,
+                )
             }
-            b'(' | b')' | b'{' | b'}' | b'[' | b']' | b',' | b';' | b':' | b'.' | b'?' | b'@' => {
-                (LexemeSpan { start: pos, len: 1, kind: TokenKind::Punctuation, flags: 0 }, pos + 1)
-            }
-            _ => (LexemeSpan { start: pos, len: 1, kind: TokenKind::Unknown, flags: 0 }, pos + 1),
+            b'(' | b')' | b'{' | b'}' | b'[' | b']' | b',' | b';' | b':' | b'.' | b'?' | b'@' => (
+                LexemeSpan {
+                    start: pos,
+                    len: 1,
+                    kind: TokenKind::Punctuation,
+                    flags: 0,
+                },
+                pos + 1,
+            ),
+            _ => (
+                LexemeSpan {
+                    start: pos,
+                    len: 1,
+                    kind: TokenKind::Unknown,
+                    flags: 0,
+                },
+                pos + 1,
+            ),
         }
     }
 }
@@ -108,20 +222,80 @@ impl Default for PythonLexer {
 }
 
 fn is_keyword(text: &str) -> bool {
-    matches!(text,
-        "False" | "None" | "True" | "and" | "as" | "assert" | "async" | "await" | "break" |
-        "class" | "continue" | "def" | "del" | "elif" | "else" | "except" | "finally" |
-        "for" | "from" | "global" | "if" | "import" | "in" | "is" | "lambda" | "nonlocal" |
-        "not" | "or" | "pass" | "raise" | "return" | "try" | "while" | "with" | "yield"
+    matches!(
+        text,
+        "False"
+            | "None"
+            | "True"
+            | "and"
+            | "as"
+            | "assert"
+            | "async"
+            | "await"
+            | "break"
+            | "class"
+            | "continue"
+            | "def"
+            | "del"
+            | "elif"
+            | "else"
+            | "except"
+            | "finally"
+            | "for"
+            | "from"
+            | "global"
+            | "if"
+            | "import"
+            | "in"
+            | "is"
+            | "lambda"
+            | "nonlocal"
+            | "not"
+            | "or"
+            | "pass"
+            | "raise"
+            | "return"
+            | "try"
+            | "while"
+            | "with"
+            | "yield"
     )
 }
 
 fn is_builtin(text: &str) -> bool {
-    matches!(text,
-        "int" | "float" | "str" | "bool" | "list" | "dict" | "tuple" | "set" | "frozenset" |
-        "bytes" | "bytearray" | "memoryview" | "object" | "type" | "range" | "enumerate" |
-        "zip" | "map" | "filter" | "len" | "print" | "input" | "open" | "super" | "self" |
-        "Exception" | "BaseException" | "ValueError" | "TypeError" | "KeyError" | "IndexError"
+    matches!(
+        text,
+        "int"
+            | "float"
+            | "str"
+            | "bool"
+            | "list"
+            | "dict"
+            | "tuple"
+            | "set"
+            | "frozenset"
+            | "bytes"
+            | "bytearray"
+            | "memoryview"
+            | "object"
+            | "type"
+            | "range"
+            | "enumerate"
+            | "zip"
+            | "map"
+            | "filter"
+            | "len"
+            | "print"
+            | "input"
+            | "open"
+            | "super"
+            | "self"
+            | "Exception"
+            | "BaseException"
+            | "ValueError"
+            | "TypeError"
+            | "KeyError"
+            | "IndexError"
     )
 }
 
@@ -168,7 +342,17 @@ fn skip_string(bytes: &[u8], pos: usize, quote: u8) -> usize {
 
 fn skip_number(bytes: &[u8], pos: usize) -> usize {
     let mut i = pos;
-    while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.' || bytes[i] == b'e' || bytes[i] == b'E' || bytes[i] == b'+' || bytes[i] == b'-' || bytes[i] == b'j' || bytes[i] == b'J' || bytes[i] == b'_') {
+    while i < bytes.len()
+        && (bytes[i].is_ascii_digit()
+            || bytes[i] == b'.'
+            || bytes[i] == b'e'
+            || bytes[i] == b'E'
+            || bytes[i] == b'+'
+            || bytes[i] == b'-'
+            || bytes[i] == b'j'
+            || bytes[i] == b'J'
+            || bytes[i] == b'_')
+    {
         i += 1;
     }
     i
@@ -189,18 +373,69 @@ fn skip_operator(bytes: &[u8], pos: usize) -> usize {
     if i < bytes.len() {
         let next = bytes[i];
         match ch {
-            b'+' => { if next == b'=' { i += 1; } }
-            b'-' => { if next == b'=' || next == b'>' { i += 1; } }
-            b'*' => { if next == b'=' || next == b'*' { i += 1; if i < bytes.len() && bytes[i] == b'=' { i += 1; } } }
-            b'/' => { if next == b'=' || next == b'/' { i += 1; } }
-            b'%' => { if next == b'=' { i += 1; } }
-            b'=' => { if next == b'=' { i += 1; } }
-            b'!' => { if next == b'=' { i += 1; } }
-            b'<' => { if next == b'=' || next == b'<' { i += 1; } }
-            b'>' => { if next == b'=' || next == b'>' { i += 1; } }
-            b'&' => { if next == b'=' { i += 1; } }
-            b'|' => { if next == b'=' { i += 1; } }
-            b'^' => { if next == b'=' { i += 1; } }
+            b'+' => {
+                if next == b'=' {
+                    i += 1;
+                }
+            }
+            b'-' => {
+                if next == b'=' || next == b'>' {
+                    i += 1;
+                }
+            }
+            b'*' => {
+                if next == b'=' || next == b'*' {
+                    i += 1;
+                    if i < bytes.len() && bytes[i] == b'=' {
+                        i += 1;
+                    }
+                }
+            }
+            b'/' => {
+                if next == b'=' || next == b'/' {
+                    i += 1;
+                }
+            }
+            b'%' => {
+                if next == b'=' {
+                    i += 1;
+                }
+            }
+            b'=' => {
+                if next == b'=' {
+                    i += 1;
+                }
+            }
+            b'!' => {
+                if next == b'=' {
+                    i += 1;
+                }
+            }
+            b'<' => {
+                if next == b'=' || next == b'<' {
+                    i += 1;
+                }
+            }
+            b'>' => {
+                if next == b'=' || next == b'>' {
+                    i += 1;
+                }
+            }
+            b'&' => {
+                if next == b'=' {
+                    i += 1;
+                }
+            }
+            b'|' => {
+                if next == b'=' {
+                    i += 1;
+                }
+            }
+            b'^' => {
+                if next == b'=' {
+                    i += 1;
+                }
+            }
             _ => {}
         }
     }
@@ -224,7 +459,10 @@ mod tests {
     fn test_python_decorators() {
         let lexer = PythonLexer::new();
         let tokens = lexer.lex_full("@property\n@staticmethod");
-        let attr_count = tokens.iter().filter(|t| t.kind == TokenKind::Punctuation && t.len == 1).count();
+        let attr_count = tokens
+            .iter()
+            .filter(|t| t.kind == TokenKind::Punctuation && t.len == 1)
+            .count();
         assert!(attr_count >= 2);
     }
 

@@ -23,12 +23,11 @@ pub fn init_logging() -> io::Result<()> {
     let file_appender = RollingFileAppender::new(Rotation::DAILY, &log_dir, "aether");
 
     // 3. 使用本地时区格式化时间
-    let local_offset = time::UtcOffset::current_local_offset()
-        .unwrap_or(time::UtcOffset::UTC);
+    let local_offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
     let timer = OffsetTime::new(
         local_offset,
         time::format_description::parse_borrowed::<1>(
-            "[year]-[month]-[day] [hour]:[minute]:[second]"
+            "[year]-[month]-[day] [hour]:[minute]:[second]",
         )
         .unwrap_or_else(|_| {
             time::format_description::parse_borrowed::<1>("[year]-[month]-[day]").unwrap()
@@ -56,8 +55,7 @@ pub fn init_logging() -> io::Result<()> {
         .with_file(true);
 
     // 6. 日志级别过滤（默认 info，可通过 RUST_LOG 覆盖）
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     // 7. 注册订阅者
     tracing_subscriber::registry()

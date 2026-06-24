@@ -57,7 +57,7 @@ impl SemanticTokensDecoder {
         // Delta 更新包含编辑操作后的重新编码数据
         // 实际实现：应用edits到之前的token数据
         let mut result = previous_tokens.to_vec();
-        
+
         for edit in delta.edits.iter().rev() {
             // 删除范围 [start, start + deleteCount)
             let start = edit.start as usize;
@@ -80,7 +80,7 @@ impl SemanticTokensDecoder {
                 }
             }
         }
-        
+
         result
     }
 }

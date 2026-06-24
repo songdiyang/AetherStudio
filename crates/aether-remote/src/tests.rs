@@ -1,8 +1,9 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use tempfile::TempDir;
+
+    use crate::{GitRepoConfig, GitRepoType, GitRepository, GitSshRepo, SshAuth, SshConfig};
 
     // Git 仓库测试
     #[test]
@@ -129,7 +130,8 @@ mod tests {
             "Initial commit",
             &tree,
             &[],
-        ).unwrap();
+        )
+        .unwrap();
 
         // 切换并创建新分支
         let git_repo = GitRepository::open(&repo_path).unwrap();
@@ -170,12 +172,15 @@ mod tests {
         let repo_path = PathBuf::from("/tmp/test_repo");
 
         // 测试 git@host:repo.git 格式
-        let ssh_repo = GitSshRepo::from_url("git@github.com:user/repo.git", repo_path.clone()).unwrap();
+        let ssh_repo =
+            GitSshRepo::from_url("git@github.com:user/repo.git", repo_path.clone()).unwrap();
         assert_eq!(ssh_repo.ssh_host, "github.com");
         assert_eq!(ssh_repo.ssh_port, 22);
 
         // 测试 ssh://user@host:port/repo.git 格式
-        let ssh_repo = GitSshRepo::from_url("ssh://git@github.com:22/user/repo.git", repo_path).unwrap();
+        let ssh_repo =
+            GitSshRepo::from_url("ssh://git@github.com:22/user/repo.git", repo_path.clone())
+                .unwrap();
         assert_eq!(ssh_repo.ssh_host, "github.com");
         assert_eq!(ssh_repo.ssh_port, 22);
 
@@ -214,14 +219,16 @@ mod tests {
         let tree1 = repo.find_tree(tree_id1).unwrap();
 
         let signature = git2::Signature::now("Test User", "test@example.com").unwrap();
-        let commit1 = repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "First commit",
-            &tree1,
-            &[],
-        ).unwrap();
+        let commit1 = repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "First commit",
+                &tree1,
+                &[],
+            )
+            .unwrap();
 
         // 创建第二个提交
         let test_file2 = repo_path.join("test2.txt");
@@ -240,7 +247,8 @@ mod tests {
             "Second commit",
             &tree2,
             &[&commit1_obj],
-        ).unwrap();
+        )
+        .unwrap();
 
         // 获取提交历史
         let git_repo = GitRepository::open(&repo_path).unwrap();

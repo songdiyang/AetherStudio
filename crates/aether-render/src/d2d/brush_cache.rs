@@ -5,10 +5,10 @@ use windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget;
 use windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush;
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FACTORY_TYPE_SHARED, DWriteCreateFactory, IDWriteFactory,
-    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWriteCreateFactory, IDWriteFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL,
+    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
+    DWRITE_TEXT_ALIGNMENT_TRAILING,
 };
 
 /// 预存画笔槽位数量（覆盖最常用的主题颜色）
@@ -37,11 +37,7 @@ impl BrushCache {
     /// 预初始化常用颜色画笔（在渲染目标就绪后调用一次）
     ///
     /// 建议传入主题中最常用的 ~10 种颜色，使渲染帧内直接命中预存数组
-    pub fn init_common_brushes(
-        &mut self,
-        target: &ID2D1HwndRenderTarget,
-        colors: &[D2D1_COLOR_F],
-    ) {
+    pub fn init_common_brushes(&mut self, target: &ID2D1HwndRenderTarget, colors: &[D2D1_COLOR_F]) {
         self.precomputed.clear();
         for color in colors.iter().take(PRECOMPUTED_BRUSH_SLOTS) {
             let key = color_key(color);
@@ -106,7 +102,7 @@ pub struct TextFormatCache {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct TextFormatKey {
-    font_size: u32,  // 缩放为整数避免浮点精度问题
+    font_size: u32, // 缩放为整数避免浮点精度问题
     font_weight: u32,
     alignment: u8,
     paragraph_alignment: u8,
@@ -197,12 +193,14 @@ impl TextFormatCache {
                 font_size,
                 windows::core::w!("zh-CN"),
             )?;
-            let _ = format.SetTextAlignment(
-                std::mem::transmute::<u32, windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT>(text_alignment)
-            );
-            let _ = format.SetParagraphAlignment(
-                std::mem::transmute::<u32, windows::Win32::Graphics::DirectWrite::DWRITE_PARAGRAPH_ALIGNMENT>(paragraph_alignment)
-            );
+            let _ = format.SetTextAlignment(std::mem::transmute::<
+                u32,
+                windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT,
+            >(text_alignment));
+            let _ = format.SetParagraphAlignment(std::mem::transmute::<
+                u32,
+                windows::Win32::Graphics::DirectWrite::DWRITE_PARAGRAPH_ALIGNMENT,
+            >(paragraph_alignment));
             Ok(format)
         }
     }
@@ -238,7 +236,10 @@ impl TextFormatCache {
 
         // 3. 新建并缓存到 HashMap
         let format = self.create_format_internal(
-            font_size, font_weight, text_alignment, paragraph_alignment,
+            font_size,
+            font_weight,
+            text_alignment,
+            paragraph_alignment,
         )?;
         let result = format.clone();
         self.formats.insert(key, format);
@@ -266,7 +267,11 @@ impl TextFormatCache {
     }
 
     /// 获取居中格式
-    pub fn get_center_format(&mut self, font_size: f32, font_weight: u32) -> Result<IDWriteTextFormat> {
+    pub fn get_center_format(
+        &mut self,
+        font_size: f32,
+        font_weight: u32,
+    ) -> Result<IDWriteTextFormat> {
         self.get_format(
             font_size,
             font_weight,

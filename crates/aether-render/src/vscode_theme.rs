@@ -103,17 +103,16 @@ impl std::error::Error for ThemeError {}
 impl Theme {
     /// 从 VS Code JSON 主题文件加载主题
     pub fn from_vscode_json(path: &Path) -> Result<Self, ThemeError> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| ThemeError::Io(e.to_string()))?;
-        let vscode_theme: VsCodeThemeJson = serde_json::from_str(&content)
-            .map_err(|e| ThemeError::Parse(e.to_string()))?;
+        let content = std::fs::read_to_string(path).map_err(|e| ThemeError::Io(e.to_string()))?;
+        let vscode_theme: VsCodeThemeJson =
+            serde_json::from_str(&content).map_err(|e| ThemeError::Parse(e.to_string()))?;
         Ok(Self::from_vscode(&vscode_theme))
     }
 
     /// 从 VS Code 主题 JSON 字符串加载
     pub fn from_vscode_json_str(json: &str) -> Result<Self, ThemeError> {
-        let vscode_theme: VsCodeThemeJson = serde_json::from_str(json)
-            .map_err(|e| ThemeError::Parse(e.to_string()))?;
+        let vscode_theme: VsCodeThemeJson =
+            serde_json::from_str(json).map_err(|e| ThemeError::Parse(e.to_string()))?;
         Ok(Self::from_vscode(&vscode_theme))
     }
 
@@ -242,22 +241,32 @@ fn parse_hex_color(hex: &str) -> Result<D2D1_COLOR_F, ThemeError> {
 
     let (r, g, b, a) = match hex.len() {
         3 => {
-            let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
-            let g = u8::from_str_radix(&hex[1..2].repeat(2), 16).map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
-            let b = u8::from_str_radix(&hex[2..3].repeat(2), 16).map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
+            let r = u8::from_str_radix(&hex[0..1].repeat(2), 16)
+                .map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
+            let g = u8::from_str_radix(&hex[1..2].repeat(2), 16)
+                .map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
+            let b = u8::from_str_radix(&hex[2..3].repeat(2), 16)
+                .map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
             (r, g, b, 255u8)
         }
         6 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
-            let g = u8::from_str_radix(&hex[2..4], 16).map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
-            let b = u8::from_str_radix(&hex[4..6], 16).map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
+            let r = u8::from_str_radix(&hex[0..2], 16)
+                .map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
+            let g = u8::from_str_radix(&hex[2..4], 16)
+                .map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
+            let b = u8::from_str_radix(&hex[4..6], 16)
+                .map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
             (r, g, b, 255u8)
         }
         8 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
-            let g = u8::from_str_radix(&hex[2..4], 16).map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
-            let b = u8::from_str_radix(&hex[4..6], 16).map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
-            let a = u8::from_str_radix(&hex[6..8], 16).map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
+            let r = u8::from_str_radix(&hex[0..2], 16)
+                .map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
+            let g = u8::from_str_radix(&hex[2..4], 16)
+                .map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
+            let b = u8::from_str_radix(&hex[4..6], 16)
+                .map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
+            let a = u8::from_str_radix(&hex[6..8], 16)
+                .map_err(|_| ThemeError::InvalidColor(hex.to_string()))?;
             (r, g, b, a)
         }
         _ => return Err(ThemeError::InvalidColor(hex.to_string())),
@@ -347,7 +356,7 @@ mod tests {
     fn test_parse_hex_color_rgb() {
         let c = parse_hex_color("#F53").unwrap();
         assert!((c.r - 1.0).abs() < 0.01);
-        assert!((c.g - 0.53).abs() < 0.01);
+        assert!((c.g - 0.33).abs() < 0.01);
         assert!((c.b - 0.2).abs() < 0.01);
     }
 
@@ -380,7 +389,10 @@ mod tests {
                 },
                 TokenColorRule {
                     name: "String".to_string(),
-                    scope: TokenScope::Multiple(vec!["string".to_string(), "string.quoted".to_string()]),
+                    scope: TokenScope::Multiple(vec![
+                        "string".to_string(),
+                        "string.quoted".to_string(),
+                    ]),
                     settings: TokenSettings {
                         foreground: Some("#ce9178".to_string()),
                         background: None,

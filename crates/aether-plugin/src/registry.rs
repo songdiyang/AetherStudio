@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::runtime::{PluginId, PluginRuntime};
 use crate::permissions::PermissionManager;
+use crate::runtime::{PluginId, PluginRuntime};
 
 /// 已加载插件的元数据
 #[derive(Clone, Debug)]
@@ -34,17 +34,21 @@ impl PluginRegistry {
     /// 注册插件并加载
     pub fn register(&mut self, path: &std::path::Path) -> Result<PluginId, String> {
         let id = self.runtime.load_plugin(path)?;
-        
+
         // 创建默认元数据
         let metadata = PluginMetadata {
             id,
-            name: path.file_stem().unwrap_or_default().to_string_lossy().to_string(),
+            name: path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
             version: "0.1.0".to_string(),
             description: String::new(),
             author: String::new(),
             permissions: PermissionManager::new(),
         };
-        
+
         self.plugins.insert(id, metadata);
         Ok(id)
     }
@@ -53,7 +57,7 @@ impl PluginRegistry {
     pub fn unregister(&mut self, id: PluginId) {
         self.runtime.unload_plugin(id);
         self.plugins.remove(&id);
-        
+
         // 从所有钩子中移除
         for subscribers in self.hooks.values_mut() {
             subscribers.retain(|&sub_id| sub_id != id);
@@ -69,16 +73,20 @@ impl PluginRegistry {
     }
 
     /// 触发钩子，调用所有订阅的插件
-    pub fn emit(&mut self, hook: &str, args: serde_json::Value) -> Vec<(PluginId, Result<serde_json::Value, String>)> {
+    pub fn emit(
+        &mut self,
+        hook: &str,
+        args: serde_json::Value,
+    ) -> Vec<(PluginId, Result<serde_json::Value, String>)> {
         let mut results = Vec::new();
-        
+
         if let Some(subscribers) = self.hooks.get(hook).cloned() {
             for plugin_id in subscribers {
                 let result = self.runtime.call_hook(plugin_id, hook, args.clone());
                 results.push((plugin_id, result));
             }
         }
-        
+
         results
     }
 

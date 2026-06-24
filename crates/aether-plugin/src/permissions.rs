@@ -48,16 +48,14 @@ pub struct PermissionManager {
 
 impl PermissionManager {
     pub fn new() -> Self {
-        Self {
-            grants: Vec::new(),
-        }
+        Self { grants: Vec::new() }
     }
 
     /// 检查是否已授予指定权限
     pub fn is_granted(&self, level: PermissionLevel) -> bool {
-        self.grants.iter().any(|g| {
-            g.level.contains(level) && !Self::is_expired(g)
-        })
+        self.grants
+            .iter()
+            .any(|g| g.level.contains(level) && !Self::is_expired(g))
     }
 
     /// 授予权限

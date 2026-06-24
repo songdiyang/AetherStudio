@@ -134,8 +134,14 @@ impl RecentProjectsManager {
         let mut json = String::from("[\n");
         for (i, p) in projects.iter().enumerate() {
             json.push_str("  {\n");
-            json.push_str(&format!("    \"name\": \"{}\",\n", Self::escape_json(&p.name)));
-            json.push_str(&format!("    \"path\": \"{}\"\n", Self::escape_json(&p.path)));
+            json.push_str(&format!(
+                "    \"name\": \"{}\",\n",
+                Self::escape_json(&p.name)
+            ));
+            json.push_str(&format!(
+                "    \"path\": \"{}\"\n",
+                Self::escape_json(&p.path)
+            ));
             // last_opened 暂时不序列化，用文件修改时间代替
             json.push('}');
             if i < projects.len() - 1 {

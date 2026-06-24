@@ -121,14 +121,30 @@ pub enum DebugSessionState {
 /// DAP 事件（推送到UI层）
 #[derive(Clone, Debug)]
 pub enum DapEventUi {
-    Stopped { reason: String, thread_id: Option<i64> },
-    Continued { thread_id: i64 },
-    Exited { exit_code: i64 },
+    Stopped {
+        reason: String,
+        thread_id: Option<i64>,
+    },
+    Continued {
+        thread_id: i64,
+    },
+    Exited {
+        exit_code: i64,
+    },
     Terminated,
-    Output { category: String, output: String },
-    BreakpointValidated { breakpoint: Breakpoint },
-    ThreadStarted { thread_id: i64 },
-    ThreadExited { thread_id: i64 },
+    Output {
+        category: String,
+        output: String,
+    },
+    BreakpointValidated {
+        breakpoint: Breakpoint,
+    },
+    ThreadStarted {
+        thread_id: i64,
+    },
+    ThreadExited {
+        thread_id: i64,
+    },
 }
 
 /// 请求ID生成器

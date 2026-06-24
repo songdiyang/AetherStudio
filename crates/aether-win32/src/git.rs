@@ -5,15 +5,15 @@ use std::process::Command;
 /// Git 文件状态
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GitFileStatus {
-    Unmodified,     // 未修改
-    Modified,       // 已修改
-    Added,          // 已暂存
-    Deleted,        // 已删除
-    Renamed,        // 重命名
-    Copied,         // 已复制
-    Untracked,      // 未跟踪
-    Ignored,        // 已忽略
-    Conflict,       // 冲突
+    Unmodified, // 未修改
+    Modified,   // 已修改
+    Added,      // 已暂存
+    Deleted,    // 已删除
+    Renamed,    // 重命名
+    Copied,     // 已复制
+    Untracked,  // 未跟踪
+    Ignored,    // 已忽略
+    Conflict,   // 冲突
 }
 
 /// Git 仓库状态
@@ -38,7 +38,7 @@ impl GitRepository {
     /// 检测指定路径是否为 Git 仓库
     pub fn detect(path: &Path) -> Self {
         let mut repo = Self::new();
-        
+
         // 检查 .git 目录是否存在
         let git_dir = path.join(".git");
         if git_dir.exists() {
@@ -49,11 +49,11 @@ impl GitRepository {
             repo.staged_files = staged;
             repo.unstaged_files = unstaged;
             repo.untracked_files = untracked;
-            repo.has_changes = !repo.staged_files.is_empty() 
-                || !repo.unstaged_files.is_empty() 
+            repo.has_changes = !repo.staged_files.is_empty()
+                || !repo.unstaged_files.is_empty()
                 || !repo.untracked_files.is_empty();
         }
-        
+
         repo
     }
 
@@ -72,12 +72,19 @@ impl GitRepository {
     }
 
     /// 获取文件状态（通过 git status --porcelain 解析）
-    fn get_status(path: &Path) -> (HashMap<String, GitFileStatus>, Vec<String>, Vec<String>, Vec<String>) {
+    fn get_status(
+        path: &Path,
+    ) -> (
+        HashMap<String, GitFileStatus>,
+        Vec<String>,
+        Vec<String>,
+        Vec<String>,
+    ) {
         let mut status_map = HashMap::new();
         let mut staged = Vec::new();
         let mut unstaged = Vec::new();
         let mut untracked = Vec::new();
-        
+
         if let Ok(output) = Command::new("git")
             .args(&["status", "--porcelain", "-u"])
             .current_dir(path)
@@ -90,7 +97,7 @@ impl GitRepository {
                         let index_status = line.chars().nth(0).unwrap_or(' ');
                         let worktree_status = line.chars().nth(1).unwrap_or(' ');
                         let file_path = &line[3..];
-                        
+
                         let status = match (index_status, worktree_status) {
                             ('A', ' ') | ('A', 'M') | ('A', 'D') => GitFileStatus::Added,
                             ('M', ' ') | ('M', 'M') => GitFileStatus::Modified,
@@ -101,9 +108,9 @@ impl GitRepository {
                             ('U', _) | (_, 'U') => GitFileStatus::Conflict,
                             _ => GitFileStatus::Unmodified,
                         };
-                        
+
                         status_map.insert(file_path.to_string(), status);
-                        
+
                         if index_status != ' ' && index_status != '?' {
                             staged.push(file_path.to_string());
                         }
@@ -117,7 +124,7 @@ impl GitRepository {
                 }
             }
         }
-        
+
         (status_map, staged, unstaged, untracked)
     }
 
@@ -128,7 +135,10 @@ impl GitRepository {
 
     /// 获取文件状态
     pub fn file_status(&self, file: &str) -> GitFileStatus {
-        self.file_status.get(file).copied().unwrap_or(GitFileStatus::Unmodified)
+        self.file_status
+            .get(file)
+            .copied()
+            .unwrap_or(GitFileStatus::Unmodified)
     }
 
     /// 获取状态图标
@@ -149,15 +159,15 @@ impl GitRepository {
     /// 获取状态颜色（用于UI渲染）
     pub fn status_color(status: GitFileStatus) -> (f32, f32, f32) {
         match status {
-            GitFileStatus::Modified => (0.9, 0.7, 0.2),  // 黄色
-            GitFileStatus::Added => (0.2, 0.8, 0.3),     // 绿色
-            GitFileStatus::Deleted => (0.9, 0.2, 0.2),   // 红色
-            GitFileStatus::Untracked => (0.5, 0.5, 0.5), // 灰色
-            GitFileStatus::Conflict => (0.9, 0.2, 0.9),  // 紫色
-            GitFileStatus::Renamed => (0.2, 0.6, 0.9),   // 蓝色
-            GitFileStatus::Copied => (0.2, 0.9, 0.9),    // 青色
+            GitFileStatus::Modified => (0.9, 0.7, 0.2),   // 黄色
+            GitFileStatus::Added => (0.2, 0.8, 0.3),      // 绿色
+            GitFileStatus::Deleted => (0.9, 0.2, 0.2),    // 红色
+            GitFileStatus::Untracked => (0.5, 0.5, 0.5),  // 灰色
+            GitFileStatus::Conflict => (0.9, 0.2, 0.9),   // 紫色
+            GitFileStatus::Renamed => (0.2, 0.6, 0.9),    // 蓝色
+            GitFileStatus::Copied => (0.2, 0.9, 0.9),     // 青色
             GitFileStatus::Ignored => (0.4, 0.4, 0.4),    // 深灰
-            GitFileStatus::Unmodified => (0.0, 0.0, 0.0),  // 黑色（不显示）
+            GitFileStatus::Unmodified => (0.0, 0.0, 0.0), // 黑色（不显示）
         }
     }
 }
@@ -168,11 +178,7 @@ pub struct GitCommand;
 impl GitCommand {
     /// 执行 git 命令，返回 (stdout, stderr, success)
     pub fn exec(path: &Path, args: &[&str]) -> (String, String, bool) {
-        let output = match Command::new("git")
-            .args(args)
-            .current_dir(path)
-            .output()
-        {
+        let output = match Command::new("git").args(args).current_dir(path).output() {
             Ok(o) => o,
             Err(e) => return (String::new(), format!("执行 git 命令失败: {}", e), false),
         };
@@ -279,7 +285,11 @@ impl GitCommand {
         if !success {
             return Vec::new();
         }
-        stdout.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        stdout
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
     }
 
     /// git log --oneline -n <count>
@@ -294,7 +304,10 @@ impl GitCommand {
 
     /// git clone <url> <path>
     pub fn clone(url: &str, path: &Path) -> Result<String, String> {
-        let (stdout, stderr, success) = Self::exec(Path::new("."), &["clone", url, path.to_str().unwrap_or(".")]);
+        let (stdout, stderr, success) = Self::exec(
+            Path::new("."),
+            &["clone", url, path.to_str().unwrap_or(".")],
+        );
         if success {
             Ok(stdout)
         } else {
@@ -350,14 +363,18 @@ impl GitIntegration {
 
     /// 获取已暂存文件列表（带状态）
     pub fn staged_files(&self) -> Vec<(String, GitFileStatus)> {
-        self.repo.staged_files.iter()
+        self.repo
+            .staged_files
+            .iter()
             .filter_map(|f| self.repo.file_status.get(f).map(|s| (f.clone(), *s)))
             .collect()
     }
 
     /// 获取未暂存修改文件列表（带状态）
     pub fn unstaged_files(&self) -> Vec<(String, GitFileStatus)> {
-        self.repo.unstaged_files.iter()
+        self.repo
+            .unstaged_files
+            .iter()
             .filter_map(|f| self.repo.file_status.get(f).map(|s| (f.clone(), *s)))
             .collect()
     }
@@ -369,7 +386,11 @@ impl GitIntegration {
 
     /// 获取指定文件的状态
     pub fn file_status_str(&self, file: &str) -> GitFileStatus {
-        self.repo.file_status.get(file).copied().unwrap_or(GitFileStatus::Unmodified)
+        self.repo
+            .file_status
+            .get(file)
+            .copied()
+            .unwrap_or(GitFileStatus::Unmodified)
     }
 
     /// 检测并初始化 Git 仓库

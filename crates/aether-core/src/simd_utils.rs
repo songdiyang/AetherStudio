@@ -1,10 +1,10 @@
 /// SIMD加速的文本处理工具
-/// 
+///
 /// 使用 128 位（16字节）和 64 位（8字节）批量处理，模拟 SIMD 效果
 /// 在稳定版 Rust 中无需外部依赖即可实现
 
 /// 快速计算字节数组中的换行符数量
-/// 
+///
 /// 使用 16 字节批量处理（u128），比 8 字节版本快 ~2 倍
 pub fn count_newlines_simd(data: &[u8]) -> u32 {
     let mut count = 0u32;
@@ -14,10 +14,22 @@ pub fn count_newlines_simd(data: &[u8]) -> u32 {
     // 16 字节对齐批量处理（u128）
     while i + 16 <= len {
         let chunk = u128::from_le_bytes([
-            data[i], data[i + 1], data[i + 2], data[i + 3],
-            data[i + 4], data[i + 5], data[i + 6], data[i + 7],
-            data[i + 8], data[i + 9], data[i + 10], data[i + 11],
-            data[i + 12], data[i + 13], data[i + 14], data[i + 15],
+            data[i],
+            data[i + 1],
+            data[i + 2],
+            data[i + 3],
+            data[i + 4],
+            data[i + 5],
+            data[i + 6],
+            data[i + 7],
+            data[i + 8],
+            data[i + 9],
+            data[i + 10],
+            data[i + 11],
+            data[i + 12],
+            data[i + 13],
+            data[i + 14],
+            data[i + 15],
         ]);
 
         let xor_result = chunk ^ 0x0A0A0A0A0A0A0A0A0A0A0A0A0A0A0A0Au128;
@@ -29,8 +41,14 @@ pub fn count_newlines_simd(data: &[u8]) -> u32 {
     // 8 字节处理剩余部分
     while i + 8 <= len {
         let chunk = u64::from_le_bytes([
-            data[i], data[i + 1], data[i + 2], data[i + 3],
-            data[i + 4], data[i + 5], data[i + 6], data[i + 7],
+            data[i],
+            data[i + 1],
+            data[i + 2],
+            data[i + 3],
+            data[i + 4],
+            data[i + 5],
+            data[i + 6],
+            data[i + 7],
         ]);
         let xor_result = chunk ^ 0x0A0A0A0A0A0A0A0Au64;
         let is_zero = has_zero_byte(xor_result);
@@ -50,7 +68,7 @@ pub fn count_newlines_simd(data: &[u8]) -> u32 {
 }
 
 /// 快速查找字节在数组中的位置
-/// 
+///
 /// 使用 16 字节批量比较加速
 pub fn find_byte_simd(data: &[u8], target: u8) -> Option<usize> {
     let len = data.len();
@@ -61,10 +79,22 @@ pub fn find_byte_simd(data: &[u8], target: u8) -> Option<usize> {
 
     while i + 16 <= len {
         let chunk = u128::from_le_bytes([
-            data[i], data[i + 1], data[i + 2], data[i + 3],
-            data[i + 4], data[i + 5], data[i + 6], data[i + 7],
-            data[i + 8], data[i + 9], data[i + 10], data[i + 11],
-            data[i + 12], data[i + 13], data[i + 14], data[i + 15],
+            data[i],
+            data[i + 1],
+            data[i + 2],
+            data[i + 3],
+            data[i + 4],
+            data[i + 5],
+            data[i + 6],
+            data[i + 7],
+            data[i + 8],
+            data[i + 9],
+            data[i + 10],
+            data[i + 11],
+            data[i + 12],
+            data[i + 13],
+            data[i + 14],
+            data[i + 15],
         ]);
 
         let xor_result = chunk ^ pattern_128;
@@ -83,8 +113,14 @@ pub fn find_byte_simd(data: &[u8], target: u8) -> Option<usize> {
 
     while i + 8 <= len {
         let chunk = u64::from_le_bytes([
-            data[i], data[i + 1], data[i + 2], data[i + 3],
-            data[i + 4], data[i + 5], data[i + 6], data[i + 7],
+            data[i],
+            data[i + 1],
+            data[i + 2],
+            data[i + 3],
+            data[i + 4],
+            data[i + 5],
+            data[i + 6],
+            data[i + 7],
         ]);
 
         let xor_result = chunk ^ pattern_64;
@@ -110,7 +146,7 @@ pub fn find_byte_simd(data: &[u8], target: u8) -> Option<usize> {
 }
 
 /// 快速跳过空白字符
-/// 
+///
 /// 16 字节批量检查空格、制表符、回车
 pub fn skip_whitespace_simd(data: &[u8], start: usize) -> usize {
     let len = data.len();
@@ -119,10 +155,22 @@ pub fn skip_whitespace_simd(data: &[u8], start: usize) -> usize {
     // 16 字节批量检测
     while i + 16 <= len {
         let chunk = u128::from_le_bytes([
-            data[i], data[i + 1], data[i + 2], data[i + 3],
-            data[i + 4], data[i + 5], data[i + 6], data[i + 7],
-            data[i + 8], data[i + 9], data[i + 10], data[i + 11],
-            data[i + 12], data[i + 13], data[i + 14], data[i + 15],
+            data[i],
+            data[i + 1],
+            data[i + 2],
+            data[i + 3],
+            data[i + 4],
+            data[i + 5],
+            data[i + 6],
+            data[i + 7],
+            data[i + 8],
+            data[i + 9],
+            data[i + 10],
+            data[i + 11],
+            data[i + 12],
+            data[i + 13],
+            data[i + 14],
+            data[i + 15],
         ]);
 
         let is_space = chunk ^ 0x20202020202020202020202020202020u128;
@@ -146,8 +194,14 @@ pub fn skip_whitespace_simd(data: &[u8], start: usize) -> usize {
     // 8 字节批量检测
     while i + 8 <= len {
         let chunk = u64::from_le_bytes([
-            data[i], data[i + 1], data[i + 2], data[i + 3],
-            data[i + 4], data[i + 5], data[i + 6], data[i + 7],
+            data[i],
+            data[i + 1],
+            data[i + 2],
+            data[i + 3],
+            data[i + 4],
+            data[i + 5],
+            data[i + 6],
+            data[i + 7],
         ]);
 
         let is_space = chunk ^ 0x2020202020202020u64;
@@ -195,7 +249,7 @@ fn has_zero_byte(x: u64) -> u64 {
 }
 
 /// 快速字符串前缀匹配（用于关键字检测）
-/// 
+///
 /// 使用 8 字节批量比较（升级为 64 位）
 pub fn starts_with_simd(data: &[u8], prefix: &[u8]) -> bool {
     if data.len() < prefix.len() {
@@ -208,12 +262,24 @@ pub fn starts_with_simd(data: &[u8], prefix: &[u8]) -> bool {
     // 8 字节批量比较
     while i + 8 <= prefix_len {
         let data_chunk = u64::from_le_bytes([
-            data[i], data[i + 1], data[i + 2], data[i + 3],
-            data[i + 4], data[i + 5], data[i + 6], data[i + 7],
+            data[i],
+            data[i + 1],
+            data[i + 2],
+            data[i + 3],
+            data[i + 4],
+            data[i + 5],
+            data[i + 6],
+            data[i + 7],
         ]);
         let prefix_chunk = u64::from_le_bytes([
-            prefix[i], prefix[i + 1], prefix[i + 2], prefix[i + 3],
-            prefix[i + 4], prefix[i + 5], prefix[i + 6], prefix[i + 7],
+            prefix[i],
+            prefix[i + 1],
+            prefix[i + 2],
+            prefix[i + 3],
+            prefix[i + 4],
+            prefix[i + 5],
+            prefix[i + 6],
+            prefix[i + 7],
         ]);
         if data_chunk != prefix_chunk {
             return false;
@@ -224,7 +290,8 @@ pub fn starts_with_simd(data: &[u8], prefix: &[u8]) -> bool {
     // 4 字节批量比较
     while i + 4 <= prefix_len {
         let data_chunk = u32::from_le_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]);
-        let prefix_chunk = u32::from_le_bytes([prefix[i], prefix[i + 1], prefix[i + 2], prefix[i + 3]]);
+        let prefix_chunk =
+            u32::from_le_bytes([prefix[i], prefix[i + 1], prefix[i + 2], prefix[i + 3]]);
         if data_chunk != prefix_chunk {
             return false;
         }
@@ -243,7 +310,7 @@ pub fn starts_with_simd(data: &[u8], prefix: &[u8]) -> bool {
 }
 
 /// 快速计算字符串长度（到下一个换行符）
-/// 
+///
 /// 使用SIMD批量查找换行符
 pub fn line_length_simd(data: &[u8], start: usize) -> usize {
     match find_byte_simd(&data[start..], b'\n') {
@@ -253,7 +320,7 @@ pub fn line_length_simd(data: &[u8], start: usize) -> usize {
 }
 
 /// 批量检测字符类型（用于lexer）
-/// 
+///
 /// 返回每个字节的字符类型分类
 /// 类型：0=其他, 1=字母, 2=数字, 3=空白
 #[allow(dead_code)]
@@ -288,9 +355,9 @@ pub fn classify_chars_simd(data: &[u8], start: usize, out: &mut [u8]) {
 fn classify_byte(byte: u8) -> u8 {
     match byte {
         b'a'..=b'z' | b'A'..=b'Z' | b'_' => 1, // 字母/标识符
-        b'0'..=b'9' => 2, // 数字
-        b' ' | b'\t' | b'\r' | b'\n' => 3, // 空白
-        _ => 0, // 其他
+        b'0'..=b'9' => 2,                      // 数字
+        b' ' | b'\t' | b'\r' | b'\n' => 3,     // 空白
+        _ => 0,                                // 其他
     }
 }
 

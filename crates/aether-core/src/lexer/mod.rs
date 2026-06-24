@@ -139,13 +139,13 @@ impl Language {
 }
 
 pub mod c_lexer;
-pub mod rust_lexer;
-pub mod python_lexer;
+pub mod html_lexer;
 pub mod js_lexer;
 pub mod json_lexer;
 pub mod markdown_lexer;
+pub mod python_lexer;
+pub mod rust_lexer;
 pub mod toml_lexer;
-pub mod html_lexer;
 
 /// 纯文本词法分析器（无高亮）
 pub struct PlainTextLexer;

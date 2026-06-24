@@ -1,6 +1,6 @@
 /// 文本缓冲区核心 trait
 /// 抽象所有文本编辑操作，使上层代码与具体数据结构（PieceTable/Rope）解耦
-/// 
+///
 /// 设计原则：
 /// - 所有操作基于字节偏移（byte offset），而非字符索引
 /// - 行号从0开始
@@ -111,7 +111,9 @@ impl Selection {
 
     /// 规范化：确保 start <= end
     pub fn normalized(&self) -> Self {
-        if self.start.line < self.end.line || (self.start.line == self.end.line && self.start.col <= self.end.col) {
+        if self.start.line < self.end.line
+            || (self.start.line == self.end.line && self.start.col <= self.end.col)
+        {
             *self
         } else {
             Self::new(self.end, self.start)
@@ -122,9 +124,19 @@ impl Selection {
 /// 编辑操作类型
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditOp {
-    Insert { pos: usize, text: String },
-    Delete { start: usize, end: usize },
-    Replace { start: usize, end: usize, text: String },
+    Insert {
+        pos: usize,
+        text: String,
+    },
+    Delete {
+        start: usize,
+        end: usize,
+    },
+    Replace {
+        start: usize,
+        end: usize,
+        text: String,
+    },
 }
 
 /// 编辑操作结果，包含受影响的行范围
@@ -204,7 +216,13 @@ impl MultiCursorState {
     }
 
     /// 添加列选择模式的光标（矩形选区）
-    pub fn add_column_cursors(&mut self, start_line: usize, start_col: usize, end_line: usize, end_col: usize) {
+    pub fn add_column_cursors(
+        &mut self,
+        start_line: usize,
+        start_col: usize,
+        end_line: usize,
+        end_col: usize,
+    ) {
         self.clear_secondary_cursors();
         let (first_line, first_col, last_line, last_col) = if start_line <= end_line {
             (start_line, start_col, end_line, end_col)
@@ -212,7 +230,11 @@ impl MultiCursorState {
             (end_line, end_col, start_line, start_col)
         };
         for line in first_line..=last_line {
-            let col = if line == first_line { first_col } else { last_col.min(first_col) };
+            let col = if line == first_line {
+                first_col
+            } else {
+                last_col.min(first_col)
+            };
             self.add_cursor(Cursor::new(line, col));
         }
         self.primary_cursor = 0;

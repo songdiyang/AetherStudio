@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use windows::core::Result;
 use windows::Win32::Foundation::HWND;
 
-use aether_core::buffer::history::{History, CursorPosition, OpType};
+use aether_core::buffer::history::{CursorPosition, History, OpType};
 use aether_core::buffer::piece_table::PieceTable;
 use aether_core::buffer::text_buffer::MultiCursorState;
 use aether_core::lexer::{Language, LexemeSpan};
@@ -12,20 +12,20 @@ use aether_render::d2d::factory::D2DFactory;
 use aether_render::d2d::text::TextRenderer;
 use aether_render::theme::Theme;
 
-use crate::dialogs::Dialogs;
-use crate::input::KeyMap;
-use crate::layout::{LayoutManager, ActivityBarView, SidebarContent};
-use crate::menu_bar::MenuBar;
 use crate::activity_bar::ActivityBar;
+use crate::ai_panel::AiPanel;
+use crate::command_palette::CommandPalette;
+use crate::dialogs::Dialogs;
+use crate::git::GitIntegration;
+use crate::input::KeyMap;
+use crate::layout::{ActivityBarView, LayoutManager, SidebarContent};
+use crate::menu_bar::MenuBar;
+use crate::settings::SettingsPanel;
+use crate::ssh::{CloneRepoDialog, RemoteFileTree, RemoteSession, SshConnectionDialog};
 use crate::status_bar::StatusBar;
 use crate::tabs::{Tab, TabLayout};
-use crate::command_palette::CommandPalette;
-use crate::git::GitIntegration;
-use crate::ssh::{SshConnectionDialog, RemoteSession, RemoteFileTree, CloneRepoDialog};
 use crate::terminal::TerminalPanel;
-use crate::ai_panel::AiPanel;
 use aether_shared::settings::AppSettings;
-use crate::settings::SettingsPanel;
 
 /// 查找替换焦点状态
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,7 +171,8 @@ impl EditorState {
     /// 将当前编辑状态保存到后台标签页存储
     fn sync_to_tab(&mut self) {
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.buffer = std::mem::replace(&mut self.buffer, PieceTable::from_string(String::new()));
+            tab.buffer =
+                std::mem::replace(&mut self.buffer, PieceTable::from_string(String::new()));
             tab.file_path = self.file_path.clone();
             tab.cursor_line = self.cursor_line;
             tab.cursor_col = self.cursor_col;
@@ -191,7 +192,8 @@ impl EditorState {
     /// 从后台标签页存储恢复编辑状态到当前视图
     fn sync_from_tab(&mut self) {
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            self.buffer = std::mem::replace(&mut tab.buffer, PieceTable::from_string(String::new()));
+            self.buffer =
+                std::mem::replace(&mut tab.buffer, PieceTable::from_string(String::new()));
             self.file_path = tab.file_path.clone();
             self.cursor_line = tab.cursor_line;
             self.cursor_col = tab.cursor_col;
@@ -325,7 +327,8 @@ impl EditorState {
     /// 更新鼠标悬停标签
     pub fn update_hover_tab(&mut self, mouse_x: f32, mouse_y: f32, editor_x: f32) {
         let tab_bar_height = if self.tabs.len() > 1 { 30.0 } else { 0.0 };
-        if tab_bar_height == 0.0 || mouse_y < 0.0 || mouse_y > tab_bar_height || mouse_x < editor_x {
+        if tab_bar_height == 0.0 || mouse_y < 0.0 || mouse_y > tab_bar_height || mouse_x < editor_x
+        {
             self.hover_tab = None;
             return;
         }
@@ -585,7 +588,10 @@ impl EditorState {
 
     /// 显示不支持的文件提示
     fn show_unsupported_file(&mut self, path: &PathBuf) {
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("unknown");
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("unknown");
         let message = format!("不支持的文件格式: .{}\n文件: {}", ext, path.display());
         if self.can_reuse_current_tab() {
             self.file_path = Some(path.clone());
@@ -731,11 +737,21 @@ impl EditorState {
                 self.cursor_col += text.len();
             } else {
                 self.cursor_line += line_breaks;
-                self.cursor_col = text.rsplit_once('\n').map(|(_, last)| last.len()).unwrap_or(0);
+                self.cursor_col = text
+                    .rsplit_once('\n')
+                    .map(|(_, last)| last.len())
+                    .unwrap_or(0);
             }
 
             let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-            self.history.record(before_pieces, before_add_len, cursor_before, cursor_after, OpType::Insert, pos);
+            self.history.record(
+                before_pieces,
+                before_add_len,
+                cursor_before,
+                cursor_after,
+                OpType::Insert,
+                pos,
+            );
             self.clear_selection();
             self.status_message = "已粘贴".to_string();
         }
@@ -752,8 +768,16 @@ impl EditorState {
             None => return,
         };
 
-        let (first_line, first_col) = if start_line <= end_line { (start_line, start_col) } else { (end_line, end_col) };
-        let (last_line, last_col) = if start_line <= end_line { (end_line, end_col) } else { (start_line, start_col) };
+        let (first_line, first_col) = if start_line <= end_line {
+            (start_line, start_col)
+        } else {
+            (end_line, end_col)
+        };
+        let (last_line, last_col) = if start_line <= end_line {
+            (end_line, end_col)
+        } else {
+            (start_line, start_col)
+        };
 
         let start_byte = self.line_byte_start(first_line) + first_col;
         let end_byte = self.line_byte_start(last_line) + last_col;
@@ -771,7 +795,14 @@ impl EditorState {
             self.cursor_col = first_col;
 
             let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-            self.history.record(before_pieces, before_add_len, cursor_before, cursor_after, OpType::Delete, start_byte);
+            self.history.record(
+                before_pieces,
+                before_add_len,
+                cursor_before,
+                cursor_after,
+                OpType::Delete,
+                start_byte,
+            );
         }
         self.clear_selection();
     }
@@ -779,7 +810,11 @@ impl EditorState {
     /// 全选
     pub fn select_all(&mut self) {
         let last_line = self.buffer.len_lines().saturating_sub(1);
-        let last_col = self.buffer.get_line(last_line).map(|t| t.len()).unwrap_or(0);
+        let last_col = self
+            .buffer
+            .get_line(last_line)
+            .map(|t| t.len())
+            .unwrap_or(0);
         self.selection_start = Some((0, 0));
         self.selection_end = Some((last_line, last_col));
         self.cursor_line = last_line;
@@ -850,9 +885,13 @@ impl EditorState {
 
     /// 设置剪贴板文本
     fn set_clipboard_text(text: &str) {
-        use windows::Win32::System::DataExchange::{OpenClipboard, EmptyClipboard, CloseClipboard, SetClipboardData};
-        use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
         use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::DataExchange::{
+            CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+        };
+        use windows::Win32::System::Memory::{
+            GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
+        };
         const CF_UNICODETEXT: u32 = 13;
 
         unsafe {
@@ -879,30 +918,34 @@ impl EditorState {
 
     /// 获取剪贴板文本
     fn get_clipboard_text() -> Option<String> {
-        use windows::Win32::System::DataExchange::{OpenClipboard, CloseClipboard, GetClipboardData};
+        use windows::Win32::Foundation::{HANDLE, HGLOBAL};
+        use windows::Win32::System::DataExchange::{
+            CloseClipboard, GetClipboardData, OpenClipboard,
+        };
         use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
-        use windows::Win32::Foundation::{HGLOBAL, HANDLE};
         const CF_UNICODETEXT: u32 = 13;
 
         unsafe {
             if OpenClipboard(None).is_err() {
                 return None;
             }
-            let result = GetClipboardData(CF_UNICODETEXT).ok().and_then(|handle: HANDLE| {
-                let hglobal = HGLOBAL(handle.0);
-                let ptr = GlobalLock(hglobal);
-                if ptr.is_null() {
-                    return None;
-                }
-                let wide_ptr = ptr as *const u16;
-                let mut len = 0;
-                while *wide_ptr.add(len) != 0 {
-                    len += 1;
-                }
-                let slice = std::slice::from_raw_parts(wide_ptr, len);
-                let _ = GlobalUnlock(hglobal);
-                String::from_utf16(slice).ok()
-            });
+            let result = GetClipboardData(CF_UNICODETEXT)
+                .ok()
+                .and_then(|handle: HANDLE| {
+                    let hglobal = HGLOBAL(handle.0);
+                    let ptr = GlobalLock(hglobal);
+                    if ptr.is_null() {
+                        return None;
+                    }
+                    let wide_ptr = ptr as *const u16;
+                    let mut len = 0;
+                    while *wide_ptr.add(len) != 0 {
+                        len += 1;
+                    }
+                    let slice = std::slice::from_raw_parts(wide_ptr, len);
+                    let _ = GlobalUnlock(hglobal);
+                    String::from_utf16(slice).ok()
+                });
             let _ = CloseClipboard();
             result
         }
@@ -932,9 +975,9 @@ impl EditorState {
                     self.save_as(path);
                 }
             }
-            crate::menu_bar::CommandId::FileExit => {
-                unsafe { windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0); }
-            }
+            crate::menu_bar::CommandId::FileExit => unsafe {
+                windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0);
+            },
             crate::menu_bar::CommandId::EditUndo => {
                 self.undo();
             }
@@ -991,7 +1034,12 @@ impl EditorState {
                 if self.layout.bottom_panel_visible && !self.terminal_panel.running {
                     let _ = self.terminal_panel.start();
                 }
-                self.status_message = if self.layout.bottom_panel_visible { "终端已打开" } else { "终端已关闭" }.to_string();
+                self.status_message = if self.layout.bottom_panel_visible {
+                    "终端已打开"
+                } else {
+                    "终端已关闭"
+                }
+                .to_string();
             }
             crate::menu_bar::CommandId::HelpAbout => {
                 self.status_message = "牧羊人编辑器 v0.1.0".to_string();
@@ -1188,7 +1236,10 @@ impl EditorState {
                             Ok(content) => {
                                 let text = String::from_utf8_lossy(&content).to_string();
                                 let tab = crate::tabs::Tab {
-                                    file_path: Some(PathBuf::from(format!("remote:{}", remote_path))),
+                                    file_path: Some(PathBuf::from(format!(
+                                        "remote:{}",
+                                        remote_path
+                                    ))),
                                     buffer: PieceTable::from_string(text),
                                     cursor_line: 0,
                                     cursor_col: 0,
@@ -1264,9 +1315,7 @@ impl EditorState {
             crate::layout::SidebarContent::FileTree => {
                 self.update_local_tree_hover(_mouse_x, mouse_y)
             }
-            crate::layout::SidebarContent::RemoteFileTree => {
-                self.update_remote_tree_hover(mouse_y)
-            }
+            crate::layout::SidebarContent::RemoteFileTree => self.update_remote_tree_hover(mouse_y),
             _ => {
                 let old = self.hover_file_node.take();
                 old.is_some()
@@ -1316,7 +1365,11 @@ impl EditorState {
     }
 
     /// 处理 SSH 对话框点击
-    pub fn handle_ssh_dialog_click(&mut self, mouse_x: f32, mouse_y: f32) -> Option<crate::ssh::DialogAction> {
+    pub fn handle_ssh_dialog_click(
+        &mut self,
+        mouse_x: f32,
+        mouse_y: f32,
+    ) -> Option<crate::ssh::DialogAction> {
         if let Some(rect) = &self.ssh_dialog.connect_btn_rect {
             if rect.contains(mouse_x, mouse_y) {
                 self.ssh_dialog.hover_button = Some(0);
@@ -1334,7 +1387,11 @@ impl EditorState {
     }
 
     /// 处理克隆对话框点击
-    pub fn handle_clone_dialog_click(&mut self, mouse_x: f32, mouse_y: f32) -> Option<crate::ssh::DialogAction> {
+    pub fn handle_clone_dialog_click(
+        &mut self,
+        mouse_x: f32,
+        mouse_y: f32,
+    ) -> Option<crate::ssh::DialogAction> {
         if let Some(rect) = &self.clone_dialog.clone_btn_rect {
             if rect.contains(mouse_x, mouse_y) {
                 self.clone_dialog.hover_button = Some(0);
@@ -1355,15 +1412,17 @@ impl EditorState {
     pub fn handle_ssh_dialog_key(&mut self, ch: char) {
         match self.ssh_dialog.focus_field {
             0 => self.ssh_dialog.host.push(ch),
-            1 => if ch.is_ascii_digit() { self.ssh_dialog.port.push(ch); }
-            2 => self.ssh_dialog.username.push(ch),
-            3 => {
-                match self.ssh_dialog.auth_type {
-                    crate::ssh::SshAuthType::Password => self.ssh_dialog.password.push(ch),
-                    crate::ssh::SshAuthType::Key => self.ssh_dialog.key_path.push(ch),
-                    crate::ssh::SshAuthType::Agent => {}
+            1 => {
+                if ch.is_ascii_digit() {
+                    self.ssh_dialog.port.push(ch);
                 }
             }
+            2 => self.ssh_dialog.username.push(ch),
+            3 => match self.ssh_dialog.auth_type {
+                crate::ssh::SshAuthType::Password => self.ssh_dialog.password.push(ch),
+                crate::ssh::SshAuthType::Key => self.ssh_dialog.key_path.push(ch),
+                crate::ssh::SshAuthType::Agent => {}
+            },
             4 => self.ssh_dialog.key_passphrase.push(ch),
             _ => {}
         }
@@ -1372,17 +1431,27 @@ impl EditorState {
     /// 处理 SSH 对话框退格
     pub fn handle_ssh_dialog_backspace(&mut self) {
         match self.ssh_dialog.focus_field {
-            0 => { self.ssh_dialog.host.pop(); }
-            1 => { self.ssh_dialog.port.pop(); }
-            2 => { self.ssh_dialog.username.pop(); }
-            3 => {
-                match self.ssh_dialog.auth_type {
-                    crate::ssh::SshAuthType::Password => { self.ssh_dialog.password.pop(); }
-                    crate::ssh::SshAuthType::Key => { self.ssh_dialog.key_path.pop(); }
-                    crate::ssh::SshAuthType::Agent => {}
-                }
+            0 => {
+                self.ssh_dialog.host.pop();
             }
-            4 => { self.ssh_dialog.key_passphrase.pop(); }
+            1 => {
+                self.ssh_dialog.port.pop();
+            }
+            2 => {
+                self.ssh_dialog.username.pop();
+            }
+            3 => match self.ssh_dialog.auth_type {
+                crate::ssh::SshAuthType::Password => {
+                    self.ssh_dialog.password.pop();
+                }
+                crate::ssh::SshAuthType::Key => {
+                    self.ssh_dialog.key_path.pop();
+                }
+                crate::ssh::SshAuthType::Agent => {}
+            },
+            4 => {
+                self.ssh_dialog.key_passphrase.pop();
+            }
             _ => {}
         }
     }
@@ -1423,7 +1492,10 @@ impl EditorState {
         for (i, comp) in components.iter().enumerate() {
             let comp_name = comp.as_os_str().to_string_lossy();
             let mut found = None;
-            let mut child_idx = tree.get_node(current_idx).map(|n| n.first_child).filter(|&c| c != u32::MAX);
+            let mut child_idx = tree
+                .get_node(current_idx)
+                .map(|n| n.first_child)
+                .filter(|&c| c != u32::MAX);
 
             while let Some(idx) = child_idx {
                 if let Some(node) = tree.get_node(idx) {
@@ -1432,7 +1504,11 @@ impl EditorState {
                         found = Some(idx);
                         break;
                     }
-                    child_idx = if node.next_sibling != u32::MAX { Some(node.next_sibling) } else { None };
+                    child_idx = if node.next_sibling != u32::MAX {
+                        Some(node.next_sibling)
+                    } else {
+                        None
+                    };
                 } else {
                     break;
                 }
@@ -1476,16 +1552,27 @@ impl EditorState {
         Some(path)
     }
 
-    fn find_tree_click_target(tree: &FileTree, parent_idx: u32, mouse_y: f32, current_y: &mut f32) -> Option<(u32, FileKind)> {
+    fn find_tree_click_target(
+        tree: &FileTree,
+        parent_idx: u32,
+        mouse_y: f32,
+        current_y: &mut f32,
+    ) -> Option<(u32, FileKind)> {
         let mut child_idx = if parent_idx == u32::MAX {
             tree.first_root_node()
         } else {
-            tree.get_node(parent_idx).map(|n| n.first_child).filter(|&c| c != u32::MAX)
+            tree.get_node(parent_idx)
+                .map(|n| n.first_child)
+                .filter(|&c| c != u32::MAX)
         };
 
         while let Some(idx) = child_idx {
             if let Some(node) = tree.get_node(idx) {
-                let next_sibling = if node.next_sibling != u32::MAX { Some(node.next_sibling) } else { None };
+                let next_sibling = if node.next_sibling != u32::MAX {
+                    Some(node.next_sibling)
+                } else {
+                    None
+                };
 
                 if mouse_y >= *current_y && mouse_y < *current_y + 20.0 {
                     return Some((idx, node.kind));
@@ -1494,7 +1581,9 @@ impl EditorState {
 
                 // 如果目录展开，递归查找子节点
                 if node.kind == FileKind::Directory && node.is_expanded {
-                    if let Some(result) = Self::find_tree_click_target(tree, idx, mouse_y, current_y) {
+                    if let Some(result) =
+                        Self::find_tree_click_target(tree, idx, mouse_y, current_y)
+                    {
                         return Some(result);
                     }
                 }
@@ -1507,7 +1596,13 @@ impl EditorState {
         None
     }
 
-    fn populate_file_tree(&self, tree: &mut FileTree, path: &PathBuf, parent_idx: u32, depth: u8) -> std::io::Result<()> {
+    fn populate_file_tree(
+        &self,
+        tree: &mut FileTree,
+        path: &PathBuf,
+        parent_idx: u32,
+        depth: u8,
+    ) -> std::io::Result<()> {
         let mut entries: Vec<_> = std::fs::read_dir(path)?.filter_map(|e| e.ok()).collect();
         entries.sort_by(|a, b| {
             let a_is_dir = a.file_type().map(|t| t.is_dir()).unwrap_or(false);
@@ -1522,7 +1617,11 @@ impl EditorState {
         for entry in entries {
             let name = entry.file_name().to_string_lossy().to_string();
             let is_dir = entry.file_type()?.is_dir();
-            let kind = if is_dir { FileKind::Directory } else { FileKind::File };
+            let kind = if is_dir {
+                FileKind::Directory
+            } else {
+                FileKind::File
+            };
             let idx = tree.add_node(&name, kind, parent_idx, depth);
 
             if is_dir && depth < 5 {
@@ -1546,7 +1645,14 @@ impl EditorState {
         self.buffer_version += 1;
 
         let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-        self.history.record(before_pieces, before_add_len, cursor_before, cursor_after, OpType::Insert, pos);
+        self.history.record(
+            before_pieces,
+            before_add_len,
+            cursor_before,
+            cursor_after,
+            OpType::Insert,
+            pos,
+        );
         self.status_message = "已修改".to_string();
     }
 
@@ -1563,7 +1669,14 @@ impl EditorState {
         self.buffer_version += 1;
 
         let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-        self.history.record(before_pieces, before_add_len, cursor_before, cursor_after, OpType::Insert, pos);
+        self.history.record(
+            before_pieces,
+            before_add_len,
+            cursor_before,
+            cursor_after,
+            OpType::Insert,
+            pos,
+        );
         self.status_message = "已修改".to_string();
     }
 
@@ -1575,7 +1688,10 @@ impl EditorState {
 
         // 获取当前行的前导空白（用于自动缩进）
         let indent = if let Some(line_text) = self.buffer.get_line(self.cursor_line) {
-            let leading_ws: String = line_text.chars().take_while(|c| c.is_whitespace()).collect();
+            let leading_ws: String = line_text
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .collect();
             leading_ws
         } else {
             String::new()
@@ -1607,7 +1723,14 @@ impl EditorState {
         self.buffer_version += 1;
 
         let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-        self.history.record(before_pieces, before_add_len, cursor_before, cursor_after, OpType::Insert, pos);
+        self.history.record(
+            before_pieces,
+            before_add_len,
+            cursor_before,
+            cursor_after,
+            OpType::Insert,
+            pos,
+        );
         self.status_message = "已修改".to_string();
     }
 
@@ -1626,7 +1749,14 @@ impl EditorState {
                 self.buffer_version += 1;
 
                 let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-                self.history.record(before_pieces, before_add_len, cursor_before, cursor_after, OpType::Delete, prev_pos);
+                self.history.record(
+                    before_pieces,
+                    before_add_len,
+                    cursor_before,
+                    cursor_after,
+                    OpType::Delete,
+                    prev_pos,
+                );
                 self.status_message = "已修改".to_string();
             }
         } else if self.cursor_line > 0 {
@@ -1649,7 +1779,14 @@ impl EditorState {
                     self.buffer_version += 1;
 
                     let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-                    self.history.record(before_pieces, before_add_len, cursor_before, cursor_after, OpType::Delete, start);
+                    self.history.record(
+                        before_pieces,
+                        before_add_len,
+                        cursor_before,
+                        cursor_after,
+                        OpType::Delete,
+                        start,
+                    );
                     self.status_message = "已修改".to_string();
                 }
             }
@@ -1669,7 +1806,14 @@ impl EditorState {
             self.buffer_version += 1;
 
             let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-            self.history.record(before_pieces, before_add_len, cursor_before, cursor_after, OpType::Delete, pos);
+            self.history.record(
+                before_pieces,
+                before_add_len,
+                cursor_before,
+                cursor_after,
+                OpType::Delete,
+                pos,
+            );
             self.status_message = "已修改".to_string();
         }
     }
@@ -1769,7 +1913,10 @@ impl EditorState {
         let current_add_len = self.buffer.add_buffer_len();
         let current_cursor = CursorPosition::new(self.cursor_line, self.cursor_col);
 
-        if let Some((pieces, add_len, cursor)) = self.history.undo(current_pieces, current_add_len, current_cursor) {
+        if let Some((pieces, add_len, cursor)) =
+            self.history
+                .undo(current_pieces, current_add_len, current_cursor)
+        {
             self.buffer.restore(pieces, add_len);
             self.cursor_line = cursor.line;
             self.cursor_col = cursor.column;
@@ -1785,7 +1932,10 @@ impl EditorState {
         let current_add_len = self.buffer.add_buffer_len();
         let current_cursor = CursorPosition::new(self.cursor_line, self.cursor_col);
 
-        if let Some((pieces, add_len, cursor)) = self.history.redo(current_pieces, current_add_len, current_cursor) {
+        if let Some((pieces, add_len, cursor)) =
+            self.history
+                .redo(current_pieces, current_add_len, current_cursor)
+        {
             self.buffer.restore(pieces, add_len);
             self.cursor_line = cursor.line;
             self.cursor_col = cursor.column;
@@ -1854,7 +2004,13 @@ impl EditorState {
         }
     }
 
-    pub fn set_cursor_from_mouse(&mut self, mouse_x: f32, mouse_y: f32, editor_x: f32, editor_y: f32) {
+    pub fn set_cursor_from_mouse(
+        &mut self,
+        mouse_x: f32,
+        mouse_y: f32,
+        editor_x: f32,
+        editor_y: f32,
+    ) {
         let line_height = self.text_renderer.line_height();
         let char_width = self.text_renderer.char_width();
         let line_number_width = 60.0;
@@ -1912,14 +2068,26 @@ impl EditorState {
             let line = self.buffer.get_line(start_line)?;
             let start = start_col.min(line.len());
             let end = end_col.min(line.len());
-            let (s, e) = if start <= end { (start, end) } else { (end, start) };
+            let (s, e) = if start <= end {
+                (start, end)
+            } else {
+                (end, start)
+            };
             return Some(line[s..e].to_string());
         }
 
         // Multi-line selection (simplified)
         let mut result = String::new();
-        let (first_line, first_col) = if start_line <= end_line { (start_line, start_col) } else { (end_line, end_col) };
-        let (last_line, last_col) = if start_line <= end_line { (end_line, end_col) } else { (start_line, start_col) };
+        let (first_line, first_col) = if start_line <= end_line {
+            (start_line, start_col)
+        } else {
+            (end_line, end_col)
+        };
+        let (last_line, last_col) = if start_line <= end_line {
+            (end_line, end_col)
+        } else {
+            (start_line, start_col)
+        };
 
         for line_idx in first_line..=last_line {
             if let Some(line) = self.buffer.get_line(line_idx) {
@@ -1957,7 +2125,9 @@ impl EditorState {
     }
 
     fn find_prev_char_boundary(&self, pos: usize) -> usize {
-        if pos == 0 { return 0; }
+        if pos == 0 {
+            return 0;
+        }
         let mut p = pos - 1;
         while p > 0 && (self.buffer.get_text(p, p + 1).as_bytes()[0] & 0xC0) == 0x80 {
             p -= 1;
@@ -1967,7 +2137,9 @@ impl EditorState {
 
     fn find_next_char_boundary(&self, pos: usize) -> usize {
         let total = self.buffer.len_bytes();
-        if pos >= total { return total; }
+        if pos >= total {
+            return total;
+        }
         let mut p = pos + 1;
         while p < total && (self.buffer.get_text(p, p + 1).as_bytes()[0] & 0xC0) == 0x80 {
             p += 1;
@@ -1988,7 +2160,8 @@ impl EditorState {
 
         // 调整行号 UTF-16 缓存大小
         if self.cached_line_numbers.len() != total_lines {
-            self.cached_line_numbers.resize_with(total_lines, || Vec::new());
+            self.cached_line_numbers
+                .resize_with(total_lines, || Vec::new());
         }
 
         // 只重建可见行范围内的缓存（加上前后各2行的缓冲，避免滚动时闪烁）
@@ -2089,7 +2262,10 @@ impl EditorState {
             return;
         }
         // 缓存命中：查询和文本版本都未变，跳过搜索
-        if self.find_query == self.last_find_query && self.find_result_version == self.buffer_version && !self.find_results.is_empty() {
+        if self.find_query == self.last_find_query
+            && self.find_result_version == self.buffer_version
+            && !self.find_results.is_empty()
+        {
             // 结果已有效，无需重新搜索
             return;
         }
@@ -2171,7 +2347,14 @@ impl EditorState {
         self.cursor_line = line;
         self.cursor_col = col + self.replace_text.len();
         let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-        self.history.record(before_pieces, before_add_len, cursor_before, cursor_after, OpType::Insert, pos);
+        self.history.record(
+            before_pieces,
+            before_add_len,
+            cursor_before,
+            cursor_after,
+            OpType::Insert,
+            pos,
+        );
 
         // 重新查找
         self.find_all();
@@ -2230,7 +2413,11 @@ impl EditorState {
         if !self.find_visible {
             self.find_focus = FindReplaceFocus::None;
         } else {
-            self.find_focus = if self.replace_visible { FindReplaceFocus::FindQuery } else { FindReplaceFocus::None };
+            self.find_focus = if self.replace_visible {
+                FindReplaceFocus::FindQuery
+            } else {
+                FindReplaceFocus::None
+            };
         }
         if self.find_visible && !self.find_query.is_empty() {
             self.find_all();
@@ -2253,18 +2440,26 @@ impl EditorState {
         if self.selection_start.is_some() && self.selection_end.is_some() {
             let (start_line, start_col) = self.selection_start.unwrap();
             let (end_line, end_col) = self.selection_end.unwrap();
-            let (first_line, first_col) = if start_line <= end_line { (start_line, start_col) } else { (end_line, end_col) };
-            let (last_line, last_col) = if start_line <= end_line { (end_line, end_col) } else { (start_line, start_col) };
+            let (first_line, first_col) = if start_line <= end_line {
+                (start_line, start_col)
+            } else {
+                (end_line, end_col)
+            };
+            let (last_line, last_col) = if start_line <= end_line {
+                (end_line, end_col)
+            } else {
+                (start_line, start_col)
+            };
             let start_byte = self.line_byte_start(first_line) + first_col;
             let end_byte = self.line_byte_start(last_line) + last_col;
-            
+
             let before_pieces = self.buffer.get_pieces();
             let before_add_len = self.buffer.add_buffer_len();
             let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
-            
+
             self.buffer.delete(start_byte, end_byte);
             self.buffer.insert(start_byte, code);
-            
+
             // 计算新光标位置
             let code_lines: Vec<&str> = code.lines().collect();
             let new_line = first_line + code_lines.len().saturating_sub(1);
@@ -2276,8 +2471,15 @@ impl EditorState {
             self.cursor_line = new_line;
             self.cursor_col = new_col;
             let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-            self.history.record(before_pieces, before_add_len, cursor_before, cursor_after, OpType::Insert, start_byte);
-            
+            self.history.record(
+                before_pieces,
+                before_add_len,
+                cursor_before,
+                cursor_after,
+                OpType::Insert,
+                start_byte,
+            );
+
             self.clear_selection();
             self.is_dirty = true;
             self.buffer_version += 1;
@@ -2288,9 +2490,9 @@ impl EditorState {
         let before_pieces = self.buffer.get_pieces();
         let before_add_len = self.buffer.add_buffer_len();
         let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
-        
+
         self.buffer.insert(pos, code);
-        
+
         // 更新光标位置
         let _code_lines: Vec<&str> = code.lines().collect();
         let line_breaks = code.matches('\n').count();
@@ -2298,11 +2500,21 @@ impl EditorState {
             self.cursor_col += code.len();
         } else {
             self.cursor_line += line_breaks;
-            self.cursor_col = code.rsplit_once('\n').map(|(_, last)| last.len()).unwrap_or(0);
+            self.cursor_col = code
+                .rsplit_once('\n')
+                .map(|(_, last)| last.len())
+                .unwrap_or(0);
         }
         let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-        self.history.record(before_pieces, before_add_len, cursor_before, cursor_after, OpType::Insert, pos);
-        
+        self.history.record(
+            before_pieces,
+            before_add_len,
+            cursor_before,
+            cursor_after,
+            OpType::Insert,
+            pos,
+        );
+
         self.is_dirty = true;
         self.buffer_version += 1;
         self.status_message = "已插入 AI 代码".to_string();
@@ -2314,15 +2526,59 @@ impl EditorState {
 pub(crate) fn is_text_file(path: &std::path::Path) -> bool {
     // 已知的文本文件扩展名
     let text_extensions = [
-        "txt", "rs", "c", "h", "cpp", "hpp", "cc", "cxx",
-        "js", "jsx", "ts", "tsx", "json", "md", "markdown",
-        "py", "pyw", "pyi", "toml", "yaml", "yml", "xml",
-        "html", "htm", "css", "scss", "sass", "less",
-        "java", "kt", "go", "rb", "php", "swift",
-        "sh", "bash", "zsh", "ps1", "bat", "cmd",
-        "sql", "lua", "r", "pl", "pm", "t",
-        "ini", "cfg", "conf", "properties",
-        "log", "csv", "tsv",
+        "txt",
+        "rs",
+        "c",
+        "h",
+        "cpp",
+        "hpp",
+        "cc",
+        "cxx",
+        "js",
+        "jsx",
+        "ts",
+        "tsx",
+        "json",
+        "md",
+        "markdown",
+        "py",
+        "pyw",
+        "pyi",
+        "toml",
+        "yaml",
+        "yml",
+        "xml",
+        "html",
+        "htm",
+        "css",
+        "scss",
+        "sass",
+        "less",
+        "java",
+        "kt",
+        "go",
+        "rb",
+        "php",
+        "swift",
+        "sh",
+        "bash",
+        "zsh",
+        "ps1",
+        "bat",
+        "cmd",
+        "sql",
+        "lua",
+        "r",
+        "pl",
+        "pm",
+        "t",
+        "ini",
+        "cfg",
+        "conf",
+        "properties",
+        "log",
+        "csv",
+        "tsv",
     ];
 
     if let Some(ext) = path.extension() {
@@ -2345,9 +2601,12 @@ pub(crate) fn is_text_file(path: &std::path::Path) -> bool {
                 return false;
             }
             // 检查是否主要是可打印字符
-            let printable_count = sample.iter().filter(|&&b| {
-                b.is_ascii_graphic() || b.is_ascii_whitespace() || b == 0x0D || b == 0x0A
-            }).count();
+            let printable_count = sample
+                .iter()
+                .filter(|&&b| {
+                    b.is_ascii_graphic() || b.is_ascii_whitespace() || b == 0x0D || b == 0x0A
+                })
+                .count();
             if n > 0 && printable_count >= n * 9 / 10 {
                 return true;
             }

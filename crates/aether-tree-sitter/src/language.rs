@@ -7,7 +7,9 @@ pub fn get_language(language_id: &str) -> Option<Language> {
     match language_id {
         "rust" | "rs" => Some(tree_sitter_rust::language()),
         "javascript" | "js" | "jsx" | "mjs" | "cjs" => Some(tree_sitter_javascript::language()),
-        "typescript" | "ts" | "tsx" | "mts" | "cts" => Some(tree_sitter_typescript::language_typescript()),
+        "typescript" | "ts" | "tsx" | "mts" | "cts" => {
+            Some(tree_sitter_typescript::language_typescript())
+        }
         "python" | "py" | "pyw" | "pyi" => Some(tree_sitter_python::language()),
         "c" | "h" => Some(tree_sitter_c::language()),
         "cpp" | "hpp" | "cc" | "cxx" | "c++" => Some(tree_sitter_cpp::language()),

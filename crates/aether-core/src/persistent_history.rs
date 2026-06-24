@@ -5,7 +5,7 @@ use crate::buffer::piece_table::{Piece, PieceTable};
 use crate::buffer::text_buffer::EditResult;
 
 /// 持久化版本快照
-/// 
+///
 /// PieceTable 的天然持久化特性：
 /// - add_buffer 只追加不删除，所有历史版本共享
 /// - pieces 列表通过 Arc 共享，undo/redo 只是引用计数 +1
@@ -27,7 +27,7 @@ pub struct VersionSnapshot {
 }
 
 /// 持久化版本历史管理器
-/// 
+///
 /// 支持高效的撤销/重做，利用PieceTable的持久化特性
 /// 内存开销：每个版本仅存储 Arc<Vec<Piece>>（引用计数，共享数据）
 pub struct PersistentHistory {
@@ -64,7 +64,7 @@ impl PersistentHistory {
     }
 
     /// 记录新版本
-    /// 
+    ///
     /// 如果编辑很小且距离上次编辑很近，则尝试合并
     pub fn record_version(
         &mut self,
@@ -83,7 +83,8 @@ impl PersistentHistory {
                 current.pieces = Arc::new(pieces);
                 current.total_bytes = total_bytes;
                 current.total_lines = total_lines;
-                current.edit_description = format!("{} + {}", current.edit_description, edit_description);
+                current.edit_description =
+                    format!("{} + {}", current.edit_description, edit_description);
                 current.timestamp = now;
                 self.last_edit_time = Some(now);
                 self.last_edit_size = edit_size;
@@ -225,7 +226,7 @@ impl Default for PersistentHistory {
 }
 
 /// 带持久化历史的 PieceTable 包装器
-/// 
+///
 /// 提供高效的撤销/重做功能，同时保持PieceTable的所有性能优势
 pub struct PersistentPieceTable {
     /// 当前PieceTable
@@ -262,7 +263,10 @@ impl PersistentPieceTable {
         let result = self.table.insert_with_result(pos, text);
 
         if self.auto_record {
-            self.record_history(&format!("插入 '{}'", text.chars().take(20).collect::<String>()));
+            self.record_history(&format!(
+                "插入 '{}'",
+                text.chars().take(20).collect::<String>()
+            ));
         }
 
         result
@@ -403,7 +407,10 @@ mod tests {
 
         // 插入
         ppt.insert(5, " Beautiful");
-        assert_eq!(ppt.table.get_line(0), Some("Hello Beautiful World".to_string()));
+        assert_eq!(
+            ppt.table.get_line(0),
+            Some("Hello Beautiful World".to_string())
+        );
 
         // 撤销
         assert!(ppt.undo());
@@ -411,7 +418,10 @@ mod tests {
 
         // 重做
         assert!(ppt.redo());
-        assert_eq!(ppt.table.get_line(0), Some("Hello Beautiful World".to_string()));
+        assert_eq!(
+            ppt.table.get_line(0),
+            Some("Hello Beautiful World".to_string())
+        );
     }
 
     #[test]
@@ -460,10 +470,20 @@ mod tests {
         // 验证 Arc 包装确保 undo/redo 共享数据
         let mut history = PersistentHistory::new(10);
 
-        let pieces1 = vec![Piece { source: crate::buffer::piece_table::Source::Add, start: 0, len: 5, line_breaks: 0 }];
+        let pieces1 = vec![Piece {
+            source: crate::buffer::piece_table::Source::Add,
+            start: 0,
+            len: 5,
+            line_breaks: 0,
+        }];
         history.record_version(pieces1, 5, 1, "v1", 5);
 
-        let pieces2 = vec![Piece { source: crate::buffer::piece_table::Source::Add, start: 0, len: 10, line_breaks: 0 }];
+        let pieces2 = vec![Piece {
+            source: crate::buffer::piece_table::Source::Add,
+            start: 0,
+            len: 10,
+            line_breaks: 0,
+        }];
         history.record_version(pieces2, 10, 1, "v2", 5);
 
         // undo 回到 v1
