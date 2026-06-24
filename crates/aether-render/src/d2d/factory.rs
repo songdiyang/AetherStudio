@@ -2,10 +2,9 @@ use windows::core::Result;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Factory1, ID2D1HwndRenderTarget,
+    D2D1CreateFactory, ID2D1Factory1, ID2D1HwndRenderTarget, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
     D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
     D2D1_PRESENT_OPTIONS, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_HARDWARE,
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
 };
 
 /// Direct2D工厂管理器
@@ -17,10 +16,8 @@ impl D2DFactory {
     pub fn new() -> Result<Self> {
         unsafe {
             let options = D2D1_FACTORY_OPTIONS::default();
-            let factory: ID2D1Factory1 = D2D1CreateFactory(
-                D2D1_FACTORY_TYPE_SINGLE_THREADED,
-                Some(&options),
-            )?;
+            let factory: ID2D1Factory1 =
+                D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, Some(&options))?;
             Ok(Self { factory })
         }
     }
@@ -55,7 +52,8 @@ impl D2DFactory {
                 presentOptions: D2D1_PRESENT_OPTIONS(0),
             };
 
-            self.factory.CreateHwndRenderTarget(&render_target_props, &hwnd_props)
+            self.factory
+                .CreateHwndRenderTarget(&render_target_props, &hwnd_props)
         }
     }
 }
@@ -69,7 +67,13 @@ pub struct RenderTarget {
 }
 
 impl RenderTarget {
-    pub fn new(factory: &D2DFactory, hwnd: HWND, pixel_width: u32, pixel_height: u32, dpi: f32) -> Result<Self> {
+    pub fn new(
+        factory: &D2DFactory,
+        hwnd: HWND,
+        pixel_width: u32,
+        pixel_height: u32,
+        dpi: f32,
+    ) -> Result<Self> {
         let target = factory.create_hwnd_render_target(hwnd, pixel_width, pixel_height, dpi)?;
         Ok(Self {
             target,
@@ -97,7 +101,10 @@ impl RenderTarget {
 
     pub fn resize(&mut self, pixel_width: u32, pixel_height: u32) -> Result<()> {
         unsafe {
-            let size = windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U { width: pixel_width, height: pixel_height };
+            let size = windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
+                width: pixel_width,
+                height: pixel_height,
+            };
             self.target.Resize(&size)?;
             self.width = pixel_width;
             self.height = pixel_height;
@@ -138,7 +145,9 @@ impl RenderTarget {
                 right: x + width,
                 bottom: y + height,
             };
-            let _ = self.target.PushAxisAlignedClip(&rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            let _ = self
+                .target
+                .PushAxisAlignedClip(&rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         }
     }
 
@@ -167,26 +176,66 @@ pub mod colors {
     use super::color_f;
     use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 
-    pub fn editor_bg() -> D2D1_COLOR_F { color_f(0.118, 0.118, 0.118, 1.0) }      // #1E1E1E
-    pub fn line_highlight() -> D2D1_COLOR_F { color_f(0.15, 0.15, 0.15, 1.0) }      // #262626
-    pub fn line_number_fg() -> D2D1_COLOR_F { color_f(0.52, 0.52, 0.52, 1.0) }       // #858585
-    pub fn line_number_bg() -> D2D1_COLOR_F { color_f(0.118, 0.118, 0.118, 1.0) }    // #1E1E1E
-    pub fn selection_bg() -> D2D1_COLOR_F { color_f(0.18, 0.36, 0.55, 1.0) }         // #2E638C
-    pub fn cursor() -> D2D1_COLOR_F { color_f(0.8, 0.8, 0.8, 1.0) }                 // #CCCCCC
-    pub fn text_default() -> D2D1_COLOR_F { color_f(0.83, 0.83, 0.83, 1.0) }        // #D4D4D4
-    pub fn sidebar_bg() -> D2D1_COLOR_F { color_f(0.145, 0.145, 0.149, 1.0) }        // #252526
-    pub fn statusbar_bg() -> D2D1_COLOR_F { color_f(0.0, 0.47, 0.83, 1.0) }          // #0078D4
-    pub fn tab_active() -> D2D1_COLOR_F { color_f(0.118, 0.118, 0.118, 1.0) }        // #1E1E1E
-    pub fn tab_inactive() -> D2D1_COLOR_F { color_f(0.145, 0.145, 0.149, 1.0) }     // #252526
+    pub fn editor_bg() -> D2D1_COLOR_F {
+        color_f(0.118, 0.118, 0.118, 1.0)
+    } // #1E1E1E
+    pub fn line_highlight() -> D2D1_COLOR_F {
+        color_f(0.15, 0.15, 0.15, 1.0)
+    } // #262626
+    pub fn line_number_fg() -> D2D1_COLOR_F {
+        color_f(0.52, 0.52, 0.52, 1.0)
+    } // #858585
+    pub fn line_number_bg() -> D2D1_COLOR_F {
+        color_f(0.118, 0.118, 0.118, 1.0)
+    } // #1E1E1E
+    pub fn selection_bg() -> D2D1_COLOR_F {
+        color_f(0.18, 0.36, 0.55, 1.0)
+    } // #2E638C
+    pub fn cursor() -> D2D1_COLOR_F {
+        color_f(0.8, 0.8, 0.8, 1.0)
+    } // #CCCCCC
+    pub fn text_default() -> D2D1_COLOR_F {
+        color_f(0.83, 0.83, 0.83, 1.0)
+    } // #D4D4D4
+    pub fn sidebar_bg() -> D2D1_COLOR_F {
+        color_f(0.145, 0.145, 0.149, 1.0)
+    } // #252526
+    pub fn statusbar_bg() -> D2D1_COLOR_F {
+        color_f(0.0, 0.47, 0.83, 1.0)
+    } // #0078D4
+    pub fn tab_active() -> D2D1_COLOR_F {
+        color_f(0.118, 0.118, 0.118, 1.0)
+    } // #1E1E1E
+    pub fn tab_inactive() -> D2D1_COLOR_F {
+        color_f(0.145, 0.145, 0.149, 1.0)
+    } // #252526
 
     // 语法高亮颜色
-    pub fn keyword() -> D2D1_COLOR_F { color_f(0.77, 0.52, 0.75, 1.0) }              // #C586C0
-    pub fn string() -> D2D1_COLOR_F { color_f(0.81, 0.57, 0.47, 1.0) }              // #CE9178
-    pub fn number() -> D2D1_COLOR_F { color_f(0.71, 0.81, 0.66, 1.0) }              // #B5CEA8
-    pub fn comment() -> D2D1_COLOR_F { color_f(0.42, 0.60, 0.33, 1.0) }              // #6A9955
-    pub fn function() -> D2D1_COLOR_F { color_f(0.86, 0.86, 0.67, 1.0) }             // #DCDCAA
-    pub fn type_name() -> D2D1_COLOR_F { color_f(0.31, 0.79, 0.69, 1.0) }             // #4EC9B0
-    pub fn operator() -> D2D1_COLOR_F { color_f(0.83, 0.83, 0.83, 1.0) }              // #D4D4D4
-    pub fn variable() -> D2D1_COLOR_F { color_f(0.61, 0.74, 1.0, 1.0) }              // #9CDCFE
-    pub fn preprocessor() -> D2D1_COLOR_F { color_f(0.50, 0.50, 0.50, 1.0) }           // #808080
+    pub fn keyword() -> D2D1_COLOR_F {
+        color_f(0.77, 0.52, 0.75, 1.0)
+    } // #C586C0
+    pub fn string() -> D2D1_COLOR_F {
+        color_f(0.81, 0.57, 0.47, 1.0)
+    } // #CE9178
+    pub fn number() -> D2D1_COLOR_F {
+        color_f(0.71, 0.81, 0.66, 1.0)
+    } // #B5CEA8
+    pub fn comment() -> D2D1_COLOR_F {
+        color_f(0.42, 0.60, 0.33, 1.0)
+    } // #6A9955
+    pub fn function() -> D2D1_COLOR_F {
+        color_f(0.86, 0.86, 0.67, 1.0)
+    } // #DCDCAA
+    pub fn type_name() -> D2D1_COLOR_F {
+        color_f(0.31, 0.79, 0.69, 1.0)
+    } // #4EC9B0
+    pub fn operator() -> D2D1_COLOR_F {
+        color_f(0.83, 0.83, 0.83, 1.0)
+    } // #D4D4D4
+    pub fn variable() -> D2D1_COLOR_F {
+        color_f(0.61, 0.74, 1.0, 1.0)
+    } // #9CDCFE
+    pub fn preprocessor() -> D2D1_COLOR_F {
+        color_f(0.50, 0.50, 0.50, 1.0)
+    } // #808080
 }

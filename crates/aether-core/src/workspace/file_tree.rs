@@ -38,7 +38,9 @@ pub struct StringPool {
 
 impl StringPool {
     pub fn new() -> Self {
-        Self { data: String::new() }
+        Self {
+            data: String::new(),
+        }
     }
 
     pub fn add(&mut self, s: &str) -> (u32, u16) {
@@ -112,9 +114,15 @@ impl FileTree {
     pub fn iter_children(&self, parent_idx: u32) -> FileTreeIterator<'_> {
         let first = if parent_idx == u32::MAX {
             // 根节点：找到所有parent为u32::MAX的节点
-            self.nodes.iter().position(|n| n.parent_idx == u32::MAX).map(|i| i as u32)
+            self.nodes
+                .iter()
+                .position(|n| n.parent_idx == u32::MAX)
+                .map(|i| i as u32)
         } else {
-            self.nodes.get(parent_idx as usize).map(|n| n.first_child).filter(|&c| c != u32::MAX)
+            self.nodes
+                .get(parent_idx as usize)
+                .map(|n| n.first_child)
+                .filter(|&c| c != u32::MAX)
         };
 
         FileTreeIterator {
@@ -132,7 +140,10 @@ impl FileTree {
     }
 
     pub fn first_root_node(&self) -> Option<u32> {
-        self.nodes.iter().position(|n| n.parent_idx == u32::MAX).map(|i| i as u32)
+        self.nodes
+            .iter()
+            .position(|n| n.parent_idx == u32::MAX)
+            .map(|i| i as u32)
     }
 }
 

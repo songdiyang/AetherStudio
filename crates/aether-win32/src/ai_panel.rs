@@ -143,7 +143,10 @@ impl AiPanel {
     }
 
     /// 发送消息（同步阻塞，简化实现）
-    pub fn send_message(&mut self, settings: &aether_shared::settings::AiSettings) -> Result<String, String> {
+    pub fn send_message(
+        &mut self,
+        settings: &aether_shared::settings::AiSettings,
+    ) -> Result<String, String> {
         if self.input.is_empty() {
             return Err("输入为空".to_string());
         }
@@ -155,7 +158,9 @@ impl AiPanel {
         self.pending_response.clear();
 
         let client = AiClient::new(settings);
-        let messages: Vec<ChatMessage> = self.messages.iter()
+        let messages: Vec<ChatMessage> = self
+            .messages
+            .iter()
             .filter(|m| m.role != AiRole::System)
             .map(|m| match m.role {
                 AiRole::User => ChatMessage::user(m.content.clone()),
@@ -180,7 +185,12 @@ impl AiPanel {
     }
 
     /// 使用快捷操作发送代码
-    pub fn send_quick_action(&mut self, action: AiQuickAction, code: &str, settings: &aether_shared::settings::AiSettings) -> Result<String, String> {
+    pub fn send_quick_action(
+        &mut self,
+        action: AiQuickAction,
+        code: &str,
+        settings: &aether_shared::settings::AiSettings,
+    ) -> Result<String, String> {
         // 防护：空代码时返回提示，避免无意义请求
         if code.trim().is_empty() {
             let msg = "请先打开文件或输入代码，再使用 AI 快捷操作。".to_string();
@@ -193,9 +203,7 @@ impl AiPanel {
         self.is_generating = true;
 
         let client = AiClient::new(settings);
-        let messages = vec![
-            ChatMessage::user(prompt),
-        ];
+        let messages = vec![ChatMessage::user(prompt)];
 
         match client.chat_completion(&messages) {
             Ok(response) => {
@@ -232,7 +240,8 @@ impl AiPanel {
         self.messages.clear();
         self.messages.push(AiMessage {
             role: AiRole::System,
-            content: "你好！我是 AI 助手，可以帮助你解释代码、重构、修复问题、生成测试等。".to_string(),
+            content: "你好！我是 AI 助手，可以帮助你解释代码、重构、修复问题、生成测试等。"
+                .to_string(),
         });
     }
 

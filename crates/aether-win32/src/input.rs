@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    VK_BACK, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_F12, VK_HOME,
-    VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB,
-    VK_UP, VIRTUAL_KEY,
+    VIRTUAL_KEY, VK_BACK, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_F12, VK_HOME, VK_LEFT,
+    VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
 };
 
 /// 按键类型
@@ -50,7 +49,7 @@ pub enum EditorAction {
     SaveAll,
     CloseTab,
     Exit,
-    
+
     // 编辑操作
     Undo,
     Redo,
@@ -60,14 +59,14 @@ pub enum EditorAction {
     SelectAll,
     Find,
     Replace,
-    
+
     // 视图操作
     ToggleSidebar,
     ToggleTerminal,
     ToggleAiPanel,
     ZoomIn,
     ZoomOut,
-    
+
     // 光标移动
     MoveUp,
     MoveDown,
@@ -79,7 +78,7 @@ pub enum EditorAction {
     MoveLineEnd,
     MoveFileStart,
     MoveFileEnd,
-    
+
     // 选择
     SelectUp,
     SelectDown,
@@ -87,16 +86,16 @@ pub enum EditorAction {
     SelectRight,
     SelectWord,
     SelectLine,
-    
+
     // 多光标
     AddCursorAbove,
     AddCursorBelow,
     AddCursorAtNextOccurrence,
-    
+
     // 代码操作
     ToggleComment,
     FormatDocument,
-    
+
     // 其他
     NewFile,
     ToggleFullScreen,
@@ -112,44 +111,74 @@ pub struct KeyMap {
 impl KeyMap {
     pub fn new() -> Self {
         let mut bindings = HashMap::new();
-        
+
         // 文件操作
         bindings.insert((Key::Char('o'), true, false, false), EditorAction::OpenFile);
-        bindings.insert((Key::Char('k'), true, false, false), EditorAction::OpenFolder);
+        bindings.insert(
+            (Key::Char('k'), true, false, false),
+            EditorAction::OpenFolder,
+        );
         bindings.insert((Key::Char('s'), true, false, false), EditorAction::Save);
         bindings.insert((Key::Char('s'), true, true, false), EditorAction::SaveAll);
         bindings.insert((Key::Char('w'), true, false, false), EditorAction::CloseTab);
         bindings.insert((Key::Char('n'), true, false, false), EditorAction::NewFile);
-        
+
         // 编辑操作
         bindings.insert((Key::Char('z'), true, false, false), EditorAction::Undo);
         bindings.insert((Key::Char('z'), true, true, false), EditorAction::Redo);
         bindings.insert((Key::Char('x'), true, false, false), EditorAction::Cut);
         bindings.insert((Key::Char('c'), true, false, false), EditorAction::Copy);
         bindings.insert((Key::Char('v'), true, false, false), EditorAction::Paste);
-        bindings.insert((Key::Char('a'), true, false, false), EditorAction::SelectAll);
+        bindings.insert(
+            (Key::Char('a'), true, false, false),
+            EditorAction::SelectAll,
+        );
         bindings.insert((Key::Char('f'), true, false, false), EditorAction::Find);
         bindings.insert((Key::Char('h'), true, false, false), EditorAction::Replace);
-        
+
         // 视图操作
-        bindings.insert((Key::Char('b'), true, false, false), EditorAction::ToggleSidebar);
-        bindings.insert((Key::Char('`'), true, false, false), EditorAction::ToggleTerminal);
-        bindings.insert((Key::Char(' '), true, false, false), EditorAction::ShowCommandPalette);
+        bindings.insert(
+            (Key::Char('b'), true, false, false),
+            EditorAction::ToggleSidebar,
+        );
+        bindings.insert(
+            (Key::Char('`'), true, false, false),
+            EditorAction::ToggleTerminal,
+        );
+        bindings.insert(
+            (Key::Char(' '), true, false, false),
+            EditorAction::ShowCommandPalette,
+        );
         bindings.insert((Key::Char('='), true, false, false), EditorAction::ZoomIn);
         bindings.insert((Key::Char('-'), true, false, false), EditorAction::ZoomOut);
-        
+
         // 代码操作
-        bindings.insert((Key::Char('/'), true, false, false), EditorAction::ToggleComment);
-        bindings.insert((Key::Char('d'), true, true, false), EditorAction::FormatDocument);
-        
+        bindings.insert(
+            (Key::Char('/'), true, false, false),
+            EditorAction::ToggleComment,
+        );
+        bindings.insert(
+            (Key::Char('d'), true, true, false),
+            EditorAction::FormatDocument,
+        );
+
         // 多光标
-        bindings.insert((Key::ArrowUp, true, true, false), EditorAction::AddCursorAbove);
-        bindings.insert((Key::ArrowDown, true, true, false), EditorAction::AddCursorBelow);
-        bindings.insert((Key::Char('d'), true, false, false), EditorAction::AddCursorAtNextOccurrence);
-        
+        bindings.insert(
+            (Key::ArrowUp, true, true, false),
+            EditorAction::AddCursorAbove,
+        );
+        bindings.insert(
+            (Key::ArrowDown, true, true, false),
+            EditorAction::AddCursorBelow,
+        );
+        bindings.insert(
+            (Key::Char('d'), true, false, false),
+            EditorAction::AddCursorAtNextOccurrence,
+        );
+
         // AI
         bindings.insert((Key::Space, true, false, false), EditorAction::TriggerAi);
-        
+
         Self { bindings }
     }
 
@@ -159,7 +188,12 @@ impl KeyMap {
     }
 
     /// 从Win32虚拟键码转换
-    pub fn from_vk(vk: VIRTUAL_KEY, ctrl: bool, shift: bool, alt: bool) -> Option<(Key, bool, bool, bool)> {
+    pub fn from_vk(
+        vk: VIRTUAL_KEY,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+    ) -> Option<(Key, bool, bool, bool)> {
         let key = match vk {
             VK_RETURN => Key::Enter,
             VK_TAB => Key::Tab,
@@ -184,7 +218,7 @@ impl KeyMap {
                 }
             }
         };
-        
+
         Some((key, ctrl, shift, alt))
     }
 }
@@ -237,13 +271,23 @@ pub struct Cursor {
 impl MultiCursor {
     pub fn new() -> Self {
         Self {
-            cursors: vec![Cursor { line: 0, col: 0, selection_start: None, selection_end: None }],
+            cursors: vec![Cursor {
+                line: 0,
+                col: 0,
+                selection_start: None,
+                selection_end: None,
+            }],
             primary: 0,
         }
     }
 
     pub fn add_cursor(&mut self, line: usize, col: usize) {
-        self.cursors.push(Cursor { line, col, selection_start: None, selection_end: None });
+        self.cursors.push(Cursor {
+            line,
+            col,
+            selection_start: None,
+            selection_end: None,
+        });
     }
 
     pub fn remove_secondary(&mut self) {

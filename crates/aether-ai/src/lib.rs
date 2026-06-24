@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use aether_shared::settings::AiSettings;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AiProvider {
@@ -86,7 +86,11 @@ impl AiConfig {
         let provider = AiProvider::from_str(&settings.provider);
         let base_url = settings.base_url.clone().or_else(|| {
             let default = provider.default_base_url();
-            if default.is_empty() { None } else { Some(default.to_string()) }
+            if default.is_empty() {
+                None
+            } else {
+                Some(default.to_string())
+            }
         });
         let model = if settings.model.is_empty() {
             provider.default_model().to_string()
@@ -147,9 +151,7 @@ impl AiClient {
             AiProvider::OpenAi | AiProvider::Kimi | AiProvider::Azure | AiProvider::Custom => {
                 self.complete_openai_compatible(prompt)
             }
-            AiProvider::Claude => {
-                self.complete_claude(prompt)
-            }
+            AiProvider::Claude => self.complete_claude(prompt),
         }
     }
 
@@ -158,14 +160,16 @@ impl AiClient {
             AiProvider::OpenAi | AiProvider::Kimi | AiProvider::Azure | AiProvider::Custom => {
                 self.chat_openai_compatible(messages)
             }
-            AiProvider::Claude => {
-                self.chat_claude(messages)
-            }
+            AiProvider::Claude => self.chat_claude(messages),
         }
     }
 
     fn complete_openai_compatible(&self, prompt: &str) -> Result<String, AiError> {
-        let base_url = self.config.base_url.as_deref().unwrap_or("https://api.openai.com/v1");
+        let base_url = self
+            .config
+            .base_url
+            .as_deref()
+            .unwrap_or("https://api.openai.com/v1");
         let url = format!("{}/chat/completions", base_url);
 
         let body = serde_json::json!({
@@ -174,7 +178,9 @@ impl AiClient {
             "max_tokens": 100,
         });
 
-        let response = self.http.post(&url)
+        let response = self
+            .http
+            .post(&url)
             .set("Authorization", &format!("Bearer {}", self.config.api_key))
             .set("Content-Type", "application/json")
             .send_json(body)
@@ -183,10 +189,14 @@ impl AiClient {
         let status = response.status();
         if status != 200 {
             let text = response.into_string().unwrap_or_default();
-            return Err(AiError::Api { code: status, message: text });
+            return Err(AiError::Api {
+                code: status,
+                message: text,
+            });
         }
 
-        let json: serde_json::Value = response.into_json()
+        let json: serde_json::Value = response
+            .into_json()
             .map_err(|e| AiError::Parse(e.to_string()))?;
 
         let content = json["choices"][0]["message"]["content"]
@@ -198,7 +208,11 @@ impl AiClient {
     }
 
     fn complete_claude(&self, prompt: &str) -> Result<String, AiError> {
-        let base_url = self.config.base_url.as_deref().unwrap_or("https://api.anthropic.com/v1");
+        let base_url = self
+            .config
+            .base_url
+            .as_deref()
+            .unwrap_or("https://api.anthropic.com/v1");
         let url = format!("{}/messages", base_url);
 
         let body = serde_json::json!({
@@ -207,7 +221,9 @@ impl AiClient {
             "max_tokens": 100,
         });
 
-        let response = self.http.post(&url)
+        let response = self
+            .http
+            .post(&url)
             .set("x-api-key", &self.config.api_key)
             .set("anthropic-version", "2023-06-01")
             .set("Content-Type", "application/json")
@@ -217,10 +233,14 @@ impl AiClient {
         let status = response.status();
         if status != 200 {
             let text = response.into_string().unwrap_or_default();
-            return Err(AiError::Api { code: status, message: text });
+            return Err(AiError::Api {
+                code: status,
+                message: text,
+            });
         }
 
-        let json: serde_json::Value = response.into_json()
+        let json: serde_json::Value = response
+            .into_json()
             .map_err(|e| AiError::Parse(e.to_string()))?;
 
         let content = json["content"][0]["text"]
@@ -232,15 +252,22 @@ impl AiClient {
     }
 
     fn chat_openai_compatible(&self, messages: &[ChatMessage]) -> Result<String, AiError> {
-        let base_url = self.config.base_url.as_deref().unwrap_or("https://api.openai.com/v1");
+        let base_url = self
+            .config
+            .base_url
+            .as_deref()
+            .unwrap_or("https://api.openai.com/v1");
         let url = format!("{}/chat/completions", base_url);
 
-        let msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
-            serde_json::json!({
-                "role": m.role,
-                "content": m.content,
+        let msgs: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role,
+                    "content": m.content,
+                })
             })
-        }).collect();
+            .collect();
 
         let body = serde_json::json!({
             "model": self.config.model,
@@ -248,7 +275,9 @@ impl AiClient {
             "max_tokens": 2048,
         });
 
-        let response = self.http.post(&url)
+        let response = self
+            .http
+            .post(&url)
             .set("Authorization", &format!("Bearer {}", self.config.api_key))
             .set("Content-Type", "application/json")
             .send_json(body)
@@ -257,10 +286,14 @@ impl AiClient {
         let status = response.status();
         if status != 200 {
             let text = response.into_string().unwrap_or_default();
-            return Err(AiError::Api { code: status, message: text });
+            return Err(AiError::Api {
+                code: status,
+                message: text,
+            });
         }
 
-        let json: serde_json::Value = response.into_json()
+        let json: serde_json::Value = response
+            .into_json()
             .map_err(|e| AiError::Parse(e.to_string()))?;
 
         let content = json["choices"][0]["message"]["content"]
@@ -272,15 +305,22 @@ impl AiClient {
     }
 
     fn chat_claude(&self, messages: &[ChatMessage]) -> Result<String, AiError> {
-        let base_url = self.config.base_url.as_deref().unwrap_or("https://api.anthropic.com/v1");
+        let base_url = self
+            .config
+            .base_url
+            .as_deref()
+            .unwrap_or("https://api.anthropic.com/v1");
         let url = format!("{}/messages", base_url);
 
-        let msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
-            serde_json::json!({
-                "role": m.role,
-                "content": m.content,
+        let msgs: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role,
+                    "content": m.content,
+                })
             })
-        }).collect();
+            .collect();
 
         let body = serde_json::json!({
             "model": self.config.model,
@@ -288,7 +328,9 @@ impl AiClient {
             "max_tokens": 2048,
         });
 
-        let response = self.http.post(&url)
+        let response = self
+            .http
+            .post(&url)
             .set("x-api-key", &self.config.api_key)
             .set("anthropic-version", "2023-06-01")
             .set("Content-Type", "application/json")
@@ -298,10 +340,14 @@ impl AiClient {
         let status = response.status();
         if status != 200 {
             let text = response.into_string().unwrap_or_default();
-            return Err(AiError::Api { code: status, message: text });
+            return Err(AiError::Api {
+                code: status,
+                message: text,
+            });
         }
 
-        let json: serde_json::Value = response.into_json()
+        let json: serde_json::Value = response
+            .into_json()
             .map_err(|e| AiError::Parse(e.to_string()))?;
 
         let content = json["content"][0]["text"]

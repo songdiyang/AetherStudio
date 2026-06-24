@@ -1,10 +1,10 @@
-use windows::core::Result;
-use windows::Win32::Foundation::HWND;
 use aether_render::d2d::brush_cache::{BrushCache, TextFormatCache};
 use aether_render::d2d::factory::{D2DFactory, RenderTarget};
+use windows::core::Result;
+use windows::Win32::Foundation::HWND;
 
 /// 渲染上下文 — 封装所有与 Direct2D 渲染相关的资源
-/// 
+///
 /// 将渲染目标、画刷缓存、文本格式缓存从 EditorState 中分离出来，
 /// 消除渲染函数调用时的借用冲突（&mut self vs &render_target）。
 pub struct RenderContext {
@@ -21,7 +21,8 @@ impl RenderContext {
         Self {
             target: None,
             brush_cache: BrushCache::new(),
-            text_format_cache: TextFormatCache::new().unwrap_or_else(|_| TextFormatCache::new().unwrap()),
+            text_format_cache: TextFormatCache::new()
+                .unwrap_or_else(|_| TextFormatCache::new().unwrap()),
         }
     }
 
@@ -35,13 +36,7 @@ impl RenderContext {
         dpi_scale: f32,
     ) -> Result<()> {
         let dpi = dpi_scale * 96.0;
-        let target = RenderTarget::new(
-            d2d_factory,
-            hwnd,
-            phys_width,
-            phys_height,
-            dpi,
-        )?;
+        let target = RenderTarget::new(d2d_factory, hwnd, phys_width, phys_height, dpi)?;
         self.target = Some(target);
         Ok(())
     }
@@ -108,11 +103,7 @@ impl RenderContext {
     }
 
     /// 预初始化常用画刷和文本格式（渲染目标就绪后调用）
-    pub fn init_common_resources(
-        &mut self,
-        theme: &aether_render::theme::Theme,
-        font_size: f32,
-    ) {
+    pub fn init_common_resources(&mut self, theme: &aether_render::theme::Theme, font_size: f32) {
         if let Some(rt) = &self.target {
             let target = rt.target().clone();
             let common_colors = [
@@ -135,7 +126,8 @@ impl RenderContext {
                 theme.command_palette_bg,
                 theme.submenu_bg,
             ];
-            self.brush_cache.init_common_brushes(&target, &common_colors);
+            self.brush_cache
+                .init_common_brushes(&target, &common_colors);
             self.text_format_cache.init_common_formats(font_size);
         }
     }

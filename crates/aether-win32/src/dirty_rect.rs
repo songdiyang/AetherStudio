@@ -1,5 +1,5 @@
 /// 脏矩形追踪系统
-/// 
+///
 /// 优化策略：
 /// - 记录需要重绘的矩形区域，避免每帧全量清除+重绘
 /// - 合并重叠的脏矩形，减少绘制调用次数
@@ -46,7 +46,13 @@ pub struct DirtyRect {
 
 impl DirtyRect {
     pub fn new(x: f32, y: f32, width: f32, height: f32, region_type: DirtyRegionType) -> Self {
-        Self { x, y, width, height, region_type }
+        Self {
+            x,
+            y,
+            width,
+            height,
+            region_type,
+        }
     }
 
     /// 是否与另一个矩形重叠
@@ -112,7 +118,14 @@ impl DirtyRectTracker {
     }
 
     /// 标记指定区域为脏
-    pub fn mark_region(&mut self, x: f32, y: f32, width: f32, height: f32, region_type: DirtyRegionType) {
+    pub fn mark_region(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        region_type: DirtyRegionType,
+    ) {
         if width <= 0.0 || height <= 0.0 {
             return;
         }
@@ -149,14 +162,39 @@ impl DirtyRectTracker {
     }
 
     /// 标记编辑器中的单行区域为脏
-    pub fn mark_editor_line(&mut self, line_idx: usize, line_height: f32, editor_x: f32, editor_y: f32, editor_width: f32) {
+    pub fn mark_editor_line(
+        &mut self,
+        line_idx: usize,
+        line_height: f32,
+        editor_x: f32,
+        editor_y: f32,
+        editor_width: f32,
+    ) {
         let line_y = editor_y + line_idx as f32 * line_height;
-        self.mark_region(editor_x, line_y, editor_width, line_height, DirtyRegionType::EditorContent);
+        self.mark_region(
+            editor_x,
+            line_y,
+            editor_width,
+            line_height,
+            DirtyRegionType::EditorContent,
+        );
     }
 
     /// 标记光标区域为脏
-    pub fn mark_cursor(&mut self, cursor_x: f32, cursor_y: f32, cursor_width: f32, line_height: f32) {
-        self.mark_region(cursor_x, cursor_y, cursor_width, line_height, DirtyRegionType::EditorContent);
+    pub fn mark_cursor(
+        &mut self,
+        cursor_x: f32,
+        cursor_y: f32,
+        cursor_width: f32,
+        line_height: f32,
+    ) {
+        self.mark_region(
+            cursor_x,
+            cursor_y,
+            cursor_width,
+            line_height,
+            DirtyRegionType::EditorContent,
+        );
     }
 
     /// 标记状态栏为脏
@@ -181,7 +219,13 @@ impl DirtyRectTracker {
 
     /// 获取全窗口矩形
     pub fn full_window_rect(&self) -> DirtyRect {
-        DirtyRect::new(0.0, 0.0, self.window_width, self.window_height, DirtyRegionType::FullWindow)
+        DirtyRect::new(
+            0.0,
+            0.0,
+            self.window_width,
+            self.window_height,
+            DirtyRegionType::FullWindow,
+        )
     }
 
     /// 检查指定区域类型是否需要重绘
@@ -199,10 +243,13 @@ impl DirtyRectTracker {
             return true;
         }
         self.rects.iter().any(|r| {
-            matches!(r.region_type, DirtyRegionType::EditorContent 
-                | DirtyRegionType::TabBar 
-                | DirtyRegionType::FindReplace 
-                | DirtyRegionType::FullWindow)
+            matches!(
+                r.region_type,
+                DirtyRegionType::EditorContent
+                    | DirtyRegionType::TabBar
+                    | DirtyRegionType::FindReplace
+                    | DirtyRegionType::FullWindow
+            )
         })
     }
 
@@ -212,9 +259,12 @@ impl DirtyRectTracker {
             return true;
         }
         self.rects.iter().any(|r| {
-            matches!(r.region_type, DirtyRegionType::Sidebar 
-                | DirtyRegionType::ActivityBar 
-                | DirtyRegionType::FullWindow)
+            matches!(
+                r.region_type,
+                DirtyRegionType::Sidebar
+                    | DirtyRegionType::ActivityBar
+                    | DirtyRegionType::FullWindow
+            )
         })
     }
 
@@ -224,8 +274,10 @@ impl DirtyRectTracker {
             return true;
         }
         self.rects.iter().any(|r| {
-            matches!(r.region_type, DirtyRegionType::StatusBar 
-                | DirtyRegionType::FullWindow)
+            matches!(
+                r.region_type,
+                DirtyRegionType::StatusBar | DirtyRegionType::FullWindow
+            )
         })
     }
 
@@ -235,8 +287,10 @@ impl DirtyRectTracker {
             return true;
         }
         self.rects.iter().any(|r| {
-            matches!(r.region_type, DirtyRegionType::RightPanel 
-                | DirtyRegionType::FullWindow)
+            matches!(
+                r.region_type,
+                DirtyRegionType::RightPanel | DirtyRegionType::FullWindow
+            )
         })
     }
 
@@ -246,8 +300,10 @@ impl DirtyRectTracker {
             return true;
         }
         self.rects.iter().any(|r| {
-            matches!(r.region_type, DirtyRegionType::BottomPanel 
-                | DirtyRegionType::FullWindow)
+            matches!(
+                r.region_type,
+                DirtyRegionType::BottomPanel | DirtyRegionType::FullWindow
+            )
         })
     }
 
@@ -257,9 +313,10 @@ impl DirtyRectTracker {
             return true;
         }
         self.rects.iter().any(|r| {
-            matches!(r.region_type, DirtyRegionType::TitleBar 
-                | DirtyRegionType::MenuBar 
-                | DirtyRegionType::FullWindow)
+            matches!(
+                r.region_type,
+                DirtyRegionType::TitleBar | DirtyRegionType::MenuBar | DirtyRegionType::FullWindow
+            )
         })
     }
 

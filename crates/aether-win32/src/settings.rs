@@ -1,4 +1,4 @@
-use aether_shared::settings::{AppSettings, AiSettings};
+use aether_shared::settings::{AiSettings, AppSettings};
 
 /// Settings panel field identifier
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,7 +67,11 @@ impl SettingsPanel {
         AiSettings {
             provider: self.provider.clone(),
             api_key: self.api_key.clone(),
-            base_url: if self.base_url.is_empty() { None } else { Some(self.base_url.clone()) },
+            base_url: if self.base_url.is_empty() {
+                None
+            } else {
+                Some(self.base_url.clone())
+            },
             model: self.model.clone(),
         }
     }
@@ -124,10 +128,18 @@ impl SettingsPanel {
     pub fn backspace(&mut self) {
         if let Some(field) = self.active_field {
             match field {
-                SettingsField::Provider => { self.provider.pop(); }
-                SettingsField::ApiKey => { self.api_key.pop(); }
-                SettingsField::BaseUrl => { self.base_url.pop(); }
-                SettingsField::Model => { self.model.pop(); }
+                SettingsField::Provider => {
+                    self.provider.pop();
+                }
+                SettingsField::ApiKey => {
+                    self.api_key.pop();
+                }
+                SettingsField::BaseUrl => {
+                    self.base_url.pop();
+                }
+                SettingsField::Model => {
+                    self.model.pop();
+                }
             }
         }
     }
@@ -160,7 +172,11 @@ impl SettingsPanel {
             "•".repeat(self.api_key.len())
         } else {
             let dots = "•".repeat(self.api_key.len().saturating_sub(4));
-            format!("{}{}", dots, &self.api_key[self.api_key.len().saturating_sub(4)..])
+            format!(
+                "{}{}",
+                dots,
+                &self.api_key[self.api_key.len().saturating_sub(4)..]
+            )
         }
     }
 }

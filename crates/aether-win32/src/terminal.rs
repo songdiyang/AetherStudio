@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
-use std::process::{Command, Stdio};
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// 终端面板状态
@@ -65,7 +65,7 @@ impl TerminalPanel {
     /// 启动终端会话
     pub fn start(&mut self) -> Result<(), String> {
         let shell = detect_default_shell();
-        
+
         let mut child = Command::new(&shell)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -73,22 +73,22 @@ impl TerminalPanel {
             .current_dir(&self.cwd)
             .spawn()
             .map_err(|e| format!("启动终端失败: {}", e))?;
-        
+
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
-        
+
         self.child_stdin = Some(Arc::new(Mutex::new(stdin)));
         self.child_stdout = Some(Arc::new(Mutex::new(stdout)));
         self.child_stderr = Some(Arc::new(Mutex::new(stderr)));
         self.running = true;
-        
+
         // 启动读取线程，使用 channel 传递输出到主线程
         let (tx, rx) = mpsc::channel();
         self.output_receiver = Some(rx);
         self.spawn_stdout_reader(tx.clone());
         self.spawn_stderr_reader(tx);
-        
+
         self.push_output(&format!("终端已启动: {}\n", shell));
         Ok(())
     }

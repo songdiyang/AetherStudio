@@ -8,7 +8,9 @@ pub struct UiSettings {
 
 impl Default for UiSettings {
     fn default() -> Self {
-        Self { glass_enabled: true }
+        Self {
+            glass_enabled: true,
+        }
     }
 }
 

@@ -1,8 +1,6 @@
 use windows::core::Result;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
-use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationTextPattern,
-};
+use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationTextPattern};
 
 /// UIA (UI Automation) 无障碍支持
 /// 实现 Windows 平台的无障碍接口，使屏幕阅读器能够访问编辑器内容
@@ -14,9 +12,8 @@ pub struct UiaAccessibility {
 impl UiaAccessibility {
     pub fn new() -> Result<Self> {
         // 尝试创建 UI Automation 实例
-        let automation: Option<IUIAutomation> = unsafe {
-            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()
-        };
+        let automation: Option<IUIAutomation> =
+            unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok() };
 
         let enabled = automation.is_some();
 

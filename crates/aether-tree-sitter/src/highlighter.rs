@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use tree_sitter::{Language, Parser, Tree};
 use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
 
-use aether_core::lexer::{TokenKind, LexemeSpan};
+use aether_core::lexer::{LexemeSpan, TokenKind};
 
 /// Tree-sitter 增量语法高亮器
 /// 与现有 Lexer 框架并存，提供更精确的语法高亮
@@ -123,12 +123,9 @@ impl TreeSitterHighlighter {
           (boolean) @number
           (comment) @comment
         "#;
-        if let Ok(config) = HighlightConfiguration::new(
-            tree_sitter_toml::language(),
-            toml_query,
-            "",
-            "",
-        ) {
+        if let Ok(config) =
+            HighlightConfiguration::new(tree_sitter_toml::language(), toml_query, "", "")
+        {
             self.toml_config = Some(config);
         }
     }
@@ -140,14 +137,46 @@ impl TreeSitterHighlighter {
         // 先获取 config 的不可变指针，然后获取 highlighter 的可变引用
         // 这是安全的因为 config 和 highlighter 是结构体中不同的字段
         let config_ptr: *const HighlightConfiguration = match language {
-            "rust" => self.rust_config.as_ref().map(|c| c as *const HighlightConfiguration).unwrap_or(std::ptr::null()),
-            "javascript" | "js" => self.js_config.as_ref().map(|c| c as *const HighlightConfiguration).unwrap_or(std::ptr::null()),
-            "typescript" | "ts" | "tsx" => self.ts_config.as_ref().map(|c| c as *const HighlightConfiguration).unwrap_or(std::ptr::null()),
-            "python" | "py" => self.python_config.as_ref().map(|c| c as *const HighlightConfiguration).unwrap_or(std::ptr::null()),
-            "c" => self.c_config.as_ref().map(|c| c as *const HighlightConfiguration).unwrap_or(std::ptr::null()),
-            "cpp" | "c++" | "cxx" => self.cpp_config.as_ref().map(|c| c as *const HighlightConfiguration).unwrap_or(std::ptr::null()),
-            "json" => self.json_config.as_ref().map(|c| c as *const HighlightConfiguration).unwrap_or(std::ptr::null()),
-            "toml" => self.toml_config.as_ref().map(|c| c as *const HighlightConfiguration).unwrap_or(std::ptr::null()),
+            "rust" => self
+                .rust_config
+                .as_ref()
+                .map(|c| c as *const HighlightConfiguration)
+                .unwrap_or(std::ptr::null()),
+            "javascript" | "js" => self
+                .js_config
+                .as_ref()
+                .map(|c| c as *const HighlightConfiguration)
+                .unwrap_or(std::ptr::null()),
+            "typescript" | "ts" | "tsx" => self
+                .ts_config
+                .as_ref()
+                .map(|c| c as *const HighlightConfiguration)
+                .unwrap_or(std::ptr::null()),
+            "python" | "py" => self
+                .python_config
+                .as_ref()
+                .map(|c| c as *const HighlightConfiguration)
+                .unwrap_or(std::ptr::null()),
+            "c" => self
+                .c_config
+                .as_ref()
+                .map(|c| c as *const HighlightConfiguration)
+                .unwrap_or(std::ptr::null()),
+            "cpp" | "c++" | "cxx" => self
+                .cpp_config
+                .as_ref()
+                .map(|c| c as *const HighlightConfiguration)
+                .unwrap_or(std::ptr::null()),
+            "json" => self
+                .json_config
+                .as_ref()
+                .map(|c| c as *const HighlightConfiguration)
+                .unwrap_or(std::ptr::null()),
+            "toml" => self
+                .toml_config
+                .as_ref()
+                .map(|c| c as *const HighlightConfiguration)
+                .unwrap_or(std::ptr::null()),
             _ => std::ptr::null(),
         };
 
@@ -161,7 +190,10 @@ impl TreeSitterHighlighter {
         let mut current_kind = TokenKind::Unknown;
         let mut in_highlight = false;
 
-        match self.highlighter.highlight(config, text.as_bytes(), None, |_| None) {
+        match self
+            .highlighter
+            .highlight(config, text.as_bytes(), None, |_| None)
+        {
             Ok(events) => {
                 for event in events {
                     match event {
@@ -197,7 +229,9 @@ impl TreeSitterHighlighter {
     pub fn parse_document(&mut self, doc_id: &str, language: &str, text: &str) -> Option<&Tree> {
         let lang = self.get_language(language)?;
 
-        let parser = self.parser_cache.entry(doc_id.to_string())
+        let parser = self
+            .parser_cache
+            .entry(doc_id.to_string())
             .or_insert_with(|| {
                 let mut p = Parser::new();
                 let _ = p.set_language(lang);
@@ -211,7 +245,8 @@ impl TreeSitterHighlighter {
         };
 
         if let Some(tree) = tree {
-            self.tree_cache.insert(doc_id.to_string(), (language.to_string(), tree));
+            self.tree_cache
+                .insert(doc_id.to_string(), (language.to_string(), tree));
             self.tree_cache.get(doc_id).map(|(_, t)| t)
         } else {
             None

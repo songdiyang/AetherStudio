@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use aether_remote::ssh::{SshConfig, SshAuth, SshRemoteFs};
-use aether_remote::{RemoteFs, RemoteDirEntry};
+use aether_remote::ssh::{SshAuth, SshConfig, SshRemoteFs};
+use aether_remote::{RemoteDirEntry, RemoteFs};
 
 /// SSH 认证类型（UI 层）
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,11 +84,15 @@ impl SshConnectionDialog {
             SshAuthType::Password => SshAuth::Password(self.password.clone()),
             SshAuthType::Key => SshAuth::Key {
                 path: self.key_path.clone(),
-                passphrase: if self.key_passphrase.is_empty() { None } else { Some(self.key_passphrase.clone()) },
+                passphrase: if self.key_passphrase.is_empty() {
+                    None
+                } else {
+                    Some(self.key_passphrase.clone())
+                },
             },
             SshAuthType::Agent => SshAuth::Agent,
         };
-        
+
         Some(SshConfig {
             host: self.host.clone(),
             port,
@@ -147,7 +151,9 @@ impl RemoteSession {
 
     /// 列出当前路径下的文件
     pub fn list_current_dir(&self) -> Result<Vec<RemoteDirEntry>, String> {
-        self.fs.list_dir(&self.current_path).map_err(|e| e.to_string())
+        self.fs
+            .list_dir(&self.current_path)
+            .map_err(|e| e.to_string())
     }
 
     /// 读取远程文件
@@ -210,12 +216,10 @@ impl RemoteFileTree {
             });
         }
         // 排序：目录在前，文件在后，按名称排序
-        nodes.sort_by(|a, b| {
-            match (a.is_dir, b.is_dir) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.name.cmp(&b.name),
-            }
+        nodes.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
         });
         Self {
             nodes,

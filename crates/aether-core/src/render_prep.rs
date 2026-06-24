@@ -1,6 +1,6 @@
 use rayon::prelude::*;
 
-use crate::lexer::{LexemeSpan, Language};
+use crate::lexer::{Language, LexemeSpan};
 
 /// 渲染行数据 - 预计算的行内容和token
 #[derive(Clone, Debug)]
@@ -54,15 +54,9 @@ impl ParallelRenderPrep {
     }
 
     /// 单线程token预处理（fallback）
-    fn prepare_tokens_single(
-        &self,
-        lines: &[String],
-        language: Language,
-    ) -> Vec<Vec<LexemeSpan>> {
+    fn prepare_tokens_single(&self, lines: &[String], language: Language) -> Vec<Vec<LexemeSpan>> {
         let lexer = language.create_lexer();
-        lines.iter()
-            .map(|line| lexer.lex_full(line))
-            .collect()
+        lines.iter().map(|line| lexer.lex_full(line)).collect()
     }
 }
 
@@ -73,7 +67,7 @@ impl Default for ParallelRenderPrep {
 }
 
 /// 渲染缓存 - 预计算的可见行数据
-/// 
+///
 /// 避免每帧重复计算行文本和token
 pub struct RenderCache {
     /// 缓存的可见行文本

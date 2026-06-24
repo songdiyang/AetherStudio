@@ -1,14 +1,14 @@
+use aether_core::lexer::{LexemeSpan, TokenKind};
 use windows::core::Result;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_POINT_2F, D2D_RECT_F};
 use windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget;
 use windows::Win32::Graphics::DirectWrite::{
-    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
-    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-    DWRITE_FONT_STRETCH_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
+    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
+    DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_LEADING,
 };
-use aether_core::lexer::{LexemeSpan, TokenKind};
 
-use super::factory::{colors, color_f};
+use super::factory::{color_f, colors};
 
 /// 文本渲染器
 pub struct TextRenderer {
@@ -118,8 +118,19 @@ impl TextRenderer {
         for (i, line) in lines[start_line..end_line].iter().enumerate() {
             let line_idx = start_line + i;
             let y = i as f32 * self.line_height - (scroll_y % self.line_height);
-            let tokens = token_lines.get(line_idx).map(|v| v.as_slice()).unwrap_or(&[]);
-            self.render_line(target, line, tokens, viewport.x, viewport.y + y, 0, viewport.width_cols)?;
+            let tokens = token_lines
+                .get(line_idx)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+            self.render_line(
+                target,
+                line,
+                tokens,
+                viewport.x,
+                viewport.y + y,
+                0,
+                viewport.width_cols,
+            )?;
         }
 
         Ok(())
@@ -132,7 +143,9 @@ impl TextRenderer {
             TokenKind::Identifier => colors::variable(),
             TokenKind::StringLiteral | TokenKind::CharLiteral => colors::string(),
             TokenKind::NumberLiteral => colors::number(),
-            TokenKind::LineComment | TokenKind::BlockComment | TokenKind::DocComment => colors::comment(),
+            TokenKind::LineComment | TokenKind::BlockComment | TokenKind::DocComment => {
+                colors::comment()
+            }
             TokenKind::Operator | TokenKind::Punctuation => colors::operator(),
             TokenKind::Preprocessor => colors::preprocessor(),
             TokenKind::Attribute => color_f(0.8, 0.6, 0.3, 1.0),
@@ -149,7 +162,9 @@ impl TextRenderer {
             TokenKind::MdEmphasis => color_f(0.9, 0.7, 0.4, 1.0),
             TokenKind::JsonKey => color_f(0.6, 0.8, 0.9, 1.0),
             TokenKind::TomlTable => color_f(0.8, 0.5, 0.3, 1.0),
-            TokenKind::Whitespace | TokenKind::Newline | TokenKind::Unknown | TokenKind::EOF => colors::text_default(),
+            TokenKind::Whitespace | TokenKind::Newline | TokenKind::Unknown | TokenKind::EOF => {
+                colors::text_default()
+            }
         }
     }
 
@@ -182,6 +197,12 @@ pub struct Viewport {
 impl Viewport {
     pub fn new(x: f32, y: f32, width: f32, height: f32, char_width: f32) -> Self {
         let width_cols = (width / char_width) as usize;
-        Self { x, y, width, height, width_cols }
+        Self {
+            x,
+            y,
+            width,
+            height,
+            width_cols,
+        }
     }
 }

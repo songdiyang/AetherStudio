@@ -1,6 +1,6 @@
 use std::sync::mpsc;
 
-use crate::remote_fs::{RemoteFs, RemoteDirEntry, FsEvent, Result};
+use crate::remote_fs::{FsEvent, RemoteDirEntry, RemoteFs, Result};
 
 /// 容器运行时后端
 #[derive(Clone, Debug)]
@@ -26,9 +26,7 @@ pub struct ContainerRemoteFs {
 
 impl ContainerRemoteFs {
     pub fn new(config: ContainerConfig) -> Self {
-        Self {
-            _config: config,
-        }
+        Self { _config: config }
     }
 
     fn backend_cmd(&self) -> &'static str {

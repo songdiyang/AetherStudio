@@ -15,11 +15,11 @@ impl super::Lexer for HtmlLexer {
 
         while i < bytes.len() {
             // HTML 注释 <!-- ... -->
-            if i + 4 <= bytes.len() && &bytes[i..i+4] == b"<!--" {
+            if i + 4 <= bytes.len() && &bytes[i..i + 4] == b"<!--" {
                 let start = i;
                 i += 4;
                 while i + 3 <= bytes.len() {
-                    if &bytes[i..i+3] == b"-->" {
+                    if &bytes[i..i + 3] == b"-->" {
                         i += 3;
                         break;
                     }
@@ -46,7 +46,12 @@ impl super::Lexer for HtmlLexer {
 
                 // 标签名
                 let tag_name_start = i;
-                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_' || bytes[i] == b':') {
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric()
+                        || bytes[i] == b'-'
+                        || bytes[i] == b'_'
+                        || bytes[i] == b':')
+                {
                     i += 1;
                 }
                 if i > tag_name_start {
@@ -80,7 +85,12 @@ impl super::Lexer for HtmlLexer {
 
                     // 属性名
                     let attr_start = i;
-                    while i < bytes.len() && bytes[i] != b'=' && bytes[i] != b'>' && bytes[i] != b'/' && !bytes[i].is_ascii_whitespace() {
+                    while i < bytes.len()
+                        && bytes[i] != b'='
+                        && bytes[i] != b'>'
+                        && bytes[i] != b'/'
+                        && !bytes[i].is_ascii_whitespace()
+                    {
                         i += 1;
                     }
                     if i > attr_start {
@@ -127,7 +137,11 @@ impl super::Lexer for HtmlLexer {
                         } else {
                             // 无引号属性值
                             let val_start = i;
-                            while i < bytes.len() && bytes[i] != b'>' && bytes[i] != b'/' && !bytes[i].is_ascii_whitespace() {
+                            while i < bytes.len()
+                                && bytes[i] != b'>'
+                                && bytes[i] != b'/'
+                                && !bytes[i].is_ascii_whitespace()
+                            {
                                 i += 1;
                             }
                             if i > val_start {
@@ -187,7 +201,7 @@ impl super::Lexer for HtmlLexer {
             let start = i;
             while i < bytes.len() && bytes[i] != b'<' && bytes[i] != b'&' {
                 // 检查是否是注释开始
-                if i + 4 <= bytes.len() && &bytes[i..i+4] == b"<!--" {
+                if i + 4 <= bytes.len() && &bytes[i..i + 4] == b"<!--" {
                     break;
                 }
                 i += 1;

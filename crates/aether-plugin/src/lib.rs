@@ -1,7 +1,7 @@
-pub mod runtime;
 pub mod permissions;
 pub mod registry;
+pub mod runtime;
 
-pub use runtime::{PluginRuntime, PluginId};
-pub use permissions::{PermissionLevel, PermissionGrant};
+pub use permissions::{PermissionGrant, PermissionLevel};
 pub use registry::PluginRegistry;
+pub use runtime::{PluginId, PluginRuntime};

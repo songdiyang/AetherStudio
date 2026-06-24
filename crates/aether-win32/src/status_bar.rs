@@ -17,12 +17,36 @@ impl StatusBar {
     pub fn new() -> Self {
         Self {
             sections: vec![
-                StatusBarSection { label: "main".to_string(), width: 120.0, clickable: true },
-                StatusBarSection { label: "0 错误 0 警告".to_string(), width: 100.0, clickable: true },
-                StatusBarSection { label: "Ln 1, Col 1".to_string(), width: 80.0, clickable: false },
-                StatusBarSection { label: "UTF-8".to_string(), width: 60.0, clickable: true },
-                StatusBarSection { label: "Plain Text".to_string(), width: 80.0, clickable: true },
-                StatusBarSection { label: "".to_string(), width: 100.0, clickable: true },
+                StatusBarSection {
+                    label: "main".to_string(),
+                    width: 120.0,
+                    clickable: true,
+                },
+                StatusBarSection {
+                    label: "0 错误 0 警告".to_string(),
+                    width: 100.0,
+                    clickable: true,
+                },
+                StatusBarSection {
+                    label: "Ln 1, Col 1".to_string(),
+                    width: 80.0,
+                    clickable: false,
+                },
+                StatusBarSection {
+                    label: "UTF-8".to_string(),
+                    width: 60.0,
+                    clickable: true,
+                },
+                StatusBarSection {
+                    label: "Plain Text".to_string(),
+                    width: 80.0,
+                    clickable: true,
+                },
+                StatusBarSection {
+                    label: "".to_string(),
+                    width: 100.0,
+                    clickable: true,
+                },
             ],
             hover_index: None,
         }
@@ -31,7 +55,9 @@ impl StatusBar {
     /// 更新 Git 分支显示
     pub fn update_git_branch(&mut self, branch: Option<&str>) {
         if let Some(section) = self.sections.get_mut(5) {
-            section.label = branch.map(|b| format!("{} {}", "🌿", b)).unwrap_or_else(|| "".to_string());
+            section.label = branch
+                .map(|b| format!("{} {}", "🌿", b))
+                .unwrap_or_else(|| "".to_string());
         }
     }
 
@@ -60,14 +86,14 @@ impl StatusBar {
     pub fn section_regions(&self, total_width: f32) -> Vec<(f32, f32, f32, f32)> {
         let mut regions = Vec::new();
         let mut x = 10.0f32;
-        
+
         // 左侧区域（从左边开始）
         for (_i, section) in self.sections.iter().enumerate().take(3) {
             let width = section.width;
             regions.push((x, 0.0, width, 22.0));
             x += width + 10.0;
         }
-        
+
         // 右侧区域（从右边开始）
         let mut right_x = total_width - 10.0;
         for (_i, section) in self.sections.iter().enumerate().skip(3).rev() {
@@ -76,7 +102,7 @@ impl StatusBar {
             regions.push((right_x, 0.0, width, 22.0));
             right_x -= 10.0;
         }
-        
+
         regions
     }
 

@@ -5,8 +5,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
 use crate::server::LanguageServer;
-use crate::types::*;
 use crate::sync::DocumentSync;
+use crate::types::*;
 
 /// LSP 客户端管理器
 /// 管理多个语言服务器实例，按语言ID路由请求
@@ -29,9 +29,15 @@ pub struct LspClient {
 #[derive(Clone, Debug)]
 pub enum LspEvent {
     /// 诊断更新
-    Diagnostics { uri: Url, diagnostics: Vec<Diagnostic> },
+    Diagnostics {
+        uri: Url,
+        diagnostics: Vec<Diagnostic>,
+    },
     /// 补全结果
-    Completion { uri: Url, items: Vec<CompletionItem> },
+    Completion {
+        uri: Url,
+        items: Vec<CompletionItem>,
+    },
     /// 悬停结果
     Hover { uri: Url, hover: Hover },
     /// 查找引用结果
@@ -39,26 +45,35 @@ pub enum LspEvent {
     /// 重命名结果
     Rename { uri: Url, edit: WorkspaceEdit },
     /// 代码操作结果
-    CodeActions { uri: Url, actions: Vec<CodeActionOrCommand> },
+    CodeActions {
+        uri: Url,
+        actions: Vec<CodeActionOrCommand>,
+    },
     /// 格式化结果
     Formatting { uri: Url, edits: Vec<TextEdit> },
     /// 语义令牌结果
     SemanticTokens { uri: Url, tokens: SemanticTokens },
     /// 语义令牌delta结果
-    SemanticTokensDelta { uri: Url, delta: SemanticTokensDelta },
+    SemanticTokensDelta {
+        uri: Url,
+        delta: SemanticTokensDelta,
+    },
     /// 内联提示结果
     InlayHints { uri: Url, hints: Vec<InlayHint> },
     /// 服务器已就绪
     ServerReady { language_id: String },
     /// 服务器日志
-    Log { language_id: String, message: String },
+    Log {
+        language_id: String,
+        message: String,
+    },
 }
 
 impl LspClient {
     /// 创建新的 LSP 客户端
     pub fn new(root_uri: Option<Url>) -> (Self, mpsc::UnboundedReceiver<LspEvent>) {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        
+
         let client = Self {
             servers: Arc::new(RwLock::new(HashMap::new())),
             document_sync: Arc::new(RwLock::new(DocumentSync::new())),
@@ -66,41 +81,52 @@ impl LspClient {
             event_tx,
             root_uri,
         };
-        
+
         (client, event_rx)
     }
 
     /// 启动指定语言的服务器
-    pub async fn start_server(&self, language_id: &str, config: ServerConfig) -> std::io::Result<()> {
+    pub async fn start_server(
+        &self,
+        language_id: &str,
+        config: ServerConfig,
+    ) -> std::io::Result<()> {
         let server = LanguageServer::start(config, language_id.to_string()).await?;
-        
+
         let event = LspEvent::ServerReady {
             language_id: language_id.to_string(),
         };
         let _ = self.event_tx.send(event);
-        
+
         let mut servers = self.servers.write().await;
         servers.insert(language_id.to_string(), server);
-        
+
         Ok(())
     }
 
     /// 打开文档（自动路由到对应语言服务器）
-    pub async fn open_document(&self, uri: Url, language_id: String, text: String) -> std::io::Result<()> {
+    pub async fn open_document(
+        &self,
+        uri: Url,
+        language_id: String,
+        text: String,
+    ) -> std::io::Result<()> {
         let version = 1;
-        
+
         // 记录文档状态
         {
             let mut sync = self.document_sync.write().await;
             sync.open_document(uri.clone(), language_id.clone(), version, text.clone());
         }
-        
+
         // 发送到对应语言服务器
         let mut servers = self.servers.write().await;
         if let Some(server) = servers.get_mut(&language_id) {
-            server.open_document(uri, language_id, version, text).await?;
+            server
+                .open_document(uri, language_id, version, text)
+                .await?;
         }
-        
+
         Ok(())
     }
 
@@ -110,29 +136,33 @@ impl LspClient {
             let sync = self.document_sync.read().await;
             sync.get_language_id(uri).cloned()
         };
-        
+
         if let Some(lang_id) = language_id {
             let mut servers = self.servers.write().await;
             if let Some(server) = servers.get_mut(&lang_id) {
                 server.close_document(uri).await?;
             }
-            
+
             let mut sync = self.document_sync.write().await;
             sync.close_document(uri);
         }
-        
+
         Ok(())
     }
 
     /// 通知文档变更（增量同步）
-    pub async fn notify_change(&self, uri: &Url, changes: Vec<TextDocumentContentChangeEvent>) -> std::io::Result<()> {
+    pub async fn notify_change(
+        &self,
+        uri: &Url,
+        changes: Vec<TextDocumentContentChangeEvent>,
+    ) -> std::io::Result<()> {
         let (language_id, new_version) = {
             let mut sync = self.document_sync.write().await;
             let lang_id = sync.get_language_id(uri).cloned();
             let version = sync.increment_version(uri);
             (lang_id, version)
         };
-        
+
         if let Some(lang_id) = language_id {
             if let Some(version) = new_version {
                 let mut servers = self.servers.write().await;
@@ -141,194 +171,244 @@ impl LspClient {
                 }
             }
         }
-        
+
         Ok(())
     }
 
     /// 请求代码补全
-    pub async fn request_completion(&self, uri: &Url, position: Position) -> std::io::Result<Option<CompletionResponse>> {
+    pub async fn request_completion(
+        &self,
+        uri: &Url,
+        position: Position,
+    ) -> std::io::Result<Option<CompletionResponse>> {
         let language_id = {
             let sync = self.document_sync.read().await;
             sync.get_language_id(uri).cloned()
         };
-        
+
         if let Some(lang_id) = language_id {
             let mut servers = self.servers.write().await;
             if let Some(server) = servers.get_mut(&lang_id) {
                 return server.request_completion(uri, position).await;
             }
         }
-        
+
         Ok(None)
     }
 
     /// 请求悬停提示
-    pub async fn request_hover(&self, uri: &Url, position: Position) -> std::io::Result<Option<Hover>> {
+    pub async fn request_hover(
+        &self,
+        uri: &Url,
+        position: Position,
+    ) -> std::io::Result<Option<Hover>> {
         let language_id = {
             let sync = self.document_sync.read().await;
             sync.get_language_id(uri).cloned()
         };
-        
+
         if let Some(lang_id) = language_id {
             let mut servers = self.servers.write().await;
             if let Some(server) = servers.get_mut(&lang_id) {
                 return server.request_hover(uri, position).await;
             }
         }
-        
+
         Ok(None)
     }
 
     /// 请求跳转到定义
-    pub async fn request_definition(&self, uri: &Url, position: Position) -> std::io::Result<Option<GotoDefinitionResponse>> {
+    pub async fn request_definition(
+        &self,
+        uri: &Url,
+        position: Position,
+    ) -> std::io::Result<Option<GotoDefinitionResponse>> {
         let language_id = {
             let sync = self.document_sync.read().await;
             sync.get_language_id(uri).cloned()
         };
-        
+
         if let Some(lang_id) = language_id {
             let mut servers = self.servers.write().await;
             if let Some(server) = servers.get_mut(&lang_id) {
                 return server.request_definition(uri, position).await;
             }
         }
-        
+
         Ok(None)
     }
 
     /// 请求查找引用
-    pub async fn request_references(&self, uri: &Url, position: Position, include_declaration: bool) -> std::io::Result<Option<Vec<Location>>> {
+    pub async fn request_references(
+        &self,
+        uri: &Url,
+        position: Position,
+        include_declaration: bool,
+    ) -> std::io::Result<Option<Vec<Location>>> {
         let language_id = {
             let sync = self.document_sync.read().await;
             sync.get_language_id(uri).cloned()
         };
-        
+
         if let Some(lang_id) = language_id {
             let mut servers = self.servers.write().await;
             if let Some(server) = servers.get_mut(&lang_id) {
-                return server.request_references(uri, position, include_declaration).await;
+                return server
+                    .request_references(uri, position, include_declaration)
+                    .await;
             }
         }
-        
+
         Ok(None)
     }
 
     /// 请求重命名
-    pub async fn request_rename(&self, uri: &Url, position: Position, new_name: String) -> std::io::Result<Option<WorkspaceEdit>> {
+    pub async fn request_rename(
+        &self,
+        uri: &Url,
+        position: Position,
+        new_name: String,
+    ) -> std::io::Result<Option<WorkspaceEdit>> {
         let language_id = {
             let sync = self.document_sync.read().await;
             sync.get_language_id(uri).cloned()
         };
-        
+
         if let Some(lang_id) = language_id {
             let mut servers = self.servers.write().await;
             if let Some(server) = servers.get_mut(&lang_id) {
                 return server.request_rename(uri, position, new_name).await;
             }
         }
-        
+
         Ok(None)
     }
 
     /// 请求代码操作
-    pub async fn request_code_actions(&self, uri: &Url, range: Range, diagnostics: Vec<Diagnostic>) -> std::io::Result<Option<CodeActionResponse>> {
+    pub async fn request_code_actions(
+        &self,
+        uri: &Url,
+        range: Range,
+        diagnostics: Vec<Diagnostic>,
+    ) -> std::io::Result<Option<CodeActionResponse>> {
         let language_id = {
             let sync = self.document_sync.read().await;
             sync.get_language_id(uri).cloned()
         };
-        
+
         if let Some(lang_id) = language_id {
             let mut servers = self.servers.write().await;
             if let Some(server) = servers.get_mut(&lang_id) {
                 return server.request_code_actions(uri, range, diagnostics).await;
             }
         }
-        
+
         Ok(None)
     }
 
     /// 请求格式化
-    pub async fn request_formatting(&self, uri: &Url, options: FormattingOptions) -> std::io::Result<Option<Vec<TextEdit>>> {
+    pub async fn request_formatting(
+        &self,
+        uri: &Url,
+        options: FormattingOptions,
+    ) -> std::io::Result<Option<Vec<TextEdit>>> {
         let language_id = {
             let sync = self.document_sync.read().await;
             sync.get_language_id(uri).cloned()
         };
-        
+
         if let Some(lang_id) = language_id {
             let mut servers = self.servers.write().await;
             if let Some(server) = servers.get_mut(&lang_id) {
                 return server.request_formatting(uri, options).await;
             }
         }
-        
+
         Ok(None)
     }
 
     /// 请求完整语义令牌
-    pub async fn request_semantic_tokens_full(&self, uri: &Url) -> std::io::Result<Option<SemanticTokens>> {
+    pub async fn request_semantic_tokens_full(
+        &self,
+        uri: &Url,
+    ) -> std::io::Result<Option<SemanticTokens>> {
         let language_id = {
             let sync = self.document_sync.read().await;
             sync.get_language_id(uri).cloned()
         };
-        
+
         if let Some(lang_id) = language_id {
             let mut servers = self.servers.write().await;
             if let Some(server) = servers.get_mut(&lang_id) {
                 return server.request_semantic_tokens_full(uri).await;
             }
         }
-        
+
         Ok(None)
     }
 
     /// 请求语义令牌delta更新
-    pub async fn request_semantic_tokens_delta(&self, uri: &Url, previous_result_id: String) -> std::io::Result<Option<SemanticTokensDelta>> {
+    pub async fn request_semantic_tokens_delta(
+        &self,
+        uri: &Url,
+        previous_result_id: String,
+    ) -> std::io::Result<Option<SemanticTokensDelta>> {
         let language_id = {
             let sync = self.document_sync.read().await;
             sync.get_language_id(uri).cloned()
         };
-        
+
         if let Some(lang_id) = language_id {
             let mut servers = self.servers.write().await;
             if let Some(server) = servers.get_mut(&lang_id) {
-                return server.request_semantic_tokens_delta(uri, previous_result_id).await;
+                return server
+                    .request_semantic_tokens_delta(uri, previous_result_id)
+                    .await;
             }
         }
-        
+
         Ok(None)
     }
 
     /// 请求范围语义令牌
-    pub async fn request_semantic_tokens_range(&self, uri: &Url, range: Range) -> std::io::Result<Option<SemanticTokens>> {
+    pub async fn request_semantic_tokens_range(
+        &self,
+        uri: &Url,
+        range: Range,
+    ) -> std::io::Result<Option<SemanticTokens>> {
         let language_id = {
             let sync = self.document_sync.read().await;
             sync.get_language_id(uri).cloned()
         };
-        
+
         if let Some(lang_id) = language_id {
             let mut servers = self.servers.write().await;
             if let Some(server) = servers.get_mut(&lang_id) {
                 return server.request_semantic_tokens_range(uri, range).await;
             }
         }
-        
+
         Ok(None)
     }
 
     /// 请求内联提示
-    pub async fn request_inlay_hints(&self, uri: &Url, range: Range) -> std::io::Result<Option<Vec<InlayHint>>> {
+    pub async fn request_inlay_hints(
+        &self,
+        uri: &Url,
+        range: Range,
+    ) -> std::io::Result<Option<Vec<InlayHint>>> {
         let language_id = {
             let sync = self.document_sync.read().await;
             sync.get_language_id(uri).cloned()
         };
-        
+
         if let Some(lang_id) = language_id {
             let mut servers = self.servers.write().await;
             if let Some(server) = servers.get_mut(&lang_id) {
                 return server.request_inlay_hints(uri, range).await;
             }
         }
-        
+
         Ok(None)
     }
 

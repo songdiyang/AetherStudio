@@ -36,7 +36,12 @@ impl PluginRuntime {
     }
 
     /// 调用插件生命周期钩子
-    pub fn call_hook(&mut self, _id: PluginId, _hook: &str, _args: serde_json::Value) -> Result<serde_json::Value, String> {
+    pub fn call_hook(
+        &mut self,
+        _id: PluginId,
+        _hook: &str,
+        _args: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         // TODO: 实现 WIT 接口调用（需要 wasmtime 依赖）
         Ok(serde_json::Value::Null)
     }

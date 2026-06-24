@@ -1,7 +1,7 @@
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::Input::Ime::{
-    ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow, ImmSetCandidateWindow,
-    CANDIDATEFORM, COMPOSITIONFORM, CFS_POINT, CFS_CANDIDATEPOS,
+    ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow, ImmSetCompositionWindow,
+    CANDIDATEFORM, CFS_CANDIDATEPOS, CFS_POINT, COMPOSITIONFORM,
 };
 
 /// TSF (Text Services Framework) / IMM32 输入法集成

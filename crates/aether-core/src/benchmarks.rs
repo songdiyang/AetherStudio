@@ -51,7 +51,12 @@ impl BenchmarkResult {
 }
 
 /// 运行基准测试，带最大时间限制
-pub fn run_benchmark<F>(name: &str, iterations: u64, max_total_secs: u64, mut f: F) -> BenchmarkResult
+pub fn run_benchmark<F>(
+    name: &str,
+    iterations: u64,
+    max_total_secs: u64,
+    mut f: F,
+) -> BenchmarkResult
 where
     F: FnMut(),
 {
@@ -83,7 +88,11 @@ where
 pub fn generate_text_lines(line_count: usize, line_length: usize) -> String {
     let mut text = String::with_capacity(line_count * (line_length + 1));
     for i in 0..line_count {
-        let line = format!("Line {:06}: {}", i, "x".repeat(line_length.saturating_sub(16)));
+        let line = format!(
+            "Line {:06}: {}",
+            i,
+            "x".repeat(line_length.saturating_sub(16))
+        );
         text.push_str(&line);
         text.push('\n');
     }
@@ -164,11 +173,16 @@ pub fn benchmark_piece_table_line_read() -> BenchmarkResult {
     let total_lines = pt.len_lines();
     let step = total_lines / 200;
 
-    run_benchmark("PieceTable::get_line (10K lines, 200 samples)", 200, 5, || {
-        for i in (0..total_lines).step_by(step.max(1)) {
-            let _ = pt.get_line(i);
-        }
-    })
+    run_benchmark(
+        "PieceTable::get_line (10K lines, 200 samples)",
+        200,
+        5,
+        || {
+            for i in (0..total_lines).step_by(step.max(1)) {
+                let _ = pt.get_line(i);
+            }
+        },
+    )
 }
 
 /// 测试 PieceTable 全文读取性能
@@ -277,11 +291,16 @@ pub fn benchmark_incremental_lexer_update() -> BenchmarkResult {
     modified_lines.insert(2500, "    let x = 42;".to_string());
     let edit = crate::buffer::text_buffer::EditResult::new(2500, 2500, 1);
 
-    run_benchmark("IncrementalLexer::update (5K lines, 1 edit)", 100, 5, || {
-        let mut l = IncrementalLexer::new(Language::Rust);
-        l.analyze_all(&lines); // 重新初始化
-        l.update_for_edit(&edit, &modified_lines);
-    })
+    run_benchmark(
+        "IncrementalLexer::update (5K lines, 1 edit)",
+        100,
+        5,
+        || {
+            let mut l = IncrementalLexer::new(Language::Rust);
+            l.analyze_all(&lines); // 重新初始化
+            l.update_for_edit(&edit, &modified_lines);
+        },
+    )
 }
 
 /// 对比：全量重新分析 vs 增量更新
@@ -291,20 +310,25 @@ pub fn benchmark_incremental_vs_full() -> BenchmarkResult {
         .map(|s| s.to_string())
         .collect();
 
-    run_benchmark("IncrementalLexer::speedup vs full (10K lines)", 20, 5, || {
-        // 全量分析
-        let mut lexer1 = IncrementalLexer::new(Language::Rust);
-        lexer1.analyze_all(&lines);
+    run_benchmark(
+        "IncrementalLexer::speedup vs full (10K lines)",
+        20,
+        5,
+        || {
+            // 全量分析
+            let mut lexer1 = IncrementalLexer::new(Language::Rust);
+            lexer1.analyze_all(&lines);
 
-        // 增量更新（模拟编辑后）
-        let mut modified_lines = lines.clone();
-        modified_lines.insert(5000, "    let test = 1;".to_string());
-        let edit = crate::buffer::text_buffer::EditResult::new(5000, 5000, 1);
+            // 增量更新（模拟编辑后）
+            let mut modified_lines = lines.clone();
+            modified_lines.insert(5000, "    let test = 1;".to_string());
+            let edit = crate::buffer::text_buffer::EditResult::new(5000, 5000, 1);
 
-        let mut lexer2 = IncrementalLexer::new(Language::Rust);
-        lexer2.analyze_all(&lines);
-        lexer2.update_for_edit(&edit, &modified_lines);
-    })
+            let mut lexer2 = IncrementalLexer::new(Language::Rust);
+            lexer2.analyze_all(&lines);
+            lexer2.update_for_edit(&edit, &modified_lines);
+        },
+    )
 }
 
 // ============================================================================
@@ -344,8 +368,10 @@ pub fn run_all_benchmarks() -> Vec<BenchmarkResult> {
     println!();
     println!("--- 结果汇总 ---");
     println!("{}", "=".repeat(120));
-    println!("{:50} | {:>6} | {:>10} | {:>10} | {:>10} | {:>10}", 
-             "测试名称", "迭代", "平均(ms)", "最小(ms)", "最大(ms)", "吞吐量");
+    println!(
+        "{:50} | {:>6} | {:>10} | {:>10} | {:>10} | {:>10}",
+        "测试名称", "迭代", "平均(ms)", "最小(ms)", "最大(ms)", "吞吐量"
+    );
     println!("{}", "-".repeat(120));
     for result in &results {
         println!("{}", result.report());

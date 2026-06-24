@@ -1,16 +1,15 @@
+use aether_core::lexer::{LexemeSpan, TokenKind};
 use windows::core::Result;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_POINT_2F};
 use windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget;
 use windows::Win32::Graphics::DirectWrite::{
-    IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
-    DWRITE_TEXT_RANGE,
+    IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout, DWRITE_TEXT_RANGE,
 };
-use aether_core::lexer::{LexemeSpan, TokenKind};
 
-use super::factory::{colors, color_f};
+use super::factory::{color_f, colors};
 
 /// GPU辅助渲染器
-/// 
+///
 /// 利用Direct2D的GPU加速能力，通过以下策略优化：
 /// 1. 批量绘制：减少DrawTextLayout调用次数
 /// 2. 文本布局缓存：避免重复创建IDWriteTextLayout
@@ -31,7 +30,11 @@ pub struct GpuComputeRenderer {
 }
 
 impl GpuComputeRenderer {
-    pub fn new(dwrite_factory: IDWriteFactory, text_format: IDWriteTextFormat, font_size: f32) -> Result<Self> {
+    pub fn new(
+        dwrite_factory: IDWriteFactory,
+        text_format: IDWriteTextFormat,
+        font_size: f32,
+    ) -> Result<Self> {
         let char_width = font_size * 0.6;
         let line_height = font_size * 1.5;
 
@@ -48,7 +51,7 @@ impl GpuComputeRenderer {
     }
 
     /// 批量渲染可见行 - GPU优化版本
-    /// 
+    ///
     /// 优化策略：
     /// - 整行创建单个TextLayout
     /// - 使用颜色范围设置token颜色（减少Draw调用）
@@ -69,9 +72,19 @@ impl GpuComputeRenderer {
             for (i, line) in lines[start_line..end_line].iter().enumerate() {
                 let line_idx = start_line + i;
                 let y = i as f32 * self.line_height - (scroll_y % self.line_height);
-                let tokens = token_lines.get(line_idx).map(|v| v.as_slice()).unwrap_or(&[]);
+                let tokens = token_lines
+                    .get(line_idx)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]);
 
-                self.render_line_gpu(target, line, tokens, viewport.x, viewport.y + y, viewport.width_cols)?;
+                self.render_line_gpu(
+                    target,
+                    line,
+                    tokens,
+                    viewport.x,
+                    viewport.y + y,
+                    viewport.width_cols,
+                )?;
             }
 
             Ok(())
@@ -79,7 +92,7 @@ impl GpuComputeRenderer {
     }
 
     /// GPU优化的单行渲染
-    /// 
+    ///
     /// 使用整行TextLayout + 颜色范围设置，减少90%的DrawTextLayout调用
     fn render_line_gpu(
         &mut self,
@@ -110,10 +123,10 @@ impl GpuComputeRenderer {
             // 这是GPU计算的关键优化：在GPU端计算颜色，而非CPU端逐个绘制
             for token in tokens {
                 let color = self.color_for_token(token.kind);
-                
+
                 // 创建颜色画笔作为drawing effect
                 let brush = target.CreateSolidColorBrush(&color, None)?;
-                
+
                 let range = DWRITE_TEXT_RANGE {
                     startPosition: token.start as u32,
                     length: token.len as u32,
@@ -139,7 +152,7 @@ impl GpuComputeRenderer {
     }
 
     /// 缓存优化的单行渲染
-    /// 
+    ///
     /// 对于未变化的行，复用之前的TextLayout
     #[allow(dead_code)]
     fn render_line_cached(
@@ -154,17 +167,18 @@ impl GpuComputeRenderer {
         unsafe {
             // 检查缓存
             let cache_key = format!("{}:{:?}", line_text, tokens.len());
-            
+
             let layout = if let Some(cached) = self.layout_cache.get(&cache_key) {
                 self.cache_hits += 1;
                 cached.clone()
             } else {
                 self.cache_misses += 1;
-                
+
                 // 创建新布局
-                let line_width = (line_text.len().min(viewport_width_cols) as f32) * self.char_width;
+                let line_width =
+                    (line_text.len().min(viewport_width_cols) as f32) * self.char_width;
                 let wide_text: Vec<u16> = line_text.encode_utf16().collect();
-                
+
                 let new_layout = self.dwrite_factory.CreateTextLayout(
                     &wide_text,
                     &self.text_format,
@@ -186,11 +200,8 @@ impl GpuComputeRenderer {
                 // 缓存布局
                 if self.layout_cache.len() >= 200 {
                     // LRU清理：移除一半
-                    let keys_to_remove: Vec<String> = self.layout_cache
-                        .keys()
-                        .take(100)
-                        .cloned()
-                        .collect();
+                    let keys_to_remove: Vec<String> =
+                        self.layout_cache.keys().take(100).cloned().collect();
                     for key in keys_to_remove {
                         self.layout_cache.remove(&key);
                     }
@@ -238,7 +249,9 @@ impl GpuComputeRenderer {
             TokenKind::Identifier => colors::variable(),
             TokenKind::StringLiteral | TokenKind::CharLiteral => colors::string(),
             TokenKind::NumberLiteral => colors::number(),
-            TokenKind::LineComment | TokenKind::BlockComment | TokenKind::DocComment => colors::comment(),
+            TokenKind::LineComment | TokenKind::BlockComment | TokenKind::DocComment => {
+                colors::comment()
+            }
             TokenKind::Operator | TokenKind::Punctuation => colors::operator(),
             TokenKind::Preprocessor => colors::preprocessor(),
             TokenKind::Attribute => color_f(0.8, 0.6, 0.3, 1.0),
@@ -255,7 +268,9 @@ impl GpuComputeRenderer {
             TokenKind::MdEmphasis => color_f(0.9, 0.7, 0.4, 1.0),
             TokenKind::JsonKey => color_f(0.6, 0.8, 0.9, 1.0),
             TokenKind::TomlTable => color_f(0.8, 0.5, 0.3, 1.0),
-            TokenKind::Whitespace | TokenKind::Newline | TokenKind::Unknown | TokenKind::EOF => colors::text_default(),
+            TokenKind::Whitespace | TokenKind::Newline | TokenKind::Unknown | TokenKind::EOF => {
+                colors::text_default()
+            }
         }
     }
 
@@ -280,6 +295,12 @@ pub struct Viewport {
 impl Viewport {
     pub fn new(x: f32, y: f32, width: f32, height: f32, char_width: f32) -> Self {
         let width_cols = (width / char_width) as usize;
-        Self { x, y, width, height, width_cols }
+        Self {
+            x,
+            y,
+            width,
+            height,
+            width_cols,
+        }
     }
 }

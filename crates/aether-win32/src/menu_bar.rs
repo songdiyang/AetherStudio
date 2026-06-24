@@ -141,54 +141,73 @@ impl MenuBar {
     pub fn new() -> Self {
         Self {
             items: vec![
-                MenuBarItem::new("文件(F)", vec![
-                    MenuItem::new("新建文件", CommandId::FileNew).with_shortcut("Ctrl+N"),
-                    MenuItem::new("打开文件...", CommandId::FileOpen).with_shortcut("Ctrl+O"),
-                    MenuItem::new("打开文件夹...", CommandId::FileOpenFolder).with_shortcut("Ctrl+K"),
-                    MenuItem::separator(),
-                    MenuItem::new("保存", CommandId::FileSave).with_shortcut("Ctrl+S"),
-                    MenuItem::new("另存为...", CommandId::FileSaveAs).with_shortcut("Ctrl+Shift+S"),
-                    MenuItem::separator(),
-                    MenuItem::new("退出", CommandId::FileExit),
-                ]),
-                MenuBarItem::new("编辑(E)", vec![
-                    MenuItem::new("撤销", CommandId::EditUndo).with_shortcut("Ctrl+Z"),
-                    MenuItem::new("重做", CommandId::EditRedo).with_shortcut("Ctrl+Y"),
-                    MenuItem::separator(),
-                    MenuItem::new("剪切", CommandId::EditCut).with_shortcut("Ctrl+X"),
-                    MenuItem::new("复制", CommandId::EditCopy).with_shortcut("Ctrl+C"),
-                    MenuItem::new("粘贴", CommandId::EditPaste).with_shortcut("Ctrl+V"),
-                    MenuItem::separator(),
-                    MenuItem::new("查找", CommandId::EditFind).with_shortcut("Ctrl+F"),
-                    MenuItem::new("替换", CommandId::EditReplace).with_shortcut("Ctrl+H"),
-                    MenuItem::separator(),
-                    MenuItem::new("全选", CommandId::EditSelectAll).with_shortcut("Ctrl+A"),
-                ]),
-                MenuBarItem::new("选择(S)", vec![
-                    MenuItem::new("全选", CommandId::SelectAll).with_shortcut("Ctrl+A"),
-                ]),
-                MenuBarItem::new("查看(V)", vec![
-                    MenuItem::new("切换侧边栏", CommandId::ViewToggleSidebar).with_shortcut("Ctrl+B"),
-                    MenuItem::new("切换活动栏", CommandId::ViewToggleActivityBar),
-                    MenuItem::new("切换状态栏", CommandId::ViewToggleStatusBar),
-                    MenuItem::separator(),
-                    MenuItem::new("放大", CommandId::ViewZoomIn).with_shortcut("Ctrl+="),
-                    MenuItem::new("缩小", CommandId::ViewZoomOut).with_shortcut("Ctrl+-"),
-                ]),
-                MenuBarItem::new("转到(G)", vec![
-                    MenuItem::new("转到文件...", CommandId::GotoFile).with_shortcut("Ctrl+P"),
-                    MenuItem::new("转到行...", CommandId::GotoLine).with_shortcut("Ctrl+G"),
-                ]),
-                MenuBarItem::new("运行(R)", vec![
-                    MenuItem::new("启动调试", CommandId::RunDebug).with_shortcut("F5"),
-                    MenuItem::new("运行", CommandId::RunStart).with_shortcut("Ctrl+F5"),
-                ]),
-                MenuBarItem::new("终端(T)", vec![
-                    MenuItem::new("新建终端", CommandId::TerminalNew).with_shortcut("Ctrl+Shift+`"),
-                ]),
-                MenuBarItem::new("帮助(H)", vec![
-                    MenuItem::new("关于", CommandId::HelpAbout),
-                ]),
+                MenuBarItem::new(
+                    "文件(F)",
+                    vec![
+                        MenuItem::new("新建文件", CommandId::FileNew).with_shortcut("Ctrl+N"),
+                        MenuItem::new("打开文件...", CommandId::FileOpen).with_shortcut("Ctrl+O"),
+                        MenuItem::new("打开文件夹...", CommandId::FileOpenFolder)
+                            .with_shortcut("Ctrl+K"),
+                        MenuItem::separator(),
+                        MenuItem::new("保存", CommandId::FileSave).with_shortcut("Ctrl+S"),
+                        MenuItem::new("另存为...", CommandId::FileSaveAs)
+                            .with_shortcut("Ctrl+Shift+S"),
+                        MenuItem::separator(),
+                        MenuItem::new("退出", CommandId::FileExit),
+                    ],
+                ),
+                MenuBarItem::new(
+                    "编辑(E)",
+                    vec![
+                        MenuItem::new("撤销", CommandId::EditUndo).with_shortcut("Ctrl+Z"),
+                        MenuItem::new("重做", CommandId::EditRedo).with_shortcut("Ctrl+Y"),
+                        MenuItem::separator(),
+                        MenuItem::new("剪切", CommandId::EditCut).with_shortcut("Ctrl+X"),
+                        MenuItem::new("复制", CommandId::EditCopy).with_shortcut("Ctrl+C"),
+                        MenuItem::new("粘贴", CommandId::EditPaste).with_shortcut("Ctrl+V"),
+                        MenuItem::separator(),
+                        MenuItem::new("查找", CommandId::EditFind).with_shortcut("Ctrl+F"),
+                        MenuItem::new("替换", CommandId::EditReplace).with_shortcut("Ctrl+H"),
+                        MenuItem::separator(),
+                        MenuItem::new("全选", CommandId::EditSelectAll).with_shortcut("Ctrl+A"),
+                    ],
+                ),
+                MenuBarItem::new(
+                    "选择(S)",
+                    vec![MenuItem::new("全选", CommandId::SelectAll).with_shortcut("Ctrl+A")],
+                ),
+                MenuBarItem::new(
+                    "查看(V)",
+                    vec![
+                        MenuItem::new("切换侧边栏", CommandId::ViewToggleSidebar)
+                            .with_shortcut("Ctrl+B"),
+                        MenuItem::new("切换活动栏", CommandId::ViewToggleActivityBar),
+                        MenuItem::new("切换状态栏", CommandId::ViewToggleStatusBar),
+                        MenuItem::separator(),
+                        MenuItem::new("放大", CommandId::ViewZoomIn).with_shortcut("Ctrl+="),
+                        MenuItem::new("缩小", CommandId::ViewZoomOut).with_shortcut("Ctrl+-"),
+                    ],
+                ),
+                MenuBarItem::new(
+                    "转到(G)",
+                    vec![
+                        MenuItem::new("转到文件...", CommandId::GotoFile).with_shortcut("Ctrl+P"),
+                        MenuItem::new("转到行...", CommandId::GotoLine).with_shortcut("Ctrl+G"),
+                    ],
+                ),
+                MenuBarItem::new(
+                    "运行(R)",
+                    vec![
+                        MenuItem::new("启动调试", CommandId::RunDebug).with_shortcut("F5"),
+                        MenuItem::new("运行", CommandId::RunStart).with_shortcut("Ctrl+F5"),
+                    ],
+                ),
+                MenuBarItem::new(
+                    "终端(T)",
+                    vec![MenuItem::new("新建终端", CommandId::TerminalNew)
+                        .with_shortcut("Ctrl+Shift+`")],
+                ),
+                MenuBarItem::new("帮助(H)", vec![MenuItem::new("关于", CommandId::HelpAbout)]),
             ],
             active_index: None,
             hover_index: None,
@@ -239,7 +258,12 @@ impl MenuBar {
     }
 
     /// 获取展开菜单的子项区域
-    pub fn submenu_region(&self, menu_index: usize, x: f32, y: f32) -> Vec<(f32, f32, f32, f32, usize)> {
+    pub fn submenu_region(
+        &self,
+        menu_index: usize,
+        x: f32,
+        y: f32,
+    ) -> Vec<(f32, f32, f32, f32, usize)> {
         let mut regions = Vec::new();
         if let Some(item) = self.items.get(menu_index) {
             if !item.expanded {
@@ -256,7 +280,14 @@ impl MenuBar {
     }
 
     /// 查找子菜单项点击
-    pub fn hit_test_submenu(&self, menu_index: usize, x: f32, y: f32, menu_x: f32, menu_y: f32) -> Option<usize> {
+    pub fn hit_test_submenu(
+        &self,
+        menu_index: usize,
+        x: f32,
+        y: f32,
+        menu_x: f32,
+        menu_y: f32,
+    ) -> Option<usize> {
         let regions = self.submenu_region(menu_index, menu_x, menu_y);
         for (rx, ry, rw, rh, idx) in regions {
             if x >= rx && x < rx + rw && y >= ry && y < ry + rh {

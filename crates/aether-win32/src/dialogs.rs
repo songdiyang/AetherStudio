@@ -5,8 +5,7 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::CoInitializeEx;
 use windows::Win32::System::Com::COINIT_APARTMENTTHREADED;
 use windows::Win32::UI::Shell::{
-    IFileOpenDialog, IFileSaveDialog, FOS_PICKFOLDERS,
-    SIGDN_FILESYSPATH,
+    IFileOpenDialog, IFileSaveDialog, FOS_PICKFOLDERS, SIGDN_FILESYSPATH,
 };
 
 const CLSID_FILEOPENDIALOG: GUID = GUID::from_u128(0xDC1C5A9C_E88A_4DDE_A5A1_60F82A20AEF7);
@@ -25,7 +24,8 @@ impl Dialogs {
                 &CLSID_FILEOPENDIALOG,
                 None,
                 windows::Win32::System::Com::CLSCTX_ALL,
-            ).ok()?;
+            )
+            .ok()?;
 
             // 设置选项：选择文件夹
             let mut options = dialog.GetOptions().ok()?;
@@ -34,7 +34,9 @@ impl Dialogs {
 
             // 设置标题
             let title_wide: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
-            dialog.SetTitle(windows::core::PCWSTR(title_wide.as_ptr())).ok()?;
+            dialog
+                .SetTitle(windows::core::PCWSTR(title_wide.as_ptr()))
+                .ok()?;
 
             // 显示对话框
             if dialog.Show(hwnd).is_err() {
@@ -60,11 +62,14 @@ impl Dialogs {
                 &CLSID_FILEOPENDIALOG,
                 None,
                 windows::Win32::System::Com::CLSCTX_ALL,
-            ).ok()?;
+            )
+            .ok()?;
 
             // 设置标题
             let title_wide: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
-            dialog.SetTitle(windows::core::PCWSTR(title_wide.as_ptr())).ok()?;
+            dialog
+                .SetTitle(windows::core::PCWSTR(title_wide.as_ptr()))
+                .ok()?;
 
             // 显示对话框
             if dialog.Show(hwnd).is_err() {
@@ -90,15 +95,20 @@ impl Dialogs {
                 &CLSID_FILESAVEDIALOG,
                 None,
                 windows::Win32::System::Com::CLSCTX_ALL,
-            ).ok()?;
+            )
+            .ok()?;
 
             // 设置标题
             let title_wide: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
-            dialog.SetTitle(windows::core::PCWSTR(title_wide.as_ptr())).ok()?;
+            dialog
+                .SetTitle(windows::core::PCWSTR(title_wide.as_ptr()))
+                .ok()?;
 
             // 设置默认文件名
             let name_wide: Vec<u16> = default_name.encode_utf16().chain(Some(0)).collect();
-            dialog.SetFileName(windows::core::PCWSTR(name_wide.as_ptr())).ok()?;
+            dialog
+                .SetFileName(windows::core::PCWSTR(name_wide.as_ptr()))
+                .ok()?;
 
             // 显示对话框
             if dialog.Show(hwnd).is_err() {
@@ -120,11 +130,7 @@ impl Dialogs {
         Self::open_file_dialog(
             hwnd,
             "打开C文件",
-            &[
-                ("C源文件", "*.c"),
-                ("C头文件", "*.h"),
-                ("所有文件", "*.*"),
-            ],
+            &[("C源文件", "*.c"), ("C头文件", "*.h"), ("所有文件", "*.*")],
         )
     }
 }

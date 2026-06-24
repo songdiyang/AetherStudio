@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use memmap2::Mmap;
 
-use super::text_buffer::{TextBuffer, TextBufferSnapshot, BufferState, EditResult};
+use super::text_buffer::{BufferState, EditResult, TextBuffer, TextBufferSnapshot};
 
 /// Piece Table — 高性能文本缓冲区
 /// 支持O(1)插入/删除，零拷贝大文件打开
@@ -35,15 +35,15 @@ pub struct PieceTable {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Piece {
     pub source: Source,
-    pub start: usize,   // 在对应buffer中的起始字节
-    pub len: usize,     // 字节长度
+    pub start: usize,     // 在对应buffer中的起始字节
+    pub len: usize,       // 字节长度
     pub line_breaks: u32, // 缓存：该片段中的换行符数量
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Source {
-    Original,  // 内存映射的原始文件
-    Add,       // 追加缓冲区
+    Original, // 内存映射的原始文件
+    Add,      // 追加缓冲区
 }
 
 /// 行索引：每行起始字节位置
@@ -55,7 +55,9 @@ pub struct LineIndex {
 
 impl LineIndex {
     fn new() -> Self {
-        Self { line_starts: Vec::new() }
+        Self {
+            line_starts: Vec::new(),
+        }
     }
 
     fn clear(&mut self) {
@@ -156,7 +158,8 @@ impl PieceTable {
         let add_start = self.add_buffer.len();
         let new_capacity = (add_start + insert_len).next_power_of_two().max(1024);
         if new_capacity > self.add_buffer.capacity() {
-            self.add_buffer.reserve(new_capacity - self.add_buffer.capacity());
+            self.add_buffer
+                .reserve(new_capacity - self.add_buffer.capacity());
         }
         self.add_buffer.extend_from_slice(text_bytes);
         let line_breaks = count_line_breaks(text_bytes);
@@ -187,31 +190,45 @@ impl PieceTable {
         let offset_in_piece = pos - self.byte_offset_of_piece(piece_idx);
 
         if offset_in_piece == 0 {
-            self.pieces.insert(piece_idx, Piece {
-                source: Source::Add,
-                start: add_start,
-                len: insert_len,
-                line_breaks,
-            });
+            self.pieces.insert(
+                piece_idx,
+                Piece {
+                    source: Source::Add,
+                    start: add_start,
+                    len: insert_len,
+                    line_breaks,
+                },
+            );
         } else if offset_in_piece >= piece.len {
-            self.pieces.insert(piece_idx + 1, Piece {
-                source: Source::Add,
-                start: add_start,
-                len: insert_len,
-                line_breaks,
-            });
+            self.pieces.insert(
+                piece_idx + 1,
+                Piece {
+                    source: Source::Add,
+                    start: add_start,
+                    len: insert_len,
+                    line_breaks,
+                },
+            );
         } else {
             let left = Piece {
                 source: piece.source,
                 start: piece.start,
                 len: offset_in_piece,
-                line_breaks: count_line_breaks_in_range(self.buffer_for(piece.source), piece.start, offset_in_piece),
+                line_breaks: count_line_breaks_in_range(
+                    self.buffer_for(piece.source),
+                    piece.start,
+                    offset_in_piece,
+                ),
             };
             let right = Piece {
                 source: piece.source,
                 start: piece.start + offset_in_piece,
                 len: piece.len - offset_in_piece,
-                line_breaks: count_line_breaks_in_range(self.buffer_for(piece.source), piece.start + offset_in_piece, piece.len - offset_in_piece),
+                line_breaks: count_line_breaks_in_range(
+                    self.buffer_for(piece.source),
+                    piece.start + offset_in_piece,
+                    piece.len - offset_in_piece,
+                ),
             };
             let new_piece = Piece {
                 source: Source::Add,
@@ -219,7 +236,8 @@ impl PieceTable {
                 len: insert_len,
                 line_breaks,
             };
-            self.pieces.splice(piece_idx..=piece_idx, [left, new_piece, right]);
+            self.pieces
+                .splice(piece_idx..=piece_idx, [left, new_piece, right]);
         }
 
         self.len_chars += insert_len;
@@ -264,27 +282,43 @@ impl PieceTable {
                     source: piece.source,
                     start: piece.start + end_offset,
                     len: piece.len - end_offset,
-                    line_breaks: count_line_breaks_in_range(self.buffer_for(piece.source), piece.start + end_offset, piece.len - end_offset),
+                    line_breaks: count_line_breaks_in_range(
+                        self.buffer_for(piece.source),
+                        piece.start + end_offset,
+                        piece.len - end_offset,
+                    ),
                 };
             } else if end_offset == piece.len {
                 self.pieces[start_piece] = Piece {
                     source: piece.source,
                     start: piece.start,
                     len: start_offset,
-                    line_breaks: count_line_breaks_in_range(self.buffer_for(piece.source), piece.start, start_offset),
+                    line_breaks: count_line_breaks_in_range(
+                        self.buffer_for(piece.source),
+                        piece.start,
+                        start_offset,
+                    ),
                 };
             } else {
                 let left = Piece {
                     source: piece.source,
                     start: piece.start,
                     len: start_offset,
-                    line_breaks: count_line_breaks_in_range(self.buffer_for(piece.source), piece.start, start_offset),
+                    line_breaks: count_line_breaks_in_range(
+                        self.buffer_for(piece.source),
+                        piece.start,
+                        start_offset,
+                    ),
                 };
                 let right = Piece {
                     source: piece.source,
                     start: piece.start + end_offset,
                     len: piece.len - end_offset,
-                    line_breaks: count_line_breaks_in_range(self.buffer_for(piece.source), piece.start + end_offset, piece.len - end_offset),
+                    line_breaks: count_line_breaks_in_range(
+                        self.buffer_for(piece.source),
+                        piece.start + end_offset,
+                        piece.len - end_offset,
+                    ),
                 };
                 self.pieces.splice(start_piece..=start_piece, [left, right]);
             }
@@ -296,7 +330,11 @@ impl PieceTable {
                     source: start_p.source,
                     start: start_p.start,
                     len: start_offset,
-                    line_breaks: count_line_breaks_in_range(self.buffer_for(start_p.source), start_p.start, start_offset),
+                    line_breaks: count_line_breaks_in_range(
+                        self.buffer_for(start_p.source),
+                        start_p.start,
+                        start_offset,
+                    ),
                 });
             }
             let end_p = self.pieces[end_piece];
@@ -305,7 +343,11 @@ impl PieceTable {
                     source: end_p.source,
                     start: end_p.start + end_offset,
                     len: end_p.len - end_offset,
-                    line_breaks: count_line_breaks_in_range(self.buffer_for(end_p.source), end_p.start + end_offset, end_p.len - end_offset),
+                    line_breaks: count_line_breaks_in_range(
+                        self.buffer_for(end_p.source),
+                        end_p.start + end_offset,
+                        end_p.len - end_offset,
+                    ),
                 });
             }
             self.pieces.splice(start_piece..=end_piece, new_pieces);
@@ -313,7 +355,12 @@ impl PieceTable {
 
         let old_lines = self.len_lines;
         self.len_chars = self.pieces.iter().map(|p| p.len).sum();
-        self.len_lines = self.pieces.iter().map(|p| p.line_breaks as usize).sum::<usize>() + 1;
+        self.len_lines = self
+            .pieces
+            .iter()
+            .map(|p| p.line_breaks as usize)
+            .sum::<usize>()
+            + 1;
         self.edit_count += 1;
         self.update_line_index_for_delete(start, end);
         if self.edit_count >= self.coalesce_threshold {
@@ -374,11 +421,19 @@ impl PieceTable {
             // 跨 piece 情况：回退到 get_text
             let (start_byte, end_byte) = self.line_byte_range(line_idx)?;
             let text = self.get_text(start_byte, end_byte);
-            return Some(text.strip_suffix('\n').map(|s| s.to_string()).unwrap_or(text));
+            return Some(
+                text.strip_suffix('\n')
+                    .map(|s| s.to_string())
+                    .unwrap_or(text),
+            );
         }
         // 零拷贝路径：直接从 bytes 构建 String，避免 Cow 中间层
         let text = String::from_utf8_lossy(bytes);
-        Some(text.strip_suffix('\n').map(|s| s.to_string()).unwrap_or_else(|| text.into_owned()))
+        Some(
+            text.strip_suffix('\n')
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| text.into_owned()),
+        )
     }
 
     /// 获取所有文本
@@ -402,7 +457,12 @@ impl PieceTable {
         self.pieces = pieces;
         // 重新计算 len_chars 和 len_lines
         self.len_chars = self.pieces.iter().map(|p| p.len).sum();
-        self.len_lines = self.pieces.iter().map(|p| p.line_breaks as usize).sum::<usize>() + 1;
+        self.len_lines = self
+            .pieces
+            .iter()
+            .map(|p| p.line_breaks as usize)
+            .sum::<usize>()
+            + 1;
         self.rebuild_line_index();
     }
 
@@ -427,7 +487,11 @@ impl PieceTable {
     /// 获取piece对应的buffer引用
     fn buffer_for(&self, source: Source) -> &[u8] {
         match source {
-            Source::Original => self.original.as_ref().map(|m| m.as_ref().as_ref()).unwrap_or(&[]),
+            Source::Original => self
+                .original
+                .as_ref()
+                .map(|m| m.as_ref().as_ref())
+                .unwrap_or(&[]),
             Source::Add => &self.add_buffer,
         }
     }
@@ -525,10 +589,10 @@ impl PieceTable {
         // 找到插入位置所在的行
         let insert_line = self.byte_to_line(pos);
         let line_start = self.line_index.line_start(insert_line).unwrap_or(0);
-        
+
         // 计算插入位置在行内的偏移
         let offset_in_line = pos - line_start;
-        
+
         // 收集插入文本中的换行位置（相对于插入位置）
         let mut new_line_offsets: Vec<usize> = Vec::new();
         for (i, byte) in text_bytes.iter().enumerate() {
@@ -536,31 +600,32 @@ impl PieceTable {
                 new_line_offsets.push(offset_in_line + i + 1);
             }
         }
-        
+
         // 从插入行开始，所有后续行的起始位置都需要增加 insert_len
         // 同时在该行偏移处插入新的换行点
-        let mut new_line_starts = Vec::with_capacity(self.line_index.len() + new_line_offsets.len());
-        
+        let mut new_line_starts =
+            Vec::with_capacity(self.line_index.len() + new_line_offsets.len());
+
         // 复制插入行之前的所有行
         for i in 0..=insert_line {
             if let Some(start) = self.line_index.line_start(i) {
                 new_line_starts.push(start);
             }
         }
-        
+
         // 添加插入文本产生的新行起始位置
         let base_offset = line_start;
         for offset in &new_line_offsets {
             new_line_starts.push(base_offset + offset);
         }
-        
+
         // 更新后续所有行的起始位置（增加插入长度）
         for i in (insert_line + 1)..self.line_index.len() {
             if let Some(start) = self.line_index.line_start(i) {
                 new_line_starts.push(start + insert_len);
             }
         }
-        
+
         self.line_index.clear();
         for start in new_line_starts {
             self.line_index.push(start);
@@ -577,11 +642,11 @@ impl PieceTable {
         let start_line = self.byte_to_line(start);
         let end_line = self.byte_to_line(end);
         let _start_line_start = self.line_index.line_start(start_line).unwrap_or(0);
-        
+
         // 计算删除范围在起始行内的偏移
         let _start_offset = start - _start_line_start;
         let _end_offset = end - _start_line_start;
-        
+
         // 计算删除范围内有多少个换行符
         let mut deleted_line_breaks = 0usize;
         for i in (start_line + 1)..=end_line {
@@ -591,28 +656,28 @@ impl PieceTable {
                 }
             }
         }
-        
+
         // 构建新的行索引
         let mut new_line_starts = Vec::with_capacity(self.line_index.len() - deleted_line_breaks);
-        
+
         // 复制起始行及之前的行
         for i in 0..=start_line {
             if let Some(line_start) = self.line_index.line_start(i) {
                 new_line_starts.push(line_start);
             }
         }
-        
+
         // 处理被删除范围跨越的行的合并
         // 如果删除范围结束在下一行之前，则不需要新增行
         // 如果删除范围跨越多行，则这些行被合并为一行
-        
+
         // 更新后续行的起始位置
         for i in (end_line + 1)..self.line_index.len() {
             if let Some(line_start) = self.line_index.line_start(i) {
                 new_line_starts.push(line_start - delete_len);
             }
         }
-        
+
         self.line_index.clear();
         for line_start in new_line_starts {
             self.line_index.push(line_start);
@@ -731,7 +796,11 @@ impl TextBufferSnapshot for PieceTableSnapshot {
 impl PieceTableSnapshot {
     fn buffer_for(&self, source: Source) -> &[u8] {
         match source {
-            Source::Original => self.original.as_ref().map(|m| m.as_ref().as_ref()).unwrap_or(&[]),
+            Source::Original => self
+                .original
+                .as_ref()
+                .map(|m| m.as_ref().as_ref())
+                .unwrap_or(&[]),
             Source::Add => &self.add_buffer,
         }
     }
@@ -893,7 +962,11 @@ impl TextBuffer for PieceTable {
                 state.pieces_data[offset + 15],
             ]);
             pieces.push(Piece {
-                source: if source == 0 { Source::Original } else { Source::Add },
+                source: if source == 0 {
+                    Source::Original
+                } else {
+                    Source::Add
+                },
                 start,
                 len,
                 line_breaks,

@@ -9,7 +9,12 @@ pub struct Region {
 
 impl Region {
     pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     pub fn contains(&self, px: f32, py: f32) -> bool {
@@ -156,7 +161,12 @@ impl LayoutManager {
         if !self.menu_bar_visible {
             return Region::new(0.0, self.title_bar_height, self.window_width, 0.0);
         }
-        Region::new(0.0, self.title_bar_height, self.window_width, self.menu_bar_height)
+        Region::new(
+            0.0,
+            self.title_bar_height,
+            self.window_width,
+            self.menu_bar_height,
+        )
     }
 
     /// 计算活动栏区域
@@ -175,7 +185,12 @@ impl LayoutManager {
     /// 计算侧边栏区域
     pub fn sidebar_region(&self) -> Region {
         if !self.sidebar_visible {
-            return Region::new(self.activity_bar_width, self.top_offset(), 0.0, self.content_height());
+            return Region::new(
+                self.activity_bar_width,
+                self.top_offset(),
+                0.0,
+                self.content_height(),
+            );
         }
         Region::new(
             self.activity_bar_width,
@@ -187,9 +202,20 @@ impl LayoutManager {
 
     /// 计算编辑器区域（包含标签栏和编辑器内容）
     pub fn editor_region(&self) -> Region {
-        let x = if self.activity_bar_visible { self.activity_bar_width } else { 0.0 }
-            + if self.sidebar_visible { self.sidebar_width } else { 0.0 };
-        let right = if self.right_panel_visible { self.right_panel_width } else { 0.0 };
+        let x = if self.activity_bar_visible {
+            self.activity_bar_width
+        } else {
+            0.0
+        } + if self.sidebar_visible {
+            self.sidebar_width
+        } else {
+            0.0
+        };
+        let right = if self.right_panel_visible {
+            self.right_panel_width
+        } else {
+            0.0
+        };
         let width = (self.window_width - x - right).max(0.0);
         Region::new(x, self.top_offset(), width, self.content_height())
     }
@@ -197,27 +223,35 @@ impl LayoutManager {
     /// 计算标签栏区域
     pub fn tab_bar_region(&self, has_multiple_tabs: bool) -> Region {
         let editor = self.editor_region();
-        let height = if has_multiple_tabs { TAB_BAR_HEIGHT } else { 0.0 };
+        let height = if has_multiple_tabs {
+            TAB_BAR_HEIGHT
+        } else {
+            0.0
+        };
         Region::new(editor.x, editor.y, editor.width, height)
     }
 
     /// 计算编辑器内容区域（排除标签栏）
     pub fn editor_content_region(&self, has_multiple_tabs: bool) -> Region {
         let editor = self.editor_region();
-        let tab_height = if has_multiple_tabs { TAB_BAR_HEIGHT } else { 0.0 };
+        let tab_height = if has_multiple_tabs {
+            TAB_BAR_HEIGHT
+        } else {
+            0.0
+        };
         let height = (editor.height - tab_height).max(0.0);
-        Region::new(
-            editor.x,
-            editor.y + tab_height,
-            editor.width,
-            height,
-        )
+        Region::new(editor.x, editor.y + tab_height, editor.width, height)
     }
 
     /// 计算右侧面板区域
     pub fn right_panel_region(&self) -> Region {
         if !self.right_panel_visible {
-            return Region::new(self.window_width, self.top_offset(), 0.0, self.content_height());
+            return Region::new(
+                self.window_width,
+                self.top_offset(),
+                0.0,
+                self.content_height(),
+            );
         }
         Region::new(
             self.window_width - self.right_panel_width,
@@ -230,7 +264,12 @@ impl LayoutManager {
     /// 计算底部面板区域
     pub fn bottom_panel_region(&self) -> Region {
         if !self.bottom_panel_visible {
-            return Region::new(0.0, self.window_height - self.status_bar_height, self.window_width, 0.0);
+            return Region::new(
+                0.0,
+                self.window_height - self.status_bar_height,
+                self.window_width,
+                0.0,
+            );
         }
         Region::new(
             0.0,
