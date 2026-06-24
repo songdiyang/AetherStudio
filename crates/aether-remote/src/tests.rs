@@ -1,8 +1,9 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use tempfile::TempDir;
+
+    use crate::{GitRepoConfig, GitRepoType, GitRepository, GitSshRepo, SshAuth, SshConfig};
 
     // Git 仓库测试
     #[test]
@@ -178,7 +179,8 @@ mod tests {
 
         // 测试 ssh://user@host:port/repo.git 格式
         let ssh_repo =
-            GitSshRepo::from_url("ssh://git@github.com:22/user/repo.git", repo_path).unwrap();
+            GitSshRepo::from_url("ssh://git@github.com:22/user/repo.git", repo_path.clone())
+                .unwrap();
         assert_eq!(ssh_repo.ssh_host, "github.com");
         assert_eq!(ssh_repo.ssh_port, 22);
 
