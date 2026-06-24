@@ -1,1 +1,110 @@
-bmFtZTogRGV2IEJyYW5jaCBGZWF0dXJlIFRyYWNrZXINCg0Kb246DQogIHB1bGxfcmVxdWVzdDoNCiAgICB0eXBlczogW2Nsb3NlZF0NCiAgICBicmFuY2hlczogW2Rldl0NCg0Kam9iczoNCiAgcmVjb3JkLWZlYXR1cmVzOg0KICAgIGlmOiBnaXRodWIuZXZlbnQucHVsbF9yZXF1ZXN0Lm1lcmdlZCA9PSB0cnVlDQogICAgcnVucy1vbjogdWJ1bnR1LWxhdGVzdA0KICAgIHBlcm1pc3Npb25zOg0KICAgICAgY29udGVudHM6IHdyaXRlDQogICAgICBwdWxsLXJlcXVlc3RzOiB3cml0ZQ0KICAgIHN0ZXBzOg0KICAgICAgLSBuYW1lOiBDaGVja291dCBjb2RlDQogICAgICAgIHVzZXM6IGFjdGlvbnMvY2hlY2tvdXRAdjQNCiAgICAgICAgd2l0aDoNCiAgICAgICAgICBmZXRjaC1kZXB0aDogMA0KDQogICAgICAtIG5hbWU6IEV4dHJhY3QgZmVhdHVyZXMgZnJvbSBQUg0KICAgICAgICBpZDogZXh0cmFjdA0KICAgICAgICBydW46IHwNCiAgICAgICAgICBQUl9CT0RZPScke3sgZ2l0aHViLmV2ZW50LnB1bGxfcmVxdWVzdC5ib2R5IH19Jw0KICAgICAgICAgIFBSX1RJVExFPScke3sgZ2l0aHViLmV2ZW50LnB1bGxfcmVxdWVzdC50aXRsZSB9fScNCiAgICAgICAgICBQUl9OVU1CRVI9JyR7eyBnaXRodWIuZXZlbnQucHVsbF9yZXF1ZXN0Lm51bWJlciB9fScNCiAgICAgICAgICBTT1VSQ0VfQlJBTkNIPScke3sgZ2l0aHViLmV2ZW50LnB1bGxfcmVxdWVzdC5oZWFkLnJlZiB9fScNCiAgICAgICAgICANCiAgICAgICAgICAjIOaPkOWPlueJueaAp+WIl+ihqO+8iOS7jiLmm7TmlrDkuoblk6rkupvnibnmgKci6YOo5YiG77yJDQogICAgICAgICAgRkVBVFVSRVM9JChlY2hvICIkUFJfQk9EWSIgfCBzZWQgLW4gJy8jIyMg5pu05paw5LqG5ZOq5Lqb54m55oCnLywvIyMjIC9wJyB8IGhlYWQgLW4gLTEgfCB0YWlsIC1uICsyIHwgc2VkICdzL14tIC8vOyBzL15bMC05XVwuIC8vJykNCiAgICAgICAgICANCiAgICAgICAgICAjIOWIm+W7uueJueaAp+iusOW9leaWh+S7tg0KICAgICAgICAgIG1rZGlyIC1wIC5naXRodWIvZmVhdHVyZXMNCiAgICAgICAgICBUSU1FU1RBTVA9JChkYXRlICslWSVtJWRfJUglTSVTKQ0KICAgICAgICAgIEZJTEVOQU1FPSIuZ2l0aHViL2ZlYXR1cmVzLyR7VElNRVNUQU1QfV9QUiR7UFJfTlVNQkVSfS5tZCINCiAgICAgICAgICANCiAgICAgICAgICBjYXQgPiAiJEZJTEVOQU1FIiA8PCBFT0YNCiMg54m55oCn5ZCI5bm26K6w5b2VDQoNCi0gKipQUioqOiAjJFBSX05VTUJFUg0KLSAqKuagh+mimCoqOiAkUFJfVElUTEUNCi0gKirmupDliIbmlK8qKjogJFNPVVJDRV9CUkFOQ0gNCi0gKirlkIjlubbml7bpl7QqKjogJChkYXRlIC11ICsiJVktJW0tJWQgJUg6JU06JVMgVVRDIikNCi0gKurlkIjlubbogIUqKjogJHt7IGdpdGh1Yi5ldmVudC5wdWxsX3JlcXVlc3QubWVyZ2VkX2J5LmxvZ2luIH19DQoNCiMjIOabtOaWsOeahOeJueaApw0KDQokRkVBVFVSRVMNCg0KIyMg5a6M5pW0IFBSIOaPj+i/sA0KDQokUFJfQk9EWQ0KRU9GDQogICAgICAgICAgDQogICAgICAgICAgZWNobyAiZmlsZT0kRklMRU5BTUUiID4+ICRHSVRIVUJfT1VUUFVUDQogICAgICAgICAgZWNobyAiZmVhdHVyZXM8PEVPRiIgPj4gJEdJVEhVQl9PVVRQVVQNCiAgICAgICAgICBlY2hvICIkRkVBVFVSRVMiID4+ICRHSVRIVUJfT1VUUFVUDQogICAgICAgICAgZWNobyAiRU9GIiA+PiAkR0lUSFVCX09VVFBVVA0KDQogICAgICAtIG5hbWU6IENvbW1pdCBmZWF0dXJlIHJlY29yZA0KICAgICAgICBydW46IHwNCiAgICAgICAgICBnaXQgY29uZmlnIHVzZXIubmFtZSAiZ2l0aHViLWFjdGlvbnNbYm90XSINCiAgICAgICAgICBnaXQgY29uZmlnIHVzZXIuZW1haWwgImdpdGh1Yi1hY3Rpb25zW2JvdF1AdXNlcnMubm9yZXBseS5naXRodWIuY29tIg0KICAgICAgICAgIGdpdCBhZGQgLmdpdGh1Yi9mZWF0dXJlcy8NCiAgICAgICAgICBnaXQgY29tbWl0IC1tICJkb2NzOiByZWNvcmQgbWVyZ2VkIGZlYXR1cmVzIGZyb20gUFIgIyR7eyBnaXRodWIuZXZlbnQucHVsbF9yZXF1ZXN0Lm51bWJlciB9fSINCiAgICAgICAgICBnaXQgcHVzaCBvcmlnaW4gZGV2DQoNCiAgICAgIC0gbmFtZTogQ29tbWVudCBvbiBQUg0KICAgICAgICB1c2VzOiBhY3Rpb25zL2dpdGh1Yi1zY3JpcHRAdjcNCiAgICAgICAgd2l0aDoNCiAgICAgICAgICBzY3JpcHQ6IHwNCiAgICAgICAgICAgIGNvbnN0IGZlYXR1cmVzID0gYCR7eyBzdGVwcy5leHRyYWN0Lm91dHB1dHMuZmVhdHVyZXMgfX1gOw0KICAgICAgICAgICAgZ2l0aHViLnJlc3QuaXNzdWVzLmNyZWF0ZUNvbW1lbnQoew0KICAgICAgICAgICAgICBpc3N1ZV9udW1iZXI6IGNvbnRleHQuaXNzdWUubnVtYmVyLA0KICAgICAgICAgICAgICBvd25lcjogY29udGV4dC5yZXBvLm93bmVyLA0KICAgICAgICAgICAgICByZXBvOiBjb250ZXh0LnJlcG8ucmVwbywNCiAgICAgICAgICAgICAgYm9keTogYCMjIOKchSDnibnmgKflt7LorrDlvZXliLAgZGV2IOWIhuaUr1xuXG7mnKzmrKHlkIjlubbljIXlkKvku6XkuIvnibnmgKfvvJpcblxuJHtmZWF0dXJlc31cblxu54m55oCn6K6w5b2V5bey5L+d5a2Y5YiwIFxgLmdpdGh1Yi9mZWF0dXJlcy9cYCDnm67lvZXvvIzlsIblnKggZGV2IC0+IG1haW4g55qEIFBSIOS4reaxh+aAu+OAgmANCiAgICAgICAgICAgIH0pDQoNCiAgICAgIC0gbmFtZTogRGVsZXRlIHNvdXJjZSBicmFuY2gNCiAgICAgICAgdXNlczogYWN0aW9ucy9naXRodWItc2NyaXB0QHY3DQogICAgICAgIHdpdGg6DQogICAgICAgICAgc2NyaXB0OiB8DQogICAgICAgICAgICBjb25zdCBzb3VyY2VCcmFuY2ggPSAnJHt7IGdpdGh1Yi5ldmVudC5wdWxsX3JlcXVlc3QuaGVhZC5yZWYgfX0nOw0KICAgICAgICAgICAgY29uc3QgcmVwbyA9IGNvbnRleHQucmVwbzsNCiAgICAgICAgICAgIA0KICAgICAgICAgICAgLy8g5Y+q5Yig6Zmk5Li05pe25YiG5pSv77yI5qC85byPOiDnlKjmiLflkI0v5Yqf6IO95o+P6L+w77yJ77yM5LiN5Yig6ZmkIGRldi9tYWluDQogICAgICAgICAgICBpZiAoc291cmNlQnJhbmNoID09PSAnZGV2JyB8fCBzb3VyY2VCcmFuY2ggPT09ICdtYWluJyB8fCBzb3VyY2VCcmFuY2ggPT09ICdtYXN0ZXInKSB7DQogICAgICAgICAgICAgIGNvbnNvbGUubG9nKGBTa2lwcGluZyBkZWxldGlvbiBvZiBwcm90ZWN0ZWQgYnJhbmNoOiAke3NvdXJjZUJyYW5jaH1gKTsNCiAgICAgICAgICAgICAgcmV0dXJuOw0KICAgICAgICAgICAgfQ0KICAgICAgICAgICAgDQogICAgICAgICAgICB0cnkgew0KICAgICAgICAgICAgICBhd2FpdCBnaXRodWIucmVzdC5naXQuZGVsZXRlUmVmKHsNCiAgICAgICAgICAgICAgICBvd25lcjogcmVwby5vd25lciwNCiAgICAgICAgICAgICAgICByZXBvOiByZXBvLnJlcG8sDQogICAgICAgICAgICAgICAgcmVmOiBgaGVhZHMvJHtzb3VyY2VCcmFuY2h9YCwNCiAgICAgICAgICAgICAgfSk7DQogICAgICAgICAgICAgIGNvbnNvbGUubG9nKGBEZWxldGVkIGJyYW5jaDogJHtzb3VyY2VCcmFuY2h9YCk7DQogICAgICAgICAgICAgIA0KICAgICAgICAgICAgICAvLyDlnKggUFIg5LiL6K+E6K6656Gu6K6k5Yig6ZmkDQogICAgICAgICAgICAgIGF3YWl0IGdpdGh1Yi5yZXN0Lmlzc3Vlcy5jcmVhdGVDb21tZW50KHsNCiAgICAgICAgICAgICAgICBpc3N1ZV9udW1iZXI6IGNvbnRleHQuaXNzdWUubnVtYmVyLA0KICAgICAgICAgICAgICAgIG93bmVyOiByZXBvLm93bmVyLA0KICAgICAgICAgICAgICAgIHJlcG86IHJlcG8ucmVwbywNCiAgICAgICAgICAgICAgICBib2R5OiBg8J+Xke+4jyDkuLTml7bliIbmlK8gXGAke3NvdXJjZUJyYW5jaH1cYCDlt7Loh6rliqjliKDpmaTjgIJgDQogICAgICAgICAgICAgIH0pOw0KICAgICAgICAgICAgfSBjYXRjaCAoZXJyb3IpIHsNCiAgICAgICAgICAgICAgY29uc29sZS5sb2coYEZhaWxlZCB0byBkZWxldGUgYnJhbmNoICR7c291cmNlQnJhbmNofTogJHtlcnJvci5tZXNzYWdlfWApOw0KICAgICAgICAgICAgfQ0K
+name: Dev Branch Feature Tracker
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [dev]
+
+jobs:
+  record-features:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract features from PR
+        id: extract
+        run: |
+          PR_BODY='${{ github.event.pull_request.body }}'
+          PR_TITLE='${{ github.event.pull_request.title }}'
+          PR_NUMBER='${{ github.event.pull_request.number }}'
+          SOURCE_BRANCH='${{ github.event.pull_request.head.ref }}'
+          
+          # 提取特性列表（从"更新了哪些特性"部分）
+          FEATURES=$(echo "$PR_BODY" | sed -n '/### 更新了哪些特性/,/### /p' | head -n -1 | tail -n +2 | sed 's/^- //; s/^[0-9]\. //')
+          
+          # 创建特性记录文件
+          mkdir -p .github/features
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          FILENAME=".github/features/${TIMESTAMP}_PR${PR_NUMBER}.md"
+          
+          cat > "$FILENAME" << EOF
+# 特性合并记录
+
+- **PR**: #$PR_NUMBER
+- **标题**: $PR_TITLE
+- **源分支**: $SOURCE_BRANCH
+- **合并时间**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+- **合并者**: ${{ github.event.pull_request.merged_by.login }}
+
+## 更新的特性
+
+$FEATURES
+
+## 完整 PR 描述
+
+$PR_BODY
+EOF
+          
+          echo "file=$FILENAME" >> $GITHUB_OUTPUT
+          echo "features<<EOF" >> $GITHUB_OUTPUT
+          echo "$FEATURES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Commit feature record
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/features/
+          git commit -m "docs: record merged features from PR #${{ github.event.pull_request.number }}"
+          git push origin dev
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const features = `${{ steps.extract.outputs.features }}`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## ✅ 特性已记录到 dev 分支\n\n本次合并包含以下特性：\n\n${features}\n\n特性记录已保存到 \`.github/features/\` 目录，将在 dev -> main 的 PR 中汇总。`
+            })
+
+      - name: Delete source branch
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sourceBranch = '${{ github.event.pull_request.head.ref }}';
+            const repo = context.repo;
+            
+            // 只删除临时分支（格式: 用户名/功能描述），不删除 dev/main
+            if (sourceBranch === 'dev' || sourceBranch === 'main' || sourceBranch === 'master') {
+              console.log(`Skipping deletion of protected branch: ${sourceBranch}`);
+              return;
+            }
+            
+            try {
+              await github.rest.git.deleteRef({
+                owner: repo.owner,
+                repo: repo.repo,
+                ref: `heads/${sourceBranch}`,
+              });
+              console.log(`Deleted branch: ${sourceBranch}`);
+              
+              // 在 PR 下评论确认删除
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: repo.owner,
+                repo: repo.repo,
+                body: `🗑️ 临时分支 \`${sourceBranch}\` 已自动删除。`
+              });
+            } catch (error) {
+              console.log(`Failed to delete branch ${sourceBranch}: ${error.message}`);
+            }
