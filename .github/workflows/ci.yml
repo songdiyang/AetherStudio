@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+      
+      - name: Check formatting
+        run: cargo fmt --check
+      
+      - name: Run cargo check
+        run: cargo check
+      
+      - name: Run tests
+        run: cargo test
