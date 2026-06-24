@@ -181,6 +181,13 @@ impl AiPanel {
 
     /// 使用快捷操作发送代码
     pub fn send_quick_action(&mut self, action: AiQuickAction, code: &str, settings: &aether_shared::settings::AiSettings) -> Result<String, String> {
+        // 防护：空代码时返回提示，避免无意义请求
+        if code.trim().is_empty() {
+            let msg = "请先打开文件或输入代码，再使用 AI 快捷操作。".to_string();
+            self.add_assistant_message(msg.clone());
+            return Ok(msg);
+        }
+
         let prompt = action.build_prompt(code);
         self.add_user_message(format!("[{}]\n{}", action.label(), code));
         self.is_generating = true;

@@ -326,5 +326,20 @@ impl LayoutManager {
     /// 切换底部面板可见性
     pub fn toggle_bottom_panel(&mut self) {
         self.bottom_panel_visible = !self.bottom_panel_visible;
+        if self.bottom_panel_visible {
+            self.bottom_panel_height = 200.0;
+        } else {
+            self.bottom_panel_height = 0.0;
+        }
+    }
+
+    /// 切换右侧面板可见性
+    pub fn toggle_right_panel(&mut self) {
+        self.right_panel_visible = !self.right_panel_visible;
+        if self.right_panel_visible {
+            self.right_panel_width = 300.0;
+        } else {
+            self.right_panel_width = 0.0;
+        }
     }
 }

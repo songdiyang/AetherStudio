@@ -367,17 +367,18 @@ impl PieceTable {
     }
 
     /// 获取指定行的文本（不包含换行符）
+    /// 优化：优先使用零拷贝的 get_line_bytes，避免跨 piece 时的额外分配
     pub fn get_line(&self, line_idx: usize) -> Option<String> {
         let bytes = self.get_line_bytes(line_idx)?;
         if bytes.is_empty() {
+            // 跨 piece 情况：回退到 get_text
             let (start_byte, end_byte) = self.line_byte_range(line_idx)?;
             let text = self.get_text(start_byte, end_byte);
-            // 去掉末尾的换行符
-            return Some(text.strip_suffix('\n').unwrap_or(&text).to_string());
+            return Some(text.strip_suffix('\n').map(|s| s.to_string()).unwrap_or(text));
         }
+        // 零拷贝路径：直接从 bytes 构建 String，避免 Cow 中间层
         let text = String::from_utf8_lossy(bytes);
-        // 去掉末尾的换行符
-        Some(text.strip_suffix('\n').unwrap_or(&text).to_string())
+        Some(text.strip_suffix('\n').map(|s| s.to_string()).unwrap_or_else(|| text.into_owned()))
     }
 
     /// 获取所有文本

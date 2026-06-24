@@ -5,6 +5,7 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Factory1, ID2D1HwndRenderTarget,
     D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
     D2D1_PRESENT_OPTIONS, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_HARDWARE,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
 };
 
 /// Direct2D工厂管理器
@@ -126,6 +127,33 @@ impl RenderTarget {
 
     pub fn dpi(&self) -> f32 {
         self.dpi
+    }
+
+    /// 设置轴对齐裁剪区域（用于脏矩形局部重绘）
+    pub fn push_clip(&self, x: f32, y: f32, width: f32, height: f32) {
+        unsafe {
+            let rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                left: x,
+                top: y,
+                right: x + width,
+                bottom: y + height,
+            };
+            let _ = self.target.PushAxisAlignedClip(&rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        }
+    }
+
+    /// 弹出裁剪区域
+    pub fn pop_clip(&self) {
+        unsafe {
+            self.target.PopAxisAlignedClip();
+        }
+    }
+
+    /// 检查点是否在裁剪区域内（用于快速剔除）
+    pub fn is_point_in_clip(&self, _x: f32, _y: f32) -> bool {
+        // Direct2D 自动处理裁剪，这里总是返回 true
+        // 实际裁剪由 GPU 在渲染时执行
+        true
     }
 }
 

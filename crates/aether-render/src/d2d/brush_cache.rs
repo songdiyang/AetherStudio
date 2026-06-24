@@ -283,10 +283,11 @@ impl TextFormatCache {
 }
 
 /// 将颜色转换为缓存键
+/// 使用 round() 避免浮点精度问题（如 0.47 * 255 = 119.85 截断为 119，round 为 120）
 fn color_key(color: &D2D1_COLOR_F) -> u32 {
-    let r = (color.r * 255.0) as u32;
-    let g = (color.g * 255.0) as u32;
-    let b = (color.b * 255.0) as u32;
-    let a = (color.a * 255.0) as u32;
+    let r = (color.r * 255.0).round() as u32;
+    let g = (color.g * 255.0).round() as u32;
+    let b = (color.b * 255.0).round() as u32;
+    let a = (color.a * 255.0).round() as u32;
     (r << 24) | (g << 16) | (b << 8) | a
 }

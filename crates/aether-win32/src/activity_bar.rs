@@ -33,6 +33,7 @@ impl ActivityBar {
             ActivityItem::new(ActivityBarView::SourceControl),
             ActivityItem::new(ActivityBarView::Terminal),
             ActivityItem::new(ActivityBarView::Settings),
+            ActivityItem::new(ActivityBarView::AiAssistant),
         ];
         Self {
             active_index: 0,

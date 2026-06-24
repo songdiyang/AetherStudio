@@ -133,6 +133,8 @@ pub struct MenuBar {
     pub item_widths: Vec<f32>,
     /// 每个菜单项的 x 位置（用于子菜单定位）
     pub item_x_positions: Vec<f32>,
+    /// 布局是否需要重建（菜单项或 DPI 变化时设为 true）
+    pub layout_dirty: bool,
 }
 
 impl MenuBar {
@@ -192,6 +194,7 @@ impl MenuBar {
             hover_index: None,
             item_widths: Vec::new(),
             item_x_positions: Vec::new(),
+            layout_dirty: true,
         }
     }
 

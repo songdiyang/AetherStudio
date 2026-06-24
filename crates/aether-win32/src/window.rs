@@ -881,15 +881,18 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     if let Some(state) = s.borrow().as_ref() {
                         let mut st = state.borrow_mut();
                         st.dpi_scale = new_scale;
-                        if let Some(rt) = &mut st.render_target {
-                            rt.set_dpi(new_dpi);
-                        }
+                        st.render_ctx.set_dpi(new_dpi);
                         st.status_message = format!("DPI: {} ({}%)", new_dpi as u32, (new_scale * 100.0) as u32);
                         drop(st);
                         state.borrow_mut().render();
                     }
                 });
                 LRESULT(0)
+            }
+            WM_NCACTIVATE => {
+                // 阻止系统绘制非激活状态的边框（白色边框）
+                // 返回 TRUE 表示已处理，不绘制系统默认的 NC 激活指示器
+                LRESULT(1)
             }
             WM_NCCALCSIZE => {
                 // 移除系统非客户区边框，避免白色边框线

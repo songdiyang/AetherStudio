@@ -1,3 +1,6 @@
+pub mod dirty_rect;
+pub mod render_context;
+
 pub mod window;
 pub mod input;
 pub mod dialogs;
@@ -19,3 +22,4 @@ pub mod terminal;
 pub mod theme;
 pub mod settings;
 pub mod ai_panel;
+pub mod logging;

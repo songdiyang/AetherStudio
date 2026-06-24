@@ -8,8 +8,7 @@ use aether_core::buffer::piece_table::PieceTable;
 use aether_core::buffer::text_buffer::MultiCursorState;
 use aether_core::lexer::{Language, LexemeSpan};
 use aether_core::workspace::file_tree::{FileKind, FileTree};
-use aether_render::d2d::brush_cache::{BrushCache, TextFormatCache};
-use aether_render::d2d::factory::{D2DFactory, RenderTarget};
+use aether_render::d2d::factory::D2DFactory;
 use aether_render::d2d::text::TextRenderer;
 use aether_render::theme::Theme;
 
@@ -40,7 +39,7 @@ pub enum FindReplaceFocus {
 pub struct EditorState {
     pub hwnd: HWND,
     pub d2d_factory: D2DFactory,
-    pub render_target: Option<RenderTarget>,
+    pub render_ctx: crate::render_context::RenderContext,
     pub text_renderer: TextRenderer,
     pub theme: Theme,
     // 当前活动标签页的编辑状态（直接字段，零开销访问）
@@ -63,6 +62,8 @@ pub struct EditorState {
     pub(crate) buffer_version: u64,
     /// 行号 UTF-16 预缓存（避免每帧 format! + encode_utf16 分配）
     pub(crate) cached_line_numbers: Vec<Vec<u16>>,
+    /// 可复用的 UTF-16 文本缓冲区（避免 render_editor 中每 token 分配 Vec<u16>）
+    pub(crate) text_utf16_buf: Vec<u16>,
     // 当前语言
     pub(crate) language: Language,
     /// 标签页系统（后台存储，切换时同步）
@@ -128,10 +129,6 @@ pub struct EditorState {
     pub remote_scroll_y: f32,
     /// 克隆仓库对话框
     pub clone_dialog: CloneRepoDialog,
-    /// D2D 画刷缓存
-    pub brush_cache: BrushCache,
-    /// DirectWrite 文本格式缓存
-    pub text_format_cache: TextFormatCache,
     /// 窗口是否最大化
     pub is_maximized: bool,
     /// 标题栏按钮悬停状态 (0=最小化, 1=最大化, 2=关闭)
@@ -148,6 +145,26 @@ pub struct EditorState {
     pub settings_panel: crate::settings::SettingsPanel,
     /// Git 面板
     pub git_panel: crate::git::GitIntegration,
+    /// 脏矩形追踪器（用于局部重绘优化）
+    pub dirty_tracker: crate::dirty_rect::DirtyRectTracker,
+    /// 上一帧的光标位置（用于检测光标移动）
+    pub last_cursor_line: usize,
+    /// 上一帧的光标列（用于检测光标移动）
+    pub last_cursor_col: usize,
+    /// 上一帧的滚动位置（用于检测滚动变化）
+    pub last_scroll_y: f32,
+    /// 上一帧的选择状态（用于检测选择变化）
+    pub last_selection_start: Option<(usize, usize)>,
+    /// 上一帧的选择结束（用于检测选择变化）
+    pub last_selection_end: Option<(usize, usize)>,
+    /// 上一帧的侧边栏内容类型（用于检测侧边栏变化）
+    pub last_sidebar_content: crate::layout::SidebarContent,
+    /// 上一帧的右侧面板可见性（用于检测右侧面板变化）
+    pub last_right_panel_visible: bool,
+    /// 上一帧的底部面板可见性（用于检测底部面板变化）
+    pub last_bottom_panel_visible: bool,
+    /// 上一帧的状态消息（用于检测状态栏变化）
+    pub last_status_message: String,
 }
 
 impl EditorState {
@@ -333,7 +350,7 @@ impl EditorState {
         let mut state = Self {
             hwnd,
             d2d_factory,
-            render_target: None,
+            render_ctx: crate::render_context::RenderContext::new(),
             text_renderer,
             theme,
             buffer,
@@ -351,6 +368,7 @@ impl EditorState {
             line_cache_versions: Vec::new(),
             buffer_version: 0,
             cached_line_numbers: Vec::new(),
+            text_utf16_buf: Vec::with_capacity(256),
             language: Language::PlainText,
             tabs: Vec::new(),
             active_tab: 0,
@@ -394,14 +412,22 @@ impl EditorState {
             hover_remote_node: None,
             remote_scroll_y: 0.0,
             clone_dialog: CloneRepoDialog::new(),
-            brush_cache: BrushCache::new(),
-            text_format_cache: TextFormatCache::new().unwrap_or_else(|_| TextFormatCache::new().unwrap()),
             is_maximized: false,
             titlebar_hover_button: None,
             selected_file_node: None,
             hover_file_node: None,
             sidebar_scroll_y: 0.0,
             git_panel: crate::git::GitIntegration::new(),
+            dirty_tracker: crate::dirty_rect::DirtyRectTracker::new(1280.0, 800.0),
+            last_cursor_line: 0,
+            last_cursor_col: 0,
+            last_scroll_y: 0.0,
+            last_selection_start: None,
+            last_selection_end: None,
+            last_sidebar_content: crate::layout::SidebarContent::FileTree,
+            last_right_panel_visible: false,
+            last_bottom_panel_visible: false,
+            last_status_message: "就绪".to_string(),
         };
         // 创建第一个标签页并同步
         state.tabs.push(Tab::new());
@@ -410,17 +436,16 @@ impl EditorState {
     }
 
     pub fn init_render_target(&mut self) -> Result<()> {
-        let dpi = self.dpi_scale * 96.0;
+        let _dpi = self.dpi_scale * 96.0;
         let phys_w = (self.window_width as f32 * self.dpi_scale) as u32;
         let phys_h = (self.window_height as f32 * self.dpi_scale) as u32;
-        let target = RenderTarget::new(
+        self.render_ctx.init_render_target(
             &self.d2d_factory,
             self.hwnd,
             phys_w,
             phys_h,
-            dpi,
+            self.dpi_scale,
         )?;
-        self.render_target = Some(target);
         Ok(())
     }
 
@@ -431,9 +456,9 @@ impl EditorState {
         self.window_width = log_w;
         self.window_height = log_h;
         self.layout.resize_window(log_w as f32, log_h as f32);
-        if let Some(rt) = &mut self.render_target {
-            let _ = rt.resize(phys_width, phys_height);
-        }
+        // 更新脏矩形追踪器窗口尺寸，触发全窗口重绘
+        self.dirty_tracker.resize(log_w as f32, log_h as f32);
+        self.render_ctx.resize(phys_width, phys_height);
     }
 
     /// 检查当前标签页是否可以重用（空文件且未修改）

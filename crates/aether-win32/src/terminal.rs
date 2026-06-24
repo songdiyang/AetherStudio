@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::process::{Command, Stdio};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
 use std::thread;
 
 /// 终端面板状态
@@ -23,6 +24,10 @@ pub struct TerminalPanel {
     child_stdin: Option<Arc<Mutex<std::process::ChildStdin>>>,
     /// 子进程stdout（用于读取输出）
     child_stdout: Option<Arc<Mutex<std::process::ChildStdout>>>,
+    /// 子进程stderr（用于读取错误输出）
+    child_stderr: Option<Arc<Mutex<std::process::ChildStderr>>>,
+    /// 输出接收器（从读取线程接收终端输出）
+    output_receiver: Option<mpsc::Receiver<String>>,
     /// 是否运行中
     pub running: bool,
     /// 工作目录
@@ -42,6 +47,8 @@ impl TerminalPanel {
             cursor_pos: 0,
             child_stdin: None,
             child_stdout: None,
+            child_stderr: None,
+            output_receiver: None,
             running: false,
             cwd: std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
@@ -69,13 +76,18 @@ impl TerminalPanel {
         
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
         
         self.child_stdin = Some(Arc::new(Mutex::new(stdin)));
         self.child_stdout = Some(Arc::new(Mutex::new(stdout)));
+        self.child_stderr = Some(Arc::new(Mutex::new(stderr)));
         self.running = true;
         
-        // 启动读取线程
-        self.spawn_reader();
+        // 启动读取线程，使用 channel 传递输出到主线程
+        let (tx, rx) = mpsc::channel();
+        self.output_receiver = Some(rx);
+        self.spawn_stdout_reader(tx.clone());
+        self.spawn_stderr_reader(tx);
         
         self.push_output(&format!("终端已启动: {}\n", shell));
         Ok(())
@@ -111,6 +123,21 @@ impl TerminalPanel {
         self.running = false;
         self.child_stdin = None;
         self.child_stdout = None;
+        self.child_stderr = None;
+        self.output_receiver = None;
+    }
+
+    /// 从接收器拉取输出（应在主线程每帧调用）
+    pub fn flush_output(&mut self) {
+        // 先取出 receiver 避免借用冲突
+        if let Some(rx) = self.output_receiver.take() {
+            // 非阻塞批量接收，减少轮询开销
+            while let Ok(text) = rx.try_recv() {
+                self.push_output(&text);
+            }
+            // 放回 receiver
+            self.output_receiver = Some(rx);
+        }
     }
 
     /// 添加输出行
@@ -123,12 +150,10 @@ impl TerminalPanel {
         }
     }
 
-    /// 启动读取线程
-    fn spawn_reader(&mut self) {
+    /// 启动 stdout 读取线程
+    fn spawn_stdout_reader(&mut self, tx: mpsc::Sender<String>) {
         if let Some(stdout) = &self.child_stdout {
             let stdout = Arc::clone(stdout);
-            // 由于不能在闭包中修改self，这里使用简化方案
-            // 实际应用中应使用channel传递输出
             thread::spawn(move || {
                 let mut buffer = [0u8; 1024];
                 loop {
@@ -136,13 +161,41 @@ impl TerminalPanel {
                         match stdout.read(&mut buffer) {
                             Ok(0) => break, // EOF
                             Ok(n) => {
-                                // 输出读取到的数据
-                                let _ = String::from_utf8_lossy(&buffer[..n]);
+                                let text = String::from_utf8_lossy(&buffer[..n]).to_string();
+                                if tx.send(text).is_err() {
+                                    break; // 接收端已关闭
+                                }
                             }
                             Err(_) => break,
                         }
                     }
-                    thread::sleep(std::time::Duration::from_millis(10));
+                    // 增加轮询间隔，从 10ms 改为 50ms，减少 CPU 占用
+                    thread::sleep(std::time::Duration::from_millis(50));
+                }
+            });
+        }
+    }
+
+    /// 启动 stderr 读取线程
+    fn spawn_stderr_reader(&mut self, tx: mpsc::Sender<String>) {
+        if let Some(stderr) = &self.child_stderr {
+            let stderr = Arc::clone(stderr);
+            thread::spawn(move || {
+                let mut buffer = [0u8; 1024];
+                loop {
+                    if let Ok(mut stderr) = stderr.lock() {
+                        match stderr.read(&mut buffer) {
+                            Ok(0) => break, // EOF
+                            Ok(n) => {
+                                let text = String::from_utf8_lossy(&buffer[..n]).to_string();
+                                if tx.send(text).is_err() {
+                                    break; // 接收端已关闭
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    thread::sleep(std::time::Duration::from_millis(50));
                 }
             });
         }
