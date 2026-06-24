@@ -12,8 +12,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Setup Rust
-        uses: dtolnay/rust-action@stable
+      - name: Install Rust
+        uses: rust-lang/rustup@v1
+        with:
+          toolchain: stable
       
       - name: Check formatting
         run: cargo fmt --check
