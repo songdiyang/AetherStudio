@@ -34,22 +34,22 @@ jobs:
           TIMESTAMP=$(date +%Y%m%d_%H%M%S)
           FILENAME=".github/features/${TIMESTAMP}_PR${PR_NUMBER}.md"
           
-          cat > "$FILENAME" << EOF
+          cat > "$FILENAME" << 'EOF'
 # 特性合并记录
 
-- **PR**: #$PR_NUMBER
-- **标题**: $PR_TITLE
-- **源分支**: $SOURCE_BRANCH
+- **PR**: #${PR_NUMBER}
+- **标题**: ${PR_TITLE}
+- **源分支**: ${SOURCE_BRANCH}
 - **合并时间**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
 - **合并者**: ${{ github.event.pull_request.merged_by.login }}
 
 ## 更新的特性
 
-$FEATURES
+${FEATURES}
 
 ## 完整 PR 描述
 
-$PR_BODY
+${PR_BODY}
 EOF
           
           echo "file=$FILENAME" >> $GITHUB_OUTPUT
