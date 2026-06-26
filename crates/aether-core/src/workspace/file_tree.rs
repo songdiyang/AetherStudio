@@ -4,6 +4,10 @@ pub struct FileTree {
     nodes: Vec<FileNode>,
     /// 字符串池：所有路径名共享存储
     names: StringPool,
+    /// 虚拟根节点的 first_child（所有 parent_idx = u32::MAX 的节点通过 sibling 链连接）
+    root_first_child: u32,
+    /// 虚拟根节点的 last_child（用于 O(1) 尾插入）
+    root_last_child: u32,
 }
 
 /// 单个节点（紧凑内存布局）
@@ -61,6 +65,8 @@ impl FileTree {
         Self {
             nodes: Vec::new(),
             names: StringPool::new(),
+            root_first_child: u32::MAX,
+            root_last_child: u32::MAX,
         }
     }
 
@@ -110,6 +116,16 @@ impl FileTree {
                     parent.last_child = idx;
                 }
             }
+        } else {
+            // parent_idx == u32::MAX: 挂到虚拟根节点下
+            if self.root_first_child == u32::MAX {
+                self.root_first_child = idx;
+                self.root_last_child = idx;
+            } else {
+                let last = self.root_last_child;
+                self.nodes[last as usize].next_sibling = idx;
+                self.root_last_child = idx;
+            }
         }
 
         idx
@@ -129,11 +145,12 @@ impl FileTree {
 
     pub fn iter_children(&self, parent_idx: u32) -> FileTreeIterator<'_> {
         let first = if parent_idx == u32::MAX {
-            // 根节点：找到所有parent为u32::MAX的节点
-            self.nodes
-                .iter()
-                .position(|n| n.parent_idx == u32::MAX)
-                .map(|i| i as u32)
+            // 虚拟根节点：使用 root_first_child
+            if self.root_first_child != u32::MAX {
+                Some(self.root_first_child)
+            } else {
+                None
+            }
         } else {
             self.nodes
                 .get(parent_idx as usize)
@@ -156,10 +173,11 @@ impl FileTree {
     }
 
     pub fn first_root_node(&self) -> Option<u32> {
-        self.nodes
-            .iter()
-            .position(|n| n.parent_idx == u32::MAX)
-            .map(|i| i as u32)
+        if self.root_first_child != u32::MAX {
+            Some(self.root_first_child)
+        } else {
+            None
+        }
     }
 }
 
