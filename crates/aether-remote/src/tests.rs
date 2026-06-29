@@ -1,9 +1,42 @@
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use tempfile::TempDir;
 
     use crate::{GitRepoConfig, GitRepoType, GitRepository, GitSshRepo, SshAuth, SshConfig};
+
+    /// 在指定路径执行 git 命令(测试 fixture 用,不依赖 git2)
+    fn git(repo_path: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .current_dir(repo_path)
+            .args(args)
+            .output()
+            .expect("git 命令执行失败");
+        if !output.status.success() {
+            panic!(
+                "git {} 失败: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    /// 初始化仓库 + 配置 user.name/email(避免 commit 时报错)
+    fn init_repo(repo_path: &Path) {
+        // current_dir 要求路径存在,先创建目录
+        std::fs::create_dir_all(repo_path).unwrap();
+        git(repo_path, &["init"]);
+        git(repo_path, &["config", "user.name", "Test User"]);
+        git(repo_path, &["config", "user.email", "test@example.com"]);
+    }
+
+    /// 创建初始提交(fixture 用)
+    fn initial_commit(repo_path: &Path, filename: &str, content: &str, message: &str) {
+        std::fs::write(repo_path.join(filename), content).unwrap();
+        git(repo_path, &["add", filename]);
+        git(repo_path, &["commit", "-m", message]);
+    }
 
     // Git 仓库测试
     #[test]
@@ -31,8 +64,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let repo_path = temp_dir.path().join("test_repo");
 
-        // 初始化一个 Git 仓库
-        git2::Repository::init(&repo_path).unwrap();
+        // 初始化一个 Git 仓库(用 git CLI,不依赖 git2)
+        init_repo(&repo_path);
 
         // 打开仓库
         let repo = GitRepository::open(&repo_path);
@@ -45,9 +78,9 @@ mod tests {
         let repo_path = temp_dir.path().join("test_repo");
 
         // 初始化 Git 仓库
-        git2::Repository::init(&repo_path).unwrap();
+        init_repo(&repo_path);
 
-        // 创建一个文件
+        // 创建一个文件(未跟踪)
         let test_file = repo_path.join("test.txt");
         std::fs::write(&test_file, "test content").unwrap();
 
@@ -56,7 +89,7 @@ mod tests {
         let status = repo.status().unwrap();
 
         assert!(!status.is_clean);
-        assert!(status.untracked_files.len() > 0);
+        assert!(!status.untracked_files.is_empty());
     }
 
     #[test]
@@ -64,19 +97,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let repo_path = temp_dir.path().join("test_repo");
 
-        // 初始化 Git 仓库
-        git2::Repository::init(&repo_path).unwrap();
-
-        // 配置用户信息
-        let repo = git2::Repository::open(&repo_path).unwrap();
-        repo.config()
-            .unwrap()
-            .set_str("user.name", "Test User")
-            .unwrap();
-        repo.config()
-            .unwrap()
-            .set_str("user.email", "test@example.com")
-            .unwrap();
+        // 初始化 Git 仓库(含 user.name/email 配置)
+        init_repo(&repo_path);
 
         // 创建并添加文件
         let test_file = repo_path.join("test.txt");
@@ -85,7 +107,7 @@ mod tests {
         let git_repo = GitRepository::open(&repo_path).unwrap();
         git_repo.add("test.txt").unwrap();
 
-        // 提交
+        // 提交(走 gix commit API)
         let commit_id = git_repo.commit("Initial commit").unwrap();
         assert!(!commit_id.is_empty());
 
@@ -99,45 +121,15 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let repo_path = temp_dir.path().join("test_repo");
 
-        // 初始化 Git 仓库
-        let repo = git2::Repository::init(&repo_path).unwrap();
+        // 初始化 + 创建初始提交(fixture)
+        init_repo(&repo_path);
+        initial_commit(&repo_path, "test.txt", "test content", "Initial commit");
 
-        // 配置用户信息
-        repo.config()
-            .unwrap()
-            .set_str("user.name", "Test User")
-            .unwrap();
-        repo.config()
-            .unwrap()
-            .set_str("user.email", "test@example.com")
-            .unwrap();
-
-        // 创建初始提交
-        let test_file = repo_path.join("test.txt");
-        std::fs::write(&test_file, "test content").unwrap();
-
-        let mut index = repo.index().unwrap();
-        index.add_path(Path::new("test.txt")).unwrap();
-        index.write().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-
-        let signature = git2::Signature::now("Test User", "test@example.com").unwrap();
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "Initial commit",
-            &tree,
-            &[],
-        )
-        .unwrap();
-
-        // 切换并创建新分支
+        // 切换并创建新分支(走我们的 API)
         let git_repo = GitRepository::open(&repo_path).unwrap();
         git_repo.checkout_branch("test-branch", true).unwrap();
 
-        // 列出分支
+        // 列出分支(走 gix references API)
         let branches = git_repo.list_branches().unwrap();
         assert!(branches.contains(&"test-branch".to_string()));
     }
@@ -195,66 +187,16 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let repo_path = temp_dir.path().join("test_repo");
 
-        // 初始化 Git 仓库
-        let repo = git2::Repository::init(&repo_path).unwrap();
+        // 初始化 + 创建两个提交(fixture)
+        init_repo(&repo_path);
+        initial_commit(&repo_path, "test1.txt", "content 1", "First commit");
+        initial_commit(&repo_path, "test2.txt", "content 2", "Second commit");
 
-        // 配置用户信息
-        repo.config()
-            .unwrap()
-            .set_str("user.name", "Test User")
-            .unwrap();
-        repo.config()
-            .unwrap()
-            .set_str("user.email", "test@example.com")
-            .unwrap();
-
-        // 创建第一个提交
-        let test_file1 = repo_path.join("test1.txt");
-        std::fs::write(&test_file1, "content 1").unwrap();
-
-        let mut index = repo.index().unwrap();
-        index.add_path(Path::new("test1.txt")).unwrap();
-        index.write().unwrap();
-        let tree_id1 = index.write_tree().unwrap();
-        let tree1 = repo.find_tree(tree_id1).unwrap();
-
-        let signature = git2::Signature::now("Test User", "test@example.com").unwrap();
-        let commit1 = repo
-            .commit(
-                Some("HEAD"),
-                &signature,
-                &signature,
-                "First commit",
-                &tree1,
-                &[],
-            )
-            .unwrap();
-
-        // 创建第二个提交
-        let test_file2 = repo_path.join("test2.txt");
-        std::fs::write(&test_file2, "content 2").unwrap();
-
-        index.add_path(Path::new("test2.txt")).unwrap();
-        index.write().unwrap();
-        let tree_id2 = index.write_tree().unwrap();
-        let tree2 = repo.find_tree(tree_id2).unwrap();
-
-        let commit1_obj = repo.find_commit(commit1).unwrap();
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "Second commit",
-            &tree2,
-            &[&commit1_obj],
-        )
-        .unwrap();
-
-        // 获取提交历史
+        // 获取提交历史(走 gix rev_walk API)
         let git_repo = GitRepository::open(&repo_path).unwrap();
         let commits = git_repo.log(10).unwrap();
 
-        assert!(commits.len() == 2);
+        assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].message, "Second commit");
         assert_eq!(commits[1].message, "First commit");
     }

@@ -310,8 +310,14 @@ impl PersistentPieceTable {
 
     /// 记录当前状态到历史
     fn record_history(&mut self, description: &str) {
+        // CORE-H04: 使用绝对值差，修复删除操作 edit_size 始终为 0 的问题
         let edit_size = if let Some(current) = self.history.current() {
-            self.table.len_bytes().saturating_sub(current.total_bytes)
+            let new_len = self.table.len_bytes();
+            if new_len >= current.total_bytes {
+                new_len - current.total_bytes
+            } else {
+                current.total_bytes - new_len
+            }
         } else {
             0
         };

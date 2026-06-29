@@ -3,12 +3,14 @@ use aether_core::workspace::file_tree::{FileKind, FileTree};
 use aether_render::d2d::factory::color_f;
 use aether_render::d2d::glass;
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
-use windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush;
-use windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE;
+use windows::Win32::Graphics::Direct2D::{
+    ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_ALIASED, D2D1_DRAW_TEXT_OPTIONS_NONE,
+};
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
-    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
+    IDWriteTextFormat, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
+    DWRITE_TEXT_ALIGNMENT_TRAILING,
 };
 
 use crate::editor::EditorState;
@@ -21,13 +23,24 @@ impl EditorState {
             return;
         }
 
-        tracing::debug!("=== NEW BINARY V3 MARKER ===");
-        tracing::debug!(
+        // AI-H01: 轮询后台 AI 请求结果，不阻塞 UI 线程
+        self.ai_panel.check_background_result();
+
+        // 终端输出轮询：从读取线程拉取子进程 stdout/stderr 并写入输出缓存。
+        // 此前未调用 flush_output 导致 shell 输出无法显示，现在每帧轮询保证实时性。
+        if self.terminal_panel.running {
+            self.terminal_panel.flush_output();
+        }
+
+        // 懒加载预扫描：确保所有 is_expanded 但未加载的目录节点子项已就绪
+        // 这样渲染文件树时不会因目录未加载而显示空
+        self.preload_expanded_dirs();
+
+        // UI-L07: 降级为 trace，避免生产环境每帧日志噪声
+        tracing::trace!(
             win_w = self.window_width,
             win_h = self.window_height,
-            showing_welcome = self.show_welcome(),
-            right_panel_visible = self.layout.right_panel_visible,
-            "[v2] render() start"
+            "render() start"
         );
 
         // 确保渲染目标存在（设备丢失后重建）
@@ -130,12 +143,24 @@ impl EditorState {
         let selection_changed = self.selection_start != self.last_selection_start
             || self.selection_end != self.last_selection_end;
         let sidebar_changed = self.sidebar_content != self.last_sidebar_content;
+        let sidebar_visible_changed = self.layout.sidebar_visible != self.last_sidebar_visible;
+        let activity_bar_visible_changed =
+            self.layout.activity_bar_visible != self.last_activity_bar_visible;
         let right_panel_changed = self.layout.right_panel_visible != self.last_right_panel_visible;
         let bottom_panel_changed =
             self.layout.bottom_panel_visible != self.last_bottom_panel_visible;
         let status_changed = self.status_message != self.last_status_message;
         let dialog_visible =
             self.ssh_dialog.visible || self.clone_dialog.visible || self.command_palette.visible;
+
+        // 底部面板可见性变化属于重大布局变更，强制全量重绘以保证编辑器区域正确刷新
+        if bottom_panel_changed {
+            self.dirty_tracker.mark_full_window();
+        }
+        // 侧边栏或活动栏可见性变化也属于重大布局变更，在欢迎页状态下会暴露黑色区域
+        if sidebar_visible_changed || activity_bar_visible_changed {
+            self.dirty_tracker.mark_full_window();
+        }
 
         // 根据状态变化推断最优渲染命令
         let render_cmd = crate::dirty_rect::RenderCommand::infer_from_state(
@@ -230,24 +255,88 @@ impl EditorState {
         // 设置裁剪区域（脏矩形优化）
         let use_clip = !self.dirty_tracker.is_full_window() && self.dirty_tracker.has_dirty();
         if use_clip {
-            if let Some(first_rect) = self.dirty_tracker.rects().first() {
-                self.render_ctx.push_clip(
-                    first_rect.x,
-                    first_rect.y,
-                    first_rect.width,
-                    first_rect.height,
-                );
+            // UI-M01: 合并所有脏矩形为新边界框，而非只使用第一个 rect
+            let rects = self.dirty_tracker.rects();
+            if !rects.is_empty() {
+                let mut merged = rects[0].clone();
+                for r in &rects[1..] {
+                    merged = merged.merge(r);
+                }
+                self.render_ctx
+                    .push_clip(merged.x, merged.y, merged.width, merged.height);
             }
         }
 
         // 全窗口清除只在全窗口重绘时执行
         if self.dirty_tracker.is_full_window() || !use_clip {
-            self.render_ctx.clear(&self.theme.editor_bg);
+            // 欢迎页状态下使用深色背景（而非透明），避免面板区域出现黑色空洞
+            // 透明色虽能让 DWM Mica/Acrylic 透出，但会导致未覆盖区域显示为黑色
+            if self.show_welcome() {
+                self.render_ctx
+                    .clear(&windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+                        r: 0.09,
+                        g: 0.09,
+                        b: 0.09,
+                        a: 1.0,
+                    });
+            } else {
+                self.render_ctx.clear(&self.theme.editor_bg);
+            }
+        }
+
+        // 欢迎页 + 脏矩形裁剪时，侧边栏/活动栏/右侧面板/底部面板区域不会被全窗口 clear 覆盖，
+        // 且欢迎页逻辑跳过这些面板的渲染，导致这些区域显示为黑色。
+        // 手动填充这些区域以保证背景色正确。
+        if self.show_welcome() && use_clip {
+            if self.layout.activity_bar_visible && activity_region.width > 0.0 {
+                self.render_ctx.fill_rect(
+                    activity_region.x,
+                    activity_region.y,
+                    activity_region.width,
+                    activity_region.height,
+                    &self.theme.activity_bar_bg,
+                );
+            }
+            if self.layout.sidebar_visible && sidebar_region.width > 0.0 {
+                self.render_ctx.fill_rect(
+                    sidebar_region.x,
+                    sidebar_region.y,
+                    sidebar_region.width,
+                    sidebar_region.height,
+                    &self.theme.sidebar_bg,
+                );
+            }
+            if self.layout.right_panel_visible && right_panel_region.width > 0.0 {
+                self.render_ctx.fill_rect(
+                    right_panel_region.x,
+                    right_panel_region.y,
+                    right_panel_region.width,
+                    right_panel_region.height,
+                    &self.theme.sidebar_bg,
+                );
+            }
+            if self.layout.bottom_panel_visible {
+                let bottom_region = self.layout.bottom_panel_region();
+                if bottom_region.height > 0.0 {
+                    // 欢迎页状态下，底部面板需要覆盖整个窗口宽度（包括右侧面板下方），
+                    // 避免右侧面板下方出现黑色空洞
+                    let full_width = self.window_width as f32;
+                    self.render_ctx.fill_rect(
+                        0.0,
+                        bottom_region.y,
+                        full_width,
+                        bottom_region.height,
+                        &self.theme.statusbar_bg,
+                    );
+                }
+            }
         }
 
         // 预提取菜单栏数据，避免借用冲突
         let item_x_positions = self.menu_bar.item_x_positions.clone();
         let item_widths = self.menu_bar.item_widths.clone();
+
+        let showing_welcome = self.show_welcome();
 
         // 0. 标题栏（最先渲染，作为背景）
         if self.layout.title_bar_visible {
@@ -259,19 +348,18 @@ impl EditorState {
             self.render_menu_bar(&item_x_positions, &item_widths, &target, &menu_region);
         }
 
-        // 2. 活动栏
-        if self.layout.activity_bar_visible {
+        // 2. 活动栏（欢迎页不渲染）
+        if self.layout.activity_bar_visible && !showing_welcome {
             self.render_activity_bar(&target, &activity_region);
         }
 
-        // 3. 侧边栏（欢迎页显示时跳过，因欢迎页全屏覆盖）
-        let showing_welcome = self.show_welcome();
+        // 3. 侧边栏（欢迎页不渲染）
         if self.layout.sidebar_visible && !showing_welcome {
             self.render_sidebar(&target, &sidebar_region);
         }
 
         // 4. 标签栏
-        if has_multiple_tabs {
+        if has_multiple_tabs && !showing_welcome {
             self.render_tab_bar(
                 &target,
                 tab_region.x,
@@ -284,29 +372,22 @@ impl EditorState {
         // 5. 编辑器内容/欢迎页/图片预览
         if showing_welcome {
             tracing::trace!("render: before welcome_page");
-            // 欢迎页覆盖整个窗口内容区域（忽略侧边栏，类似 VS Code）
-            let welcome_x = if self.layout.activity_bar_visible {
-                self.layout.activity_bar_width
-            } else {
-                0.0
-            };
-            let welcome_width = (self.window_width as f32
-                - welcome_x
-                - if self.layout.right_panel_visible {
-                    self.layout.right_panel_width
-                } else {
-                    0.0
-                })
-            .max(200.0);
+            // 欢迎页：全屏居中，不受侧边栏和活动栏影响
+            // 但当右侧面板或底部面板打开时，欢迎页需要避让
+            let welcome_x = 0.0;
+            let mut welcome_width = self.window_width as f32;
+            if self.layout.right_panel_visible {
+                welcome_width -= self.layout.right_panel_width;
+            }
             let welcome_y = self.layout.top_offset();
-            let welcome_height = (self.window_height as f32
-                - welcome_y
-                - if self.layout.status_bar_visible {
-                    self.layout.status_bar_height
-                } else {
-                    0.0
-                })
-            .max(200.0);
+            let mut welcome_height = self.window_height as f32 - welcome_y;
+            if self.layout.status_bar_visible {
+                welcome_height -= self.layout.status_bar_height;
+            }
+            if self.layout.bottom_panel_visible {
+                welcome_height -= self.layout.bottom_panel_height;
+            }
+            welcome_height = welcome_height.max(200.0);
             self.render_welcome_page(&target, welcome_x, welcome_y, welcome_width, welcome_height);
             tracing::trace!("render: after welcome_page");
         } else if self.language == Language::Image {
@@ -348,13 +429,20 @@ impl EditorState {
         }
 
         // 7. 底部面板（终端、输出等）
-        if self.layout.bottom_panel_visible && !showing_welcome {
+        if self.layout.bottom_panel_visible {
             let bottom_region = self.layout.bottom_panel_region();
+            // 欢迎页状态下，底部面板背景需要覆盖整个窗口宽度（包括右侧面板下方），
+            // 避免右侧面板下方出现黑色空洞
+            let (bp_x, bp_width) = if self.show_welcome() {
+                (0.0, self.window_width as f32)
+            } else {
+                (bottom_region.x, bottom_region.width)
+            };
             self.render_bottom_panel(
                 &target,
-                bottom_region.x,
+                bp_x,
                 bottom_region.y,
-                bottom_region.width,
+                bp_width,
                 bottom_region.height,
             );
         }
@@ -400,6 +488,20 @@ impl EditorState {
             self.render_clone_dialog(&target);
         }
 
+        // 11. 用户下拉菜单（最后渲染，确保在所有 UI 之上）
+        if self.user_menu.is_open {
+            let titlebar_h = self.layout.title_bar_height;
+            let window_w = self.window_width as f32;
+            let btn_width = 40.0;
+            let close_x = window_w - btn_width;
+            let maximize_x = close_x - btn_width;
+            let minimize_x = maximize_x - btn_width;
+            let user_btn_size = 26.0;
+            let user_btn_x = minimize_x - 28.0 * 3.0 - user_btn_size - 4.0;
+            let user_btn_y = (titlebar_h - user_btn_size) / 2.0;
+            self.render_user_menu(&target, user_btn_x, user_btn_y + user_btn_size + 4.0);
+        }
+
         // 弹出裁剪区域（如果设置了）——必须在 end_draw 之前
         if use_clip {
             self.render_ctx.pop_clip();
@@ -411,6 +513,8 @@ impl EditorState {
                 // 设备丢失（D2DERR_RECREATE_TARGET = 0x8899000C），需要重建渲染目标
                 if e.code().0 as u32 == 0x8899000C {
                     self.render_ctx.handle_device_lost();
+                    // P4-4: 同时清理 IconCache，确保下次绘制时从新 factory 重建几何
+                    self.icons.clear();
                     // 重建渲染目标并重新预初始化
                     let _ = self.init_render_target();
                     if let Some(rt) = self.render_ctx.target_ref() {
@@ -454,6 +558,8 @@ impl EditorState {
         self.last_selection_start = self.selection_start;
         self.last_selection_end = self.selection_end;
         self.last_sidebar_content = self.sidebar_content.clone();
+        self.last_sidebar_visible = self.layout.sidebar_visible;
+        self.last_activity_bar_visible = self.layout.activity_bar_visible;
         self.last_right_panel_visible = self.layout.right_panel_visible;
         self.last_bottom_panel_visible = self.layout.bottom_panel_visible;
         self.last_status_message.clone_from(&self.status_message);
@@ -624,16 +730,20 @@ impl EditorState {
 
             match &self.sidebar_content {
                 crate::layout::SidebarContent::FileTree => {
-                    self.render_file_tree_sidebar(target, x, y, width, height, &text_brush);
+                    if self.is_loading_folder {
+                        self.render_loading_spinner(target, x, y, width, height, &text_brush);
+                    } else {
+                        self.render_file_tree_sidebar(target, x, y, width, height, &text_brush);
+                    }
                 }
                 crate::layout::SidebarContent::SourceControlPanel => {
                     self.render_source_control_sidebar(target, x, y, width, height, &text_brush);
                 }
                 crate::layout::SidebarContent::AiAssistantPanel => {
-                    self.render_ai_assistant_sidebar(target, x, y, width, height, &text_brush);
+                    // AI 面板已迁移到右侧面板，左侧栏不再渲染 AI 内容
                 }
-                crate::layout::SidebarContent::SettingsPanel => {
-                    self.render_settings_sidebar(target, x, y, width, height, &text_brush);
+                crate::layout::SidebarContent::RemoteManagerPanel => {
+                    self.render_ssh_manager_sidebar(target, x, y, width, height, &text_brush);
                 }
                 crate::layout::SidebarContent::RemoteFileTree => {
                     self.render_remote_file_tree_sidebar(target, x, y, width, height, &text_brush);
@@ -642,6 +752,94 @@ impl EditorState {
                     // 终端面板在底部显示，侧边栏不渲染
                 }
             }
+        }
+    }
+
+    /// 渲染加载中提示（spinner + 文字）
+    fn render_loading_spinner(
+        &mut self,
+        target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+    ) {
+        unsafe {
+            let ui_format = self
+                .render_ctx
+                .text_format_cache
+                .get_format(
+                    13.0,
+                    DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+                    DWRITE_TEXT_ALIGNMENT_CENTER.0 as u32,
+                    DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
+                )
+                .unwrap();
+
+            // 居中显示"正在扫描文件夹..."
+            let cx = x + width / 2.0;
+            let cy = y + height / 3.0;
+            let spinner_radius = 12.0f32;
+
+            let ring_color = color_f(0.3, 0.3, 0.3, 1.0);
+            let ring_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &ring_color)
+                .unwrap();
+            let dot_color = color_f(0.25, 0.65, 0.95, 1.0);
+            let dot_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &dot_color)
+                .unwrap();
+
+            // 用 GetTickCount 做简单的旋转动画相位
+            let phase = (windows::Win32::System::SystemInformation::GetTickCount() as f32 / 200.0)
+                % (std::f32::consts::TAU);
+            let dot_x = cx + phase.cos() * spinner_radius;
+            let dot_y = cy + phase.sin() * spinner_radius;
+
+            // 画底环
+            let ring_ellipse = windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                point: windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F { x: cx, y: cy },
+                radiusX: spinner_radius,
+                radiusY: spinner_radius,
+            };
+            target.DrawEllipse(&ring_ellipse, &ring_brush, 1.5, None);
+
+            // 画旋转的小圆点
+            let dot_ellipse = windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                point: windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F {
+                    x: dot_x,
+                    y: dot_y,
+                },
+                radiusX: 3.0,
+                radiusY: 3.0,
+            };
+            target.FillEllipse(&dot_ellipse, &dot_brush);
+
+            // 文字提示
+            let loading_text: Vec<u16> =
+                "正在扫描文件夹...".encode_utf16().chain(Some(0)).collect();
+            let text_rect = D2D_RECT_F {
+                left: x,
+                top: cy + spinner_radius + 12.0,
+                right: x + width,
+                bottom: cy + spinner_radius + 40.0,
+            };
+            target.DrawText(
+                &loading_text,
+                &ui_format,
+                &text_rect,
+                text_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+
+            // 强制下一帧重绘以驱动动画
+            let _ = windows::Win32::Graphics::Gdi::InvalidateRect(self.hwnd, None, false);
         }
     }
 
@@ -665,6 +863,17 @@ impl EditorState {
                     DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
                 )
                 .unwrap();
+            // 章节标题：12px 加粗，与"源代码管理"侧栏保持一致
+            let header_format = self
+                .render_ctx
+                .text_format_cache
+                .get_format(
+                    12.0,
+                    DWRITE_FONT_WEIGHT_BOLD.0 as u32,
+                    DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
+                    DWRITE_PARAGRAPH_ALIGNMENT_CENTER.0 as u32,
+                )
+                .unwrap();
             let tree_format = self
                 .render_ctx
                 .text_format_cache
@@ -681,9 +890,42 @@ impl EditorState {
                 .brush_cache
                 .get_brush(target, &dir_color)
                 .unwrap();
+            // 章节分隔线颜色
+            let sep_color = color_f(0.2, 0.2, 0.2, 1.0);
+            let sep_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &sep_color)
+                .unwrap();
+
+            // 章节标题栏（与"源代码管理"风格一致，约 28px 高）
+            let header_h = 28.0f32;
+            let header_text: Vec<u16> = "资源管理器".encode_utf16().chain(Some(0)).collect();
+            let header_text_rect = D2D_RECT_F {
+                left: x + 10.0,
+                top: y,
+                right: x + width - 10.0,
+                bottom: y + header_h,
+            };
+            target.DrawText(
+                &header_text,
+                &header_format,
+                &header_text_rect,
+                text_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+            // 标题下方的分隔线
+            let sep_rect = D2D_RECT_F {
+                left: x,
+                top: y + header_h,
+                right: x + width,
+                bottom: y + header_h + 1.0,
+            };
+            target.FillRectangle(&sep_rect, &sep_brush);
 
             if let Some(tree) = &self.file_tree {
-                let mut current_y = y + 10.0 - self.sidebar_scroll_y;
+                let mut current_y = y + header_h + 6.0 - self.sidebar_scroll_y;
                 let sel_color = if self.theme.glass_enabled {
                     self.theme.glow_selection
                 } else {
@@ -726,9 +968,9 @@ impl EditorState {
                     .collect();
                 let text_rect = D2D_RECT_F {
                     left: x + 10.0,
-                    top: y + 10.0,
+                    top: y + header_h + 6.0,
                     right: x + width - 10.0,
-                    bottom: y + 30.0,
+                    bottom: y + header_h + 26.0,
                 };
                 target.DrawText(
                     &text,
@@ -1438,81 +1680,27 @@ impl EditorState {
             );
 
             if let Some(tree) = &self.remote_file_tree {
+                let node_height = 20.0_f32;
                 let mut current_y = y + 40.0 - self.remote_scroll_y;
-                for (i, node) in tree.nodes.iter().enumerate() {
-                    if current_y > y + height {
-                        break;
-                    }
-                    if current_y + 20.0 < y {
-                        current_y += 20.0;
-                        continue;
-                    }
-
-                    let indent = node.depth as f32 * 16.0;
-                    let icon = if node.is_dir {
-                        if node.is_expanded {
-                            "📂"
-                        } else {
-                            "📁"
-                        }
-                    } else {
-                        "📄"
-                    };
-                    let arrow = if node.is_dir {
-                        if node.is_expanded {
-                            "▼ "
-                        } else {
-                            "▶ "
-                        }
-                    } else {
-                        ""
-                    };
-                    let display = format!("{}{} {}", arrow, icon, node.name);
-
-                    let item_left = x + 10.0 + indent;
-                    let item_right = x + width - 10.0;
-
-                    let is_hover = self.hover_remote_node == Some(i);
-                    if is_hover {
-                        let hover_rect = D2D_RECT_F {
-                            left: item_left - 4.0,
-                            top: current_y,
-                            right: item_right,
-                            bottom: current_y + 20.0,
-                        };
-                        target.FillRectangle(&hover_rect, &hover_brush);
-                    }
-
-                    let is_selected = self.selected_remote_node == Some(i) && !node.is_dir;
-                    if is_selected {
-                        let sel_rect = D2D_RECT_F {
-                            left: item_left - 4.0,
-                            top: current_y,
-                            right: item_right,
-                            bottom: current_y + 20.0,
-                        };
-                        target.FillRectangle(&sel_rect, &sel_brush);
-                    }
-
-                    let brush = if node.is_dir { &dir_brush } else { text_brush };
-                    let wide: Vec<u16> = display.encode_utf16().chain(Some(0)).collect();
-                    let text_rect = D2D_RECT_F {
-                        left: item_left,
-                        top: current_y,
-                        right: item_right,
-                        bottom: current_y + 20.0,
-                    };
-                    target.DrawText(
-                        &wide,
-                        &tree_format,
-                        &text_rect,
-                        brush,
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        DWRITE_MEASURING_MODE_NATURAL,
-                    );
-
-                    current_y += 20.0;
-                }
+                let hover = self.hover_remote_node.as_ref();
+                let selected = self.selected_remote_node.as_ref();
+                Self::draw_remote_nodes_recursive(
+                    target,
+                    &tree.nodes,
+                    x,
+                    width,
+                    y,
+                    height,
+                    node_height,
+                    &mut current_y,
+                    hover,
+                    selected,
+                    &dir_brush,
+                    text_brush,
+                    &hover_brush,
+                    &sel_brush,
+                    &tree_format,
+                );
             } else {
                 let msg: Vec<u16> = "未连接远程服务器".encode_utf16().chain(Some(0)).collect();
                 let msg_rect = D2D_RECT_F {
@@ -1528,6 +1716,126 @@ impl EditorState {
                     text_brush,
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
+                );
+            }
+        }
+    }
+
+    /// P0-1: 递归绘制远程文件树节点（含展开目录的子节点）
+    #[allow(clippy::too_many_arguments)]
+    fn draw_remote_nodes_recursive(
+        target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+        nodes: &[crate::ssh::RemoteFileNode],
+        x: f32,
+        width: f32,
+        clip_top: f32,
+        clip_bottom: f32,
+        node_height: f32,
+        current_y: &mut f32,
+        hover: Option<&String>,
+        selected: Option<&String>,
+        dir_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+        text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+        hover_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+        sel_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+        tree_format: &IDWriteTextFormat,
+    ) {
+        for node in nodes {
+            // 超出可见区域底部：停止（节点按顺序排列）
+            if *current_y > clip_bottom {
+                break;
+            }
+            // 跳过完全在顶部以上的节点（但需推进 current_y）
+            let visible = *current_y + node_height >= clip_top;
+            let indent = node.depth as f32 * 16.0;
+            let item_left = x + 10.0 + indent;
+            let item_right = x + width - 10.0;
+
+            if visible {
+                // P0-1: Direct2D 绘制调用需在 unsafe 块中执行
+                unsafe {
+                    let is_hover = hover == Some(&node.path);
+                    if is_hover {
+                        let hover_rect = D2D_RECT_F {
+                            left: item_left - 4.0,
+                            top: *current_y,
+                            right: item_right,
+                            bottom: *current_y + node_height,
+                        };
+                        target.FillRectangle(&hover_rect, hover_brush);
+                    }
+
+                    let is_selected = selected == Some(&node.path) && !node.is_dir;
+                    if is_selected {
+                        let sel_rect = D2D_RECT_F {
+                            left: item_left - 4.0,
+                            top: *current_y,
+                            right: item_right,
+                            bottom: *current_y + node_height,
+                        };
+                        target.FillRectangle(&sel_rect, sel_brush);
+                    }
+
+                    let icon = if node.is_dir {
+                        if node.is_expanded {
+                            "📂"
+                        } else {
+                            "📁"
+                        }
+                    } else {
+                        "📄"
+                    };
+                    // P0-1: 正在加载子目录时显示 ⏳ 指示器
+                    let arrow = if node.is_dir {
+                        if node.is_loading {
+                            "⏳ "
+                        } else if node.is_expanded {
+                            "▼ "
+                        } else {
+                            "▶ "
+                        }
+                    } else {
+                        ""
+                    };
+                    let display = format!("{}{} {}", arrow, icon, node.name);
+                    let wide: Vec<u16> = display.encode_utf16().chain(Some(0)).collect();
+                    let text_rect = D2D_RECT_F {
+                        left: item_left,
+                        top: *current_y,
+                        right: item_right,
+                        bottom: *current_y + node_height,
+                    };
+                    let brush = if node.is_dir { dir_brush } else { text_brush };
+                    target.DrawText(
+                        &wide,
+                        tree_format,
+                        &text_rect,
+                        brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
+            }
+
+            *current_y += node_height;
+            // 仅展开的目录才递归绘制子节点
+            if node.is_expanded {
+                Self::draw_remote_nodes_recursive(
+                    target,
+                    &node.children,
+                    x,
+                    width,
+                    clip_top,
+                    clip_bottom,
+                    node_height,
+                    current_y,
+                    hover,
+                    selected,
+                    dir_brush,
+                    text_brush,
+                    hover_brush,
+                    sel_brush,
+                    tree_format,
                 );
             }
         }
@@ -1816,7 +2124,8 @@ impl EditorState {
                         bottom: cy + 20.0,
                     };
                     target.FillRectangle(&input_rect, &input_bg_brush);
-                    let hidden = "*".repeat(self.ssh_dialog.password.len());
+                    // H-22: 使用 char 计数而非字节计数，避免多字节 UTF-8 泄漏长度
+                    let hidden: String = self.ssh_dialog.password.chars().map(|_| '*').collect();
                     let val_text: Vec<u16> = hidden.encode_utf16().chain(Some(0)).collect();
                     let val_rect = D2D_RECT_F {
                         left: x + 84.0,
@@ -2515,6 +2824,317 @@ impl EditorState {
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
                 DWRITE_MEASURING_MODE_NATURAL,
             );
+        }
+    }
+
+    // 保留 render_central_terminal 方法定义，但不再被调用
+    // 终端已迁移到底部面板 (render_bottom_panel)
+    #[allow(dead_code)]
+    fn render_central_terminal(
+        &mut self,
+        target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) {
+        if width < 2.0 || height < 2.0 {
+            return;
+        }
+        unsafe {
+            // 背景画笔
+            let bg_color = if self.theme.glass_enabled {
+                color_f(0.12, 0.12, 0.13, 0.98)
+            } else {
+                color_f(0.12, 0.12, 0.13, 1.0)
+            };
+            let bg_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &bg_color)
+                .unwrap();
+            let border_color = if self.theme.glass_enabled {
+                self.theme.panel_border
+            } else {
+                color_f(0.2, 0.2, 0.2, 1.0)
+            };
+            let border_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &border_color)
+                .unwrap();
+            let title_color = color_f(0.95, 0.95, 0.95, 1.0);
+            let title_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &title_color)
+                .unwrap();
+            let dim_color = color_f(0.55, 0.55, 0.55, 1.0);
+            let dim_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &dim_color)
+                .unwrap();
+            let output_color = color_f(0.85, 0.85, 0.85, 1.0);
+            let output_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &output_color)
+                .unwrap();
+            let prompt_color = color_f(0.0, 0.8, 0.4, 1.0);
+            let prompt_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &prompt_color)
+                .unwrap();
+            let accent_color = color_f(0.25, 0.65, 0.95, 1.0);
+            let accent_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &accent_color)
+                .unwrap();
+            let cursor_color = color_f(0.9, 0.9, 0.9, 1.0);
+            let cursor_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &cursor_color)
+                .unwrap();
+
+            let ui_format = self
+                .render_ctx
+                .text_format_cache
+                .get_format(
+                    12.0,
+                    DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+                    DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
+                    DWRITE_PARAGRAPH_ALIGNMENT_CENTER.0 as u32,
+                )
+                .unwrap();
+            let mono_format = self
+                .render_ctx
+                .text_format_cache
+                .get_format(
+                    13.0,
+                    DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+                    DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
+                    DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
+                )
+                .unwrap();
+
+            // 1. 面板背景
+            let bg_rect = D2D_RECT_F {
+                left: x,
+                top: y,
+                right: x + width,
+                bottom: y + height,
+            };
+            target.FillRectangle(&bg_rect, &bg_brush);
+
+            // 2. 边框（界定中央区域，与侧边栏视觉分离）
+            let border_top = D2D_RECT_F {
+                left: x,
+                top: y,
+                right: x + width,
+                bottom: y + 1.0,
+            };
+            target.FillRectangle(&border_top, &border_brush);
+
+            // 3. 标题栏
+            let title_bar_h = 30.0;
+            let title_bar_rect = D2D_RECT_F {
+                left: x,
+                top: y,
+                right: x + width,
+                bottom: y + title_bar_h,
+            };
+            let title_bg_color = color_f(0.16, 0.16, 0.18, 1.0);
+            let title_bg_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &title_bg_color)
+                .unwrap();
+            target.FillRectangle(&title_bar_rect, &title_bg_brush);
+
+            // 标题文字 + 运行状态指示
+            let title_str = if self.terminal_panel.running {
+                "⌨ 终端  ● 运行中"
+            } else {
+                "⌨ 终端  ○ 未启动"
+            };
+            let title_wide: Vec<u16> = title_str.encode_utf16().chain(Some(0)).collect();
+            let title_text_rect = D2D_RECT_F {
+                left: x + 12.0,
+                top: y,
+                right: x + width - 100.0,
+                bottom: y + title_bar_h,
+            };
+            target.DrawText(
+                &title_wide,
+                &ui_format,
+                &title_text_rect,
+                &title_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+
+            // cwd 显示（右侧）
+            let cwd_display: String = self
+                .terminal_panel
+                .cwd
+                .chars()
+                .rev()
+                .take(40)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            let cwd_wide: Vec<u16> = cwd_display.encode_utf16().chain(Some(0)).collect();
+            let cwd_rect = D2D_RECT_F {
+                left: x + 180.0,
+                top: y,
+                right: x + width - 40.0,
+                bottom: y + title_bar_h,
+            };
+            target.DrawText(
+                &cwd_wide,
+                &ui_format,
+                &cwd_rect,
+                &dim_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+
+            // 关闭按钮 (×) —— 位于标题栏右侧，点击关闭中央终端
+            let close_btn_size = 28.0;
+            let close_btn_x = x + width - close_btn_size;
+            let close_wide: Vec<u16> = "×".encode_utf16().chain(Some(0)).collect();
+            let close_text_rect = D2D_RECT_F {
+                left: close_btn_x,
+                top: y,
+                right: close_btn_x + close_btn_size,
+                bottom: y + title_bar_h,
+            };
+            target.DrawText(
+                &close_wide,
+                &ui_format,
+                &close_text_rect,
+                &dim_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+
+            // 4. 输出区域
+            let line_h = 18.0;
+            let content_y = y + title_bar_h + 6.0;
+            let content_bottom = y + height - 28.0; // 底部预留输入行
+            let visible_lines = ((content_bottom - content_y) / line_h).floor() as usize;
+            let lines = self.terminal_panel.visible_window(visible_lines);
+
+            // 滚动提示：当用户向上滚动浏览历史时显示提示
+            if self.terminal_panel.scroll_offset > 0 {
+                let hint_wide: Vec<u16> = "↑ 历史输出（回车回到最新）"
+                    .encode_utf16()
+                    .chain(Some(0))
+                    .collect();
+                let hint_rect = D2D_RECT_F {
+                    left: x + 12.0,
+                    top: content_y - 2.0,
+                    right: x + width - 12.0,
+                    bottom: content_y + 16.0,
+                };
+                target.DrawText(
+                    &hint_wide,
+                    &ui_format,
+                    &hint_rect,
+                    &accent_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+            }
+
+            let mut line_y = content_y;
+            for line in &lines {
+                if line_y + line_h > content_bottom {
+                    break;
+                }
+                let text: Vec<u16> = line.encode_utf16().chain(Some(0)).collect();
+                let text_rect = D2D_RECT_F {
+                    left: x + 12.0,
+                    top: line_y,
+                    right: x + width - 12.0,
+                    bottom: line_y + line_h,
+                };
+                target.DrawText(
+                    &text,
+                    &mono_format,
+                    &text_rect,
+                    &output_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+                line_y += line_h;
+            }
+
+            // 5. 输入行：提示符 + 输入内容 + 光标
+            let input_y = content_bottom + 4.0;
+            let prompt_wide: Vec<u16> = "> ".encode_utf16().chain(Some(0)).collect();
+            let prompt_rect = D2D_RECT_F {
+                left: x + 12.0,
+                top: input_y,
+                right: x + 32.0,
+                bottom: input_y + line_h,
+            };
+            target.DrawText(
+                &prompt_wide,
+                &mono_format,
+                &prompt_rect,
+                &prompt_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+
+            let input: Vec<u16> = self
+                .terminal_panel
+                .input_line
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let input_rect = D2D_RECT_F {
+                left: x + 30.0,
+                top: input_y,
+                right: x + width - 12.0,
+                bottom: input_y + line_h,
+            };
+            target.DrawText(
+                &input,
+                &mono_format,
+                &input_rect,
+                &title_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+
+            // 光标块（仅聚焦时显示）
+            if self.terminal_panel.focused {
+                let char_width = 7.5_f32; // 等宽字体近似字符宽度
+                let cursor_x = x + 30.0 + self.terminal_panel.cursor_pos as f32 * char_width;
+                let cursor_rect = D2D_RECT_F {
+                    left: cursor_x,
+                    top: input_y + 2.0,
+                    right: cursor_x + char_width,
+                    bottom: input_y + line_h - 2.0,
+                };
+                target.FillRectangle(&cursor_rect, &cursor_brush);
+            }
+
+            // 6. 底部分隔线
+            let bottom_sep = D2D_RECT_F {
+                left: x,
+                top: y + height - 1.0,
+                right: x + width,
+                bottom: y + height,
+            };
+            target.FillRectangle(&bottom_sep, &border_brush);
         }
     }
 
@@ -3356,6 +3976,849 @@ impl EditorState {
         }
     }
 
+    /// 渲染 SSH 远程管理面板（侧边栏）
+    /// 显示已保存的服务器列表、连接状态、添加/编辑/删除/连接操作
+    #[allow(clippy::too_many_lines)]
+    fn render_ssh_manager_sidebar(
+        &mut self,
+        target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+    ) {
+        // 先快照所需状态，避免与 panel 的可变借用冲突
+        let active_count = self.active_ssh_count();
+        let servers: Vec<aether_shared::settings::SshServerConfig> = self.ssh_servers().to_vec();
+        let ssh_connecting = self.ssh_connecting;
+        // 预计算每个服务器的连接状态
+        let connected_states: Vec<bool> = (0..servers.len())
+            .map(|i| self.is_ssh_connected(i))
+            .collect();
+        let connecting_states: Vec<bool> = (0..servers.len())
+            .map(|i| self.is_ssh_connecting() && self.active_ssh_index == Some(i))
+            .collect();
+
+        let panel = &mut self.ssh_manager_panel;
+        // 清除上一帧的按钮区域
+        panel.item_btn_rects.clear();
+
+        unsafe {
+            let title_format = self
+                .render_ctx
+                .text_format_cache
+                .get_format(
+                    14.0,
+                    DWRITE_FONT_WEIGHT_BOLD.0 as u32,
+                    DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
+                    DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
+                )
+                .unwrap();
+            let ui_format = self
+                .render_ctx
+                .text_format_cache
+                .get_format(
+                    12.0,
+                    DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+                    DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
+                    DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
+                )
+                .unwrap();
+            let label_format = self
+                .render_ctx
+                .text_format_cache
+                .get_format(
+                    13.0,
+                    DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+                    DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
+                    DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
+                )
+                .unwrap();
+            let btn_format = self
+                .render_ctx
+                .text_format_cache
+                .get_format(
+                    12.0,
+                    DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+                    DWRITE_TEXT_ALIGNMENT_CENTER.0 as u32,
+                    DWRITE_PARAGRAPH_ALIGNMENT_CENTER.0 as u32,
+                )
+                .unwrap();
+
+            let dim_color = color_f(0.55, 0.55, 0.55, 1.0);
+            let dim_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &dim_color)
+                .unwrap();
+            let green_color = color_f(0.3, 0.85, 0.4, 1.0);
+            let green_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &green_color)
+                .unwrap();
+            let red_color = color_f(0.85, 0.3, 0.3, 1.0);
+            let red_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &red_color)
+                .unwrap();
+            let hover_color = color_f(0.2, 0.2, 0.2, 1.0);
+            let hover_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &hover_color)
+                .unwrap();
+            let sel_color = color_f(0.0, 0.47, 0.83, 0.3);
+            let sel_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &sel_color)
+                .unwrap();
+            let btn_bg_color = color_f(0.15, 0.15, 0.15, 1.0);
+            let btn_bg_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &btn_bg_color)
+                .unwrap();
+            let btn_hover_color = color_f(0.25, 0.25, 0.25, 1.0);
+            let btn_hover_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &btn_hover_color)
+                .unwrap();
+            let input_bg_color = color_f(0.12, 0.12, 0.12, 1.0);
+            let input_bg_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &input_bg_color)
+                .unwrap();
+            let focus_color = color_f(0.0, 0.47, 0.83, 1.0);
+            let focus_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &focus_color)
+                .unwrap();
+
+            let margin = 10.0_f32;
+            let item_h = 32.0_f32;
+            let mut cy = y + 10.0;
+
+            // 标题 + 活跃连接数（active_count 已在 panel 借用前快照）
+            let title_text: Vec<u16> = format!("SSH 远程管理  ({active_count} 连接中)")
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let title_rect = D2D_RECT_F {
+                left: x + margin,
+                top: cy,
+                right: x + width - margin,
+                bottom: cy + 22.0,
+            };
+            target.DrawText(
+                &title_text,
+                &title_format,
+                &title_rect,
+                text_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+            cy += 28.0;
+
+            if panel.editing {
+                // ===== 编辑/添加表单 =====
+                let fields: [(&str, &str); 5] = [
+                    ("名称", &panel.form_name),
+                    ("主机", &panel.form_host),
+                    ("端口", &panel.form_port),
+                    ("用户名", &panel.form_username),
+                    ("密钥路径", &panel.form_key_path),
+                ];
+                let field_height = 30.0_f32;
+                let form_width = width - margin * 2.0;
+
+                for (i, (label, value)) in fields.iter().enumerate() {
+                    // 认证方式字段特殊处理
+                    let actual_label =
+                        if i == 4 && panel.form_auth_type != crate::ssh::SshAuthType::Key {
+                            "（密钥路径不可用）"
+                        } else {
+                            label
+                        };
+
+                    // 标签
+                    let label_text: Vec<u16> = actual_label.encode_utf16().chain(Some(0)).collect();
+                    let label_rect = D2D_RECT_F {
+                        left: x + margin,
+                        top: cy,
+                        right: x + width - margin,
+                        bottom: cy + 16.0,
+                    };
+                    target.DrawText(
+                        &label_text,
+                        &ui_format,
+                        &label_rect,
+                        &dim_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                    cy += 18.0;
+
+                    // 输入框背景
+                    let input_rect = D2D_RECT_F {
+                        left: x + margin,
+                        top: cy,
+                        right: x + margin + form_width,
+                        bottom: cy + field_height - 4.0,
+                    };
+                    let is_key_field = i == 4;
+                    let draw_input =
+                        !(is_key_field && panel.form_auth_type != crate::ssh::SshAuthType::Key);
+                    if draw_input {
+                        target.FillRectangle(&input_rect, &input_bg_brush);
+                        // 焦点边框
+                        if panel.focus_field == i {
+                            target.DrawRectangle(&input_rect, &focus_brush, 1.0, None);
+                        }
+                        // 值
+                        let val_text: Vec<u16> = value.encode_utf16().chain(Some(0)).collect();
+                        let val_rect = D2D_RECT_F {
+                            left: input_rect.left + 6.0,
+                            top: input_rect.top + 2.0,
+                            right: input_rect.right - 4.0,
+                            bottom: input_rect.bottom - 2.0,
+                        };
+                        target.DrawText(
+                            &val_text,
+                            &label_format,
+                            &val_rect,
+                            text_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                    }
+                    cy += field_height;
+
+                    // 在密钥路径字段后显示认证方式选择
+                    if i == 3 {
+                        let auth_label = match panel.form_auth_type {
+                            crate::ssh::SshAuthType::Agent => "认证: Agent（点击切换）",
+                            crate::ssh::SshAuthType::Key => "认证: 密钥（点击切换）",
+                            // P1-2: 密码认证已禁用，此分支理论上不可达（cycle 不再进入 Password）
+                            crate::ssh::SshAuthType::Password => {
+                                "认证: 密码（已禁用，点击切换为 Agent）"
+                            }
+                        };
+                        let auth_text: Vec<u16> =
+                            auth_label.encode_utf16().chain(Some(0)).collect();
+                        let auth_rect = D2D_RECT_F {
+                            left: x + margin,
+                            top: cy,
+                            right: x + width - margin,
+                            bottom: cy + 20.0,
+                        };
+                        target.FillRectangle(&auth_rect, &btn_bg_brush);
+                        target.DrawText(
+                            &auth_text,
+                            &ui_format,
+                            &auth_rect,
+                            text_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        panel.item_btn_rects.push((
+                            999,
+                            0,
+                            crate::layout::Region::new(
+                                auth_rect.left,
+                                auth_rect.top,
+                                auth_rect.right - auth_rect.left,
+                                auth_rect.bottom - auth_rect.top,
+                            ),
+                        ));
+                        cy += 24.0;
+                    }
+                }
+
+                // 错误消息
+                if let Some(err) = &panel.error_message {
+                    let err_text: Vec<u16> = err.encode_utf16().chain(Some(0)).collect();
+                    let err_rect = D2D_RECT_F {
+                        left: x + margin,
+                        top: cy,
+                        right: x + width - margin,
+                        bottom: cy + 18.0,
+                    };
+                    target.DrawText(
+                        &err_text,
+                        &ui_format,
+                        &err_rect,
+                        &red_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                    cy += 22.0;
+                }
+
+                // 保存 / 取消按钮
+                let btn_w = 80.0_f32;
+                let btn_h = 24.0_f32;
+                let save_rect = D2D_RECT_F {
+                    left: x + margin,
+                    top: cy,
+                    right: x + margin + btn_w,
+                    bottom: cy + btn_h,
+                };
+                let cancel_rect = D2D_RECT_F {
+                    left: x + margin + btn_w + 8.0,
+                    top: cy,
+                    right: x + margin + btn_w * 2.0 + 8.0,
+                    bottom: cy + btn_h,
+                };
+                let save_hover = panel.hover_action == Some((998, 0));
+                target.FillRectangle(
+                    &save_rect,
+                    if save_hover {
+                        &btn_hover_brush
+                    } else {
+                        &btn_bg_brush
+                    },
+                );
+                let save_text: Vec<u16> = "保存".encode_utf16().chain(Some(0)).collect();
+                target.DrawText(
+                    &save_text,
+                    &btn_format,
+                    &save_rect,
+                    text_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+                panel.save_btn_rect = Some(crate::layout::Region::new(
+                    save_rect.left,
+                    save_rect.top,
+                    save_rect.right - save_rect.left,
+                    save_rect.bottom - save_rect.top,
+                ));
+
+                let cancel_hover = panel.hover_action == Some((998, 1));
+                target.FillRectangle(
+                    &cancel_rect,
+                    if cancel_hover {
+                        &btn_hover_brush
+                    } else {
+                        &btn_bg_brush
+                    },
+                );
+                let cancel_text: Vec<u16> = "取消".encode_utf16().chain(Some(0)).collect();
+                target.DrawText(
+                    &cancel_text,
+                    &btn_format,
+                    &cancel_rect,
+                    text_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+                panel.cancel_btn_rect = Some(crate::layout::Region::new(
+                    cancel_rect.left,
+                    cancel_rect.top,
+                    cancel_rect.right - cancel_rect.left,
+                    cancel_rect.bottom - cancel_rect.top,
+                ));
+            } else {
+                // ===== 服务器列表视图（servers 已在 panel 借用前克隆） =====
+                if servers.is_empty() {
+                    let empty_text: Vec<u16> = "暂无 SSH 服务器配置\n点击下方按钮添加"
+                        .encode_utf16()
+                        .chain(Some(0))
+                        .collect();
+                    let empty_rect = D2D_RECT_F {
+                        left: x + margin,
+                        top: cy,
+                        right: x + width - margin,
+                        bottom: cy + 40.0,
+                    };
+                    target.DrawText(
+                        &empty_text,
+                        &ui_format,
+                        &empty_rect,
+                        &dim_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                    cy += 44.0;
+                } else {
+                    for (i, server) in servers.iter().enumerate() {
+                        if cy > y + height {
+                            break;
+                        }
+
+                        // 服务器条目背景
+                        let is_hover = panel.hover == Some(i);
+                        let is_selected = panel.selected == Some(i);
+                        let item_rect = D2D_RECT_F {
+                            left: x + 4.0,
+                            top: cy,
+                            right: x + width - 4.0,
+                            bottom: cy + item_h,
+                        };
+                        if is_selected {
+                            target.FillRectangle(&item_rect, &sel_brush);
+                        } else if is_hover {
+                            target.FillRectangle(&item_rect, &hover_brush);
+                        }
+
+                        // 连接状态指示灯
+                        let dot_x = x + margin;
+                        let dot_y = cy + item_h / 2.0 - 4.0;
+                        let is_connected = connected_states[i];
+                        let is_connecting = connecting_states[i];
+                        let dot_color = if is_connected {
+                            green_color
+                        } else if is_connecting {
+                            color_f(0.85, 0.7, 0.2, 1.0)
+                        } else {
+                            dim_color
+                        };
+                        let dot_brush = self
+                            .render_ctx
+                            .brush_cache
+                            .get_brush(target, &dot_color)
+                            .unwrap();
+                        let ellipse = windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                            point: windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F {
+                                x: dot_x + 4.0,
+                                y: dot_y + 4.0,
+                            },
+                            radiusX: 4.0,
+                            radiusY: 4.0,
+                        };
+                        target.FillEllipse(&ellipse, &dot_brush);
+
+                        // 服务器名称 + 主机
+                        let name_text: Vec<u16> = format!(
+                            "{}  ({}@{}:{})",
+                            server.name, server.username, server.host, server.port
+                        )
+                        .encode_utf16()
+                        .chain(Some(0))
+                        .collect();
+                        let name_rect = D2D_RECT_F {
+                            left: x + margin + 16.0,
+                            top: cy + 4.0,
+                            right: x + width - margin - 80.0,
+                            bottom: cy + 20.0,
+                        };
+                        target.DrawText(
+                            &name_text,
+                            &label_format,
+                            &name_rect,
+                            text_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+
+                        // 认证方式
+                        let auth_text: Vec<u16> = match server.auth_type.as_str() {
+                            "key" => format!("🔑 {}", server.key_path),
+                            // P1-2: 密码认证已禁用，加载时已迁移为 agent，此分支仅作兜底
+                            "password" => "密码（已禁用，已迁移为 Agent）".to_string(),
+                            _ => "Agent".to_string(),
+                        }
+                        .encode_utf16()
+                        .chain(Some(0))
+                        .collect();
+                        let auth_rect = D2D_RECT_F {
+                            left: x + margin + 16.0,
+                            top: cy + 18.0,
+                            right: x + width - margin - 80.0,
+                            bottom: cy + 32.0,
+                        };
+                        target.DrawText(
+                            &auth_text,
+                            &ui_format,
+                            &auth_rect,
+                            &dim_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+
+                        // 操作按钮: 连接/断开, 编辑, 删除
+                        let btn_size = 20.0_f32;
+                        let btn_gap = 4.0_f32;
+                        let mut btn_x = x + width - margin - btn_size * 3.0 - btn_gap * 2.0;
+
+                        // 按钮 0: 连接/断开
+                        let connect_label = if is_connected { "⏹" } else { "▶" };
+                        let connect_rect = D2D_RECT_F {
+                            left: btn_x,
+                            top: cy + (item_h - btn_size) / 2.0,
+                            right: btn_x + btn_size,
+                            bottom: cy + (item_h + btn_size) / 2.0,
+                        };
+                        let connect_hover = panel.hover_action == Some((i, 0));
+                        target.FillRectangle(
+                            &connect_rect,
+                            if connect_hover {
+                                &btn_hover_brush
+                            } else {
+                                &btn_bg_brush
+                            },
+                        );
+                        let connect_text: Vec<u16> =
+                            connect_label.encode_utf16().chain(Some(0)).collect();
+                        target.DrawText(
+                            &connect_text,
+                            &btn_format,
+                            &connect_rect,
+                            if is_connected {
+                                &red_brush
+                            } else {
+                                &green_brush
+                            },
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        panel.item_btn_rects.push((
+                            i,
+                            0,
+                            crate::layout::Region::new(
+                                connect_rect.left,
+                                connect_rect.top,
+                                connect_rect.right - connect_rect.left,
+                                connect_rect.bottom - connect_rect.top,
+                            ),
+                        ));
+                        btn_x += btn_size + btn_gap;
+
+                        // 按钮 1: 编辑
+                        let edit_rect = D2D_RECT_F {
+                            left: btn_x,
+                            top: cy + (item_h - btn_size) / 2.0,
+                            right: btn_x + btn_size,
+                            bottom: cy + (item_h + btn_size) / 2.0,
+                        };
+                        let edit_hover = panel.hover_action == Some((i, 1));
+                        target.FillRectangle(
+                            &edit_rect,
+                            if edit_hover {
+                                &btn_hover_brush
+                            } else {
+                                &btn_bg_brush
+                            },
+                        );
+                        let edit_text: Vec<u16> = "✎".encode_utf16().chain(Some(0)).collect();
+                        target.DrawText(
+                            &edit_text,
+                            &btn_format,
+                            &edit_rect,
+                            text_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        panel.item_btn_rects.push((
+                            i,
+                            1,
+                            crate::layout::Region::new(
+                                edit_rect.left,
+                                edit_rect.top,
+                                edit_rect.right - edit_rect.left,
+                                edit_rect.bottom - edit_rect.top,
+                            ),
+                        ));
+                        btn_x += btn_size + btn_gap;
+
+                        // 按钮 2: 删除
+                        let del_rect = D2D_RECT_F {
+                            left: btn_x,
+                            top: cy + (item_h - btn_size) / 2.0,
+                            right: btn_x + btn_size,
+                            bottom: cy + (item_h + btn_size) / 2.0,
+                        };
+                        let del_hover = panel.hover_action == Some((i, 2));
+                        target.FillRectangle(
+                            &del_rect,
+                            if del_hover {
+                                &btn_hover_brush
+                            } else {
+                                &btn_bg_brush
+                            },
+                        );
+                        let del_text: Vec<u16> = "✕".encode_utf16().chain(Some(0)).collect();
+                        target.DrawText(
+                            &del_text,
+                            &btn_format,
+                            &del_rect,
+                            &red_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        panel.item_btn_rects.push((
+                            i,
+                            2,
+                            crate::layout::Region::new(
+                                del_rect.left,
+                                del_rect.top,
+                                del_rect.right - del_rect.left,
+                                del_rect.bottom - del_rect.top,
+                            ),
+                        ));
+
+                        cy += item_h + 2.0;
+                    }
+                }
+
+                // 添加按钮
+                let add_btn_w = width - margin * 2.0;
+                let add_btn_h = 28.0_f32;
+                let add_rect = D2D_RECT_F {
+                    left: x + margin,
+                    top: cy + 8.0,
+                    right: x + margin + add_btn_w,
+                    bottom: cy + 8.0 + add_btn_h,
+                };
+                let add_hover = panel.hover_action == Some((997, 0));
+                target.FillRectangle(
+                    &add_rect,
+                    if add_hover {
+                        &btn_hover_brush
+                    } else {
+                        &btn_bg_brush
+                    },
+                );
+                let add_text: Vec<u16> = "+ 添加服务器".encode_utf16().chain(Some(0)).collect();
+                target.DrawText(
+                    &add_text,
+                    &btn_format,
+                    &add_rect,
+                    text_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+                panel.add_btn_rect = Some(crate::layout::Region::new(
+                    add_rect.left,
+                    add_rect.top,
+                    add_rect.right - add_rect.left,
+                    add_rect.bottom - add_rect.top,
+                ));
+
+                // 底部提示（ssh_connecting 已快照）
+                cy += 8.0 + add_btn_h + 10.0;
+                if ssh_connecting {
+                    let hint_text: Vec<u16> = "正在连接...".encode_utf16().chain(Some(0)).collect();
+                    let hint_rect = D2D_RECT_F {
+                        left: x + margin,
+                        top: cy,
+                        right: x + width - margin,
+                        bottom: cy + 18.0,
+                    };
+                    target.DrawText(
+                        &hint_text,
+                        &ui_format,
+                        &hint_rect,
+                        &dim_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                } else if let Some(err) = &panel.error_message {
+                    let err_text: Vec<u16> = err.encode_utf16().chain(Some(0)).collect();
+                    let err_rect = D2D_RECT_F {
+                        left: x + margin,
+                        top: cy,
+                        right: x + width - margin,
+                        bottom: cy + 18.0,
+                    };
+                    target.DrawText(
+                        &err_text,
+                        &ui_format,
+                        &err_rect,
+                        &red_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
+            }
+
+            // 让 btn_hover_brush 等不被优化掉
+            let _ = (&btn_hover_brush, &hover_brush);
+        }
+    }
+
+    #[allow(dead_code)]
+    fn render_open_tabs_sidebar(
+        &mut self,
+        target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+    ) {
+        unsafe {
+            let label_format = self
+                .render_ctx
+                .text_format_cache
+                .get_format(
+                    12.0,
+                    DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+                    DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
+                    DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
+                )
+                .unwrap();
+            let title_format = self
+                .render_ctx
+                .text_format_cache
+                .get_format(
+                    14.0,
+                    DWRITE_FONT_WEIGHT_BOLD.0 as u32,
+                    DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
+                    DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
+                )
+                .unwrap();
+
+            // 标题
+            let title_text: Vec<u16> = "打开的标签页".encode_utf16().chain(Some(0)).collect();
+            let title_rect = D2D_RECT_F {
+                left: x + 10.0,
+                top: y + 10.0,
+                right: x + width - 10.0,
+                bottom: y + 34.0,
+            };
+            target.DrawText(
+                &title_text,
+                &title_format,
+                &title_rect,
+                text_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+
+            // 分隔线
+            let sep_color = color_f(0.2, 0.2, 0.2, 1.0);
+            let sep_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &sep_color)
+                .unwrap();
+            let sep_rect = D2D_RECT_F {
+                left: x,
+                top: y + 36.0,
+                right: x + width,
+                bottom: y + 37.0,
+            };
+            target.FillRectangle(&sep_rect, &sep_brush);
+
+            self.open_tabs_panel.clear_regions();
+
+            let item_h = 28.0;
+            let close_btn_w = 20.0;
+            let mut cy = y + 44.0;
+            for (idx, tab) in self.tabs.iter().enumerate() {
+                if cy + item_h > y + height {
+                    break;
+                }
+                let is_active = idx == self.active_tab;
+                let is_hover = self.open_tabs_panel.hover_tab == Some(idx);
+
+                let item_bg = if is_active {
+                    color_f(0.16, 0.16, 0.18, 1.0)
+                } else if is_hover {
+                    color_f(0.20, 0.20, 0.22, 1.0)
+                } else {
+                    color_f(0.14, 0.14, 0.14, 1.0)
+                };
+                let item_bg_brush = self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &item_bg)
+                    .unwrap();
+                let item_rect = D2D_RECT_F {
+                    left: x + 4.0,
+                    top: cy,
+                    right: x + width - 4.0,
+                    bottom: cy + item_h,
+                };
+                target.FillRectangle(&item_rect, &item_bg_brush);
+
+                // 文件名
+                let file_name = tab.file_name();
+                let file_text: Vec<u16> = file_name.encode_utf16().chain(Some(0)).collect();
+                let file_text_rect = D2D_RECT_F {
+                    left: x + 10.0,
+                    top: cy,
+                    right: x + width - 10.0 - close_btn_w,
+                    bottom: cy + item_h,
+                };
+                target.DrawText(
+                    &file_text,
+                    &label_format,
+                    &file_text_rect,
+                    text_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+
+                // 关闭按钮
+                let close_x = x + width - 10.0 - close_btn_w;
+                let close_y = cy + (item_h - 14.0) / 2.0;
+                let close_hover = self.open_tabs_panel.hover_close == Some(idx);
+                let close_color = if close_hover {
+                    color_f(1.0, 1.0, 1.0, 1.0)
+                } else {
+                    color_f(0.5, 0.5, 0.5, 1.0)
+                };
+                let close_brush = self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &close_color)
+                    .unwrap();
+                // 画 X
+                let cx = close_x + close_btn_w / 2.0;
+                let cy_c = close_y + 7.0;
+                let _line1 = D2D_RECT_F {
+                    left: cx - 4.0,
+                    top: cy_c - 4.0,
+                    right: cx + 4.0,
+                    bottom: cy_c + 4.0,
+                };
+                let _line2 = D2D_RECT_F {
+                    left: cx - 4.0,
+                    top: cy_c + 4.0,
+                    right: cx + 4.0,
+                    bottom: cy_c - 4.0,
+                };
+                // 简化为小矩形表示关闭按钮区域
+                let close_rect = D2D_RECT_F {
+                    left: close_x,
+                    top: close_y,
+                    right: close_x + close_btn_w,
+                    bottom: close_y + 14.0,
+                };
+                target.DrawText(
+                    &"×".encode_utf16().chain(Some(0)).collect::<Vec<u16>>(),
+                    &label_format,
+                    &close_rect,
+                    &close_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+
+                self.open_tabs_panel.add_tab_region(
+                    idx,
+                    x + 4.0,
+                    cy,
+                    width - 8.0 - close_btn_w,
+                    item_h,
+                );
+                self.open_tabs_panel
+                    .add_close_region(idx, close_x, close_y, close_btn_w, 14.0);
+
+                cy += item_h + 2.0;
+            }
+        }
+    }
+
+    #[allow(dead_code)]
     fn render_settings_sidebar(
         &mut self,
         target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
@@ -3407,22 +4870,77 @@ impl EditorState {
                 )
                 .unwrap();
 
-            // Title
-            let title_text: Vec<u16> = "AI 设置".encode_utf16().chain(Some(0)).collect();
-            let title_rect = D2D_RECT_F {
-                left: x + 10.0,
-                top: y + 10.0,
-                right: x + width - 10.0,
-                bottom: y + 34.0,
-            };
-            target.DrawText(
-                &title_text,
-                &title_format,
-                &title_rect,
-                text_brush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
+            // 标签页栏
+            let tabs = crate::settings::SettingsTab::ALL;
+            let tab_bar_h = 30.0;
+            let tab_w = width / tabs.len() as f32;
+            for (i, tab) in tabs.iter().enumerate() {
+                let tab_x = x + i as f32 * tab_w;
+                let is_active = self.settings_panel.active_tab == *tab;
+                let is_hover = self.settings_panel.hover_tab == Some(*tab);
+                let tab_bg = if is_active {
+                    color_f(0.16, 0.16, 0.18, 1.0)
+                } else if is_hover {
+                    color_f(0.20, 0.20, 0.22, 1.0)
+                } else {
+                    color_f(0.14, 0.14, 0.14, 1.0)
+                };
+                let tab_bg_brush = self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &tab_bg)
+                    .unwrap();
+                let tab_rect = D2D_RECT_F {
+                    left: tab_x,
+                    top: y,
+                    right: tab_x + tab_w,
+                    bottom: y + tab_bar_h,
+                };
+                target.FillRectangle(&tab_rect, &tab_bg_brush);
+                // 激活标签底部下划线
+                if is_active {
+                    let accent = color_f(0.0, 0.47, 0.83, 1.0);
+                    let accent_brush = self
+                        .render_ctx
+                        .brush_cache
+                        .get_brush(target, &accent)
+                        .unwrap();
+                    let underline = D2D_RECT_F {
+                        left: tab_x,
+                        top: y + tab_bar_h - 2.0,
+                        right: tab_x + tab_w,
+                        bottom: y + tab_bar_h,
+                    };
+                    target.FillRectangle(&underline, &accent_brush);
+                }
+                let tab_text_color = if is_active {
+                    color_f(1.0, 1.0, 1.0, 1.0)
+                } else {
+                    color_f(0.65, 0.65, 0.65, 1.0)
+                };
+                let tab_text_brush = self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &tab_text_color)
+                    .unwrap();
+                let tab_text: Vec<u16> = tab.label().encode_utf16().chain(Some(0)).collect();
+                let tab_text_rect = D2D_RECT_F {
+                    left: tab_x,
+                    top: y,
+                    right: tab_x + tab_w,
+                    bottom: y + tab_bar_h,
+                };
+                target.DrawText(
+                    &tab_text,
+                    &label_format,
+                    &tab_text_rect,
+                    &tab_text_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+                self.settings_panel
+                    .add_tab_region(*tab, tab_x, y, tab_w, tab_bar_h);
+            }
 
             // Separator
             let sep_color = color_f(0.2, 0.2, 0.2, 1.0);
@@ -3433,22 +4951,104 @@ impl EditorState {
                 .unwrap();
             let sep_rect = D2D_RECT_F {
                 left: x,
-                top: y + 36.0,
+                top: y + tab_bar_h,
                 right: x + width,
-                bottom: y + 37.0,
+                bottom: y + tab_bar_h + 1.0,
             };
             target.FillRectangle(&sep_rect, &sep_brush);
 
             self.settings_panel.clear_regions();
+            // 重新注册标签页区域（clear_regions 已清空）
+            for (i, tab) in tabs.iter().enumerate() {
+                let tab_x = x + i as f32 * tab_w;
+                self.settings_panel
+                    .add_tab_region(*tab, tab_x, y, tab_w, tab_bar_h);
+            }
 
             let margin = 10.0;
             let input_w = width - margin * 2.0;
-            let label_h = 18.0;
-            let input_h = 28.0;
-            let gap = 12.0;
+            let label_h = 16.0;
+            let input_h = 26.0;
+            let gap = 8.0;
 
-            let mut cy = y + 48.0;
+            match self.settings_panel.active_tab {
+                crate::settings::SettingsTab::Ai => {
+                    self.render_ai_settings_fields(
+                        target,
+                        x,
+                        width,
+                        y + tab_bar_h + 12.0,
+                        margin,
+                        input_w,
+                        label_h,
+                        input_h,
+                        gap,
+                        label_format.clone(),
+                        input_format.clone(),
+                        button_format.clone(),
+                        text_brush,
+                    );
+                }
+                crate::settings::SettingsTab::General => {
+                    self.render_general_settings(
+                        target,
+                        x,
+                        width,
+                        y + tab_bar_h + 12.0,
+                        margin,
+                        title_format.clone(),
+                        label_format.clone(),
+                        text_brush,
+                    );
+                }
+                crate::settings::SettingsTab::Appearance => {
+                    self.render_appearance_settings(
+                        target,
+                        x,
+                        width,
+                        y + tab_bar_h + 12.0,
+                        margin,
+                        title_format.clone(),
+                        label_format.clone(),
+                        text_brush,
+                    );
+                }
+                crate::settings::SettingsTab::Remote => {
+                    self.render_remote_settings(
+                        target,
+                        x,
+                        width,
+                        y + tab_bar_h + 12.0,
+                        margin,
+                        title_format.clone(),
+                        label_format.clone(),
+                        text_brush,
+                    );
+                }
+            }
+        }
+    }
 
+    /// 渲染 AI 接口设置字段（provider / key / url / model / 保存 / 测试连接）
+    #[allow(dead_code)]
+    fn render_ai_settings_fields(
+        &mut self,
+        target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+        x: f32,
+        width: f32,
+        start_y: f32,
+        margin: f32,
+        input_w: f32,
+        label_h: f32,
+        input_h: f32,
+        gap: f32,
+        label_format: IDWriteTextFormat,
+        input_format: IDWriteTextFormat,
+        button_format: IDWriteTextFormat,
+        text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+    ) {
+        let mut cy = start_y;
+        unsafe {
             // Provider
             let provider_label: Vec<u16> = "Provider (openai/claude/kimi/azure/custom)"
                 .encode_utf16()
@@ -4032,6 +5632,368 @@ impl EditorState {
         }
     }
 
+    /// 渲染“通用”标签页内容（主题 / 字体大小）
+    #[allow(dead_code)]
+    fn render_general_settings(
+        &mut self,
+        target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+        x: f32,
+        width: f32,
+        start_y: f32,
+        margin: f32,
+        title_format: IDWriteTextFormat,
+        label_format: IDWriteTextFormat,
+        text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+    ) {
+        unsafe {
+            let mut cy = start_y;
+            let title_text: Vec<u16> = "通用设置".encode_utf16().chain(Some(0)).collect();
+            let title_rect = D2D_RECT_F {
+                left: x + margin,
+                top: cy,
+                right: x + width - margin,
+                bottom: cy + 22.0,
+            };
+            target.DrawText(
+                &title_text,
+                &title_format,
+                &title_rect,
+                text_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+            cy += 30.0;
+
+            // 主题
+            let theme_label = if self.app_settings.ui.theme.is_empty() {
+                "默认深色".to_string()
+            } else {
+                self.app_settings.ui.theme.clone()
+            };
+            let theme_text: Vec<u16> = format!("主题: {}", theme_label)
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let theme_rect = D2D_RECT_F {
+                left: x + margin,
+                top: cy,
+                right: x + width - margin,
+                bottom: cy + 18.0,
+            };
+            target.DrawText(
+                &theme_text,
+                &label_format,
+                &theme_rect,
+                text_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+            cy += 26.0;
+
+            // 字体大小
+            let font_size = if self.app_settings.ui.font_size == 0 {
+                14
+            } else {
+                self.app_settings.ui.font_size
+            };
+            let font_text: Vec<u16> = format!("字体大小: {} px", font_size)
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let font_rect = D2D_RECT_F {
+                left: x + margin,
+                top: cy,
+                right: x + width - margin,
+                bottom: cy + 18.0,
+            };
+            target.DrawText(
+                &font_text,
+                &label_format,
+                &font_rect,
+                text_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+            cy += 30.0;
+
+            // 提示
+            let hint_text: Vec<u16> = "更多通用选项将在后续版本提供"
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let hint_color = color_f(0.55, 0.55, 0.55, 1.0);
+            let hint_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &hint_color)
+                .unwrap();
+            let hint_rect = D2D_RECT_F {
+                left: x + margin,
+                top: cy,
+                right: x + width - margin,
+                bottom: cy + 18.0,
+            };
+            target.DrawText(
+                &hint_text,
+                &label_format,
+                &hint_rect,
+                &hint_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+        }
+    }
+
+    /// 渲染“外观”标签页内容（侧边栏 / 密度）
+    #[allow(dead_code)]
+    fn render_appearance_settings(
+        &mut self,
+        target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+        x: f32,
+        width: f32,
+        start_y: f32,
+        margin: f32,
+        title_format: IDWriteTextFormat,
+        label_format: IDWriteTextFormat,
+        text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+    ) {
+        unsafe {
+            let mut cy = start_y;
+            let title_text: Vec<u16> = "外观设置".encode_utf16().chain(Some(0)).collect();
+            let title_rect = D2D_RECT_F {
+                left: x + margin,
+                top: cy,
+                right: x + width - margin,
+                bottom: cy + 22.0,
+            };
+            target.DrawText(
+                &title_text,
+                &title_format,
+                &title_rect,
+                text_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+            cy += 30.0;
+
+            // 侧边栏可见性
+            let sidebar_state = if self.layout.sidebar_visible {
+                "显示"
+            } else {
+                "隐藏"
+            };
+            let sidebar_text: Vec<u16> = format!("侧边栏: {}", sidebar_state)
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let sidebar_rect = D2D_RECT_F {
+                left: x + margin,
+                top: cy,
+                right: x + width - margin,
+                bottom: cy + 18.0,
+            };
+            target.DrawText(
+                &sidebar_text,
+                &label_format,
+                &sidebar_rect,
+                text_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+            cy += 26.0;
+
+            // 活动栏可见性
+            let activity_state = if self.layout.activity_bar_visible {
+                "显示"
+            } else {
+                "隐藏"
+            };
+            let activity_text: Vec<u16> = format!("活动栏: {}", activity_state)
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let activity_rect = D2D_RECT_F {
+                left: x + margin,
+                top: cy,
+                right: x + width - margin,
+                bottom: cy + 18.0,
+            };
+            target.DrawText(
+                &activity_text,
+                &label_format,
+                &activity_rect,
+                text_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+            cy += 26.0;
+
+            // 状态栏可见性
+            let status_state = if self.layout.status_bar_visible {
+                "显示"
+            } else {
+                "隐藏"
+            };
+            let status_text: Vec<u16> = format!("状态栏: {}", status_state)
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let status_rect = D2D_RECT_F {
+                left: x + margin,
+                top: cy,
+                right: x + width - margin,
+                bottom: cy + 18.0,
+            };
+            target.DrawText(
+                &status_text,
+                &label_format,
+                &status_rect,
+                text_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+            cy += 30.0;
+
+            let hint_text: Vec<u16> = "可使用 Ctrl+B 切换侧边栏"
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let hint_color = color_f(0.55, 0.55, 0.55, 1.0);
+            let hint_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &hint_color)
+                .unwrap();
+            let hint_rect = D2D_RECT_F {
+                left: x + margin,
+                top: cy,
+                right: x + width - margin,
+                bottom: cy + 18.0,
+            };
+            target.DrawText(
+                &hint_text,
+                &label_format,
+                &hint_rect,
+                &hint_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+        }
+    }
+
+    /// 渲染“远程”标签页内容（SSH 主机列表）
+    #[allow(dead_code)]
+    fn render_remote_settings(
+        &mut self,
+        target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+        x: f32,
+        width: f32,
+        start_y: f32,
+        margin: f32,
+        title_format: IDWriteTextFormat,
+        label_format: IDWriteTextFormat,
+        text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+    ) {
+        unsafe {
+            let mut cy = start_y;
+            let title_text: Vec<u16> = "远程设置".encode_utf16().chain(Some(0)).collect();
+            let title_rect = D2D_RECT_F {
+                left: x + margin,
+                top: cy,
+                right: x + width - margin,
+                bottom: cy + 22.0,
+            };
+            target.DrawText(
+                &title_text,
+                &title_format,
+                &title_rect,
+                text_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+            cy += 30.0;
+
+            if self.app_settings.remote.ssh_servers.is_empty() {
+                let empty_text: Vec<u16> =
+                    "暂无已保存的 SSH 服务器\n请在左侧 SSH 远程管理面板中添加"
+                        .encode_utf16()
+                        .chain(Some(0))
+                        .collect();
+                let empty_color = color_f(0.55, 0.55, 0.55, 1.0);
+                let empty_brush = self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &empty_color)
+                    .unwrap();
+                let empty_rect = D2D_RECT_F {
+                    left: x + margin,
+                    top: cy,
+                    right: x + width - margin,
+                    bottom: cy + 36.0,
+                };
+                target.DrawText(
+                    &empty_text,
+                    &label_format,
+                    &empty_rect,
+                    &empty_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+            } else {
+                for server in &self.app_settings.remote.ssh_servers {
+                    let host_text: Vec<u16> = format!(
+                        "• {} ({}@{}:{})",
+                        server.name, server.username, server.host, server.port
+                    )
+                    .encode_utf16()
+                    .chain(Some(0))
+                    .collect();
+                    let host_rect = D2D_RECT_F {
+                        left: x + margin,
+                        top: cy,
+                        right: x + width - margin,
+                        bottom: cy + 18.0,
+                    };
+                    target.DrawText(
+                        &host_text,
+                        &label_format,
+                        &host_rect,
+                        text_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                    cy += 22.0;
+                }
+            }
+
+            cy += 14.0;
+            let hint_text: Vec<u16> = "在左侧 SSH 远程管理面板中添加或编辑服务器"
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let hint_color = color_f(0.55, 0.55, 0.55, 1.0);
+            let hint_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &hint_color)
+                .unwrap();
+            let hint_rect = D2D_RECT_F {
+                left: x + margin,
+                top: cy,
+                right: x + width - margin,
+                bottom: cy + 18.0,
+            };
+            target.DrawText(
+                &hint_text,
+                &label_format,
+                &hint_rect,
+                &hint_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+        }
+    }
+
     fn render_tree_nodes(
         &self,
         target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
@@ -4386,10 +6348,11 @@ impl EditorState {
                         } else {
                             0
                         };
-                        let sel_start_x =
-                            x + line_number_width + 5.0 + sel_start_char as f32 * char_width;
-                        let sel_end_x =
-                            x + line_number_width + 5.0 + sel_end_char as f32 * char_width;
+                        // P0-3: 选区高亮 x 减去水平滚动偏移
+                        let sel_start_x = x + line_number_width + 5.0 - self.scroll_x
+                            + sel_start_char as f32 * char_width;
+                        let sel_end_x = x + line_number_width + 5.0 - self.scroll_x
+                            + sel_end_char as f32 * char_width;
                         let sel_rect = D2D_RECT_F {
                             left: sel_start_x,
                             top: line_y,
@@ -4456,13 +6419,29 @@ impl EditorState {
                 );
 
                 // 代码文本（使用缓存的 tokens + DrawText）
+                // 优化：合并相邻同色 token 段，减少 DrawText 调用次数
                 if let Some(line_text) = cached_line {
                     let tokens = &self.cached_tokens[line_idx];
-                    let text_x = x + line_number_width + 5.0;
+                    // P0-3: 应用水平滚动偏移；用 PushAxisAlignedClip 裁剪文本区域，
+                    // 防止横向滚动后文本溢出到行号区域
+                    let text_x = x + line_number_width + 5.0 - self.scroll_x;
+                    let text_clip = D2D_RECT_F {
+                        left: x + line_number_width,
+                        top: line_y,
+                        right: x + width,
+                        bottom: line_y + line_height,
+                    };
+                    target.PushAxisAlignedClip(&text_clip, D2D1_ANTIALIAS_MODE_ALIASED);
 
                     let mut current_byte = 0usize;
                     let mut current_char = 0usize;
                     let mut token_idx = 0;
+
+                    // 当前合并段的起始位置和颜色
+                    let mut seg_start_byte = 0usize;
+                    let mut seg_start_char = 0usize;
+                    let mut seg_color = self.theme.text_default;
+                    let mut seg_active = false;
 
                     while current_byte < line_text.len() {
                         let mut token_color = self.theme.text_default;
@@ -4489,20 +6468,65 @@ impl EditorState {
                             token_len = line_text.len() - current_byte;
                         }
 
-                        let segment = &line_text
-                            [current_byte..(current_byte + token_len).min(line_text.len())];
+                        if !seg_active {
+                            // 开始新段
+                            seg_start_byte = current_byte;
+                            seg_start_char = current_char;
+                            seg_color = token_color;
+                            seg_active = true;
+                        } else if seg_color != token_color {
+                            // 颜色变化：flush 前一段，开始新段
+                            let segment = &line_text[seg_start_byte..current_byte];
+                            if !segment.is_empty() {
+                                let brush = self
+                                    .render_ctx
+                                    .brush_cache
+                                    .get_brush(target, &seg_color)
+                                    .unwrap();
+                                self.text_utf16_buf.clear();
+                                self.text_utf16_buf.extend(segment.encode_utf16());
+                                self.text_utf16_buf.push(0);
+                                let seg_rect = D2D_RECT_F {
+                                    left: text_x + seg_start_char as f32 * char_width,
+                                    top: line_y,
+                                    right: text_x + width,
+                                    bottom: line_y + line_height,
+                                };
+                                target.DrawText(
+                                    &self.text_utf16_buf,
+                                    &code_format,
+                                    &seg_rect,
+                                    &brush,
+                                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                    DWRITE_MEASURING_MODE_NATURAL,
+                                );
+                            }
+                            seg_start_byte = current_byte;
+                            seg_start_char = current_char;
+                            seg_color = token_color;
+                        }
+                        // else: 颜色相同，继续累积当前段（无需 DrawText）
+
+                        current_char += line_text[current_byte..current_byte + token_len]
+                            .chars()
+                            .count();
+                        current_byte += token_len;
+                    }
+
+                    // flush 最后一段
+                    if seg_active {
+                        let segment = &line_text[seg_start_byte..current_byte];
                         if !segment.is_empty() {
                             let brush = self
                                 .render_ctx
                                 .brush_cache
-                                .get_brush(target, &token_color)
+                                .get_brush(target, &seg_color)
                                 .unwrap();
-                            // 复用 UTF-16 缓冲区，避免每 token 分配 Vec<u16>
                             self.text_utf16_buf.clear();
                             self.text_utf16_buf.extend(segment.encode_utf16());
                             self.text_utf16_buf.push(0);
                             let seg_rect = D2D_RECT_F {
-                                left: text_x + current_char as f32 * char_width,
+                                left: text_x + seg_start_char as f32 * char_width,
                                 top: line_y,
                                 right: text_x + width,
                                 bottom: line_y + line_height,
@@ -4515,33 +6539,91 @@ impl EditorState {
                                 D2D1_DRAW_TEXT_OPTIONS_NONE,
                                 DWRITE_MEASURING_MODE_NATURAL,
                             );
-                            // 按字符数推进，而非字节数
-                            current_char += segment.chars().count();
                         }
-
-                        current_byte += token_len;
                     }
+                    // P0-3: 配对 PopAxisAlignedClip，恢复渲染范围
+                    target.PopAxisAlignedClip();
                 }
             }
 
             // 光标：将字节列转换为字符列计算x坐标
-            // 优先使用缓存的行文本，避免重复调用 buffer.get_line()
+            // UI-H04: 使用字符宽度累加而非简单 char count * char_width，
+            // 支持 CJK 等双宽度字符的正确光标定位
             let cursor_char_col = if let Some(text) = self.cached_lines.get(self.cursor_line) {
-                text[..self.cursor_col.min(text.len())].chars().count()
+                let byte_pos = self.cursor_col.min(text.len());
+                text[..byte_pos]
+                    .chars()
+                    .map(|ch| if (ch as u32) > 0x7F { 2 } else { 1 })
+                    .sum::<usize>()
             } else {
                 0
             };
-            let cursor_x = x + line_number_width + 5.0 + cursor_char_col as f32 * char_width;
+            // P0-3: 光标 x 减去水平滚动偏移
+            let cursor_x =
+                x + line_number_width + 5.0 - self.scroll_x + cursor_char_col as f32 * char_width;
             let cursor_y = y + (self.cursor_line.saturating_sub(start_line)) as f32 * line_height
                 - (self.scroll_y % line_height);
+            // UI-L02: 更新 IME 候选窗口位置到光标处
+            self.ime.set_candidate_window_position(
+                (cursor_x * self.dpi_scale) as i32,
+                ((cursor_y + line_height) * self.dpi_scale) as i32,
+            );
             if cursor_y >= y && cursor_y <= y + height {
-                let cursor_rect = D2D_RECT_F {
-                    left: cursor_x,
-                    top: cursor_y,
-                    right: cursor_x + 2.0,
-                    bottom: cursor_y + line_height,
-                };
-                target.FillRectangle(&cursor_rect, &cursor_brush);
+                // P0-2: 若存在 IME 合成串，渲染合成串文本 + 下划线，光标隐藏
+                if let Some(comp) = self.composition.as_ref() {
+                    if !comp.is_empty() {
+                        // 合成串宽度（按字符宽度累加，CJK 字符 2 倍宽）
+                        let comp_char_width: usize = comp
+                            .chars()
+                            .map(|ch| if (ch as u32) > 0x7F { 2 } else { 1 })
+                            .sum();
+                        let comp_pixel_width = comp_char_width as f32 * char_width;
+
+                        // 渲染合成串文本（与代码格式一致）
+                        let comp_utf16: Vec<u16> = comp.encode_utf16().collect();
+                        let comp_rect = D2D_RECT_F {
+                            left: cursor_x,
+                            top: cursor_y,
+                            right: cursor_x + comp_pixel_width + 4.0,
+                            bottom: cursor_y + line_height,
+                        };
+                        target.DrawText(
+                            &comp_utf16,
+                            &code_format,
+                            &comp_rect,
+                            &cursor_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+
+                        // 渲染下划线（光标颜色，距底部 2px，1px 高）
+                        let underline_y = cursor_y + line_height - 2.0;
+                        let underline_rect = D2D_RECT_F {
+                            left: cursor_x,
+                            top: underline_y,
+                            right: cursor_x + comp_pixel_width,
+                            bottom: underline_y + 1.0,
+                        };
+                        target.FillRectangle(&underline_rect, &cursor_brush);
+                    } else {
+                        // 合成串为空时显示普通光标
+                        let cursor_rect = D2D_RECT_F {
+                            left: cursor_x,
+                            top: cursor_y,
+                            right: cursor_x + 2.0,
+                            bottom: cursor_y + line_height,
+                        };
+                        target.FillRectangle(&cursor_rect, &cursor_brush);
+                    }
+                } else {
+                    let cursor_rect = D2D_RECT_F {
+                        left: cursor_x,
+                        top: cursor_y,
+                        right: cursor_x + 2.0,
+                        bottom: cursor_y + line_height,
+                    };
+                    target.FillRectangle(&cursor_rect, &cursor_brush);
+                }
             }
         }
     }
@@ -5124,7 +7206,24 @@ impl EditorState {
 
             // 更新状态栏数据
             let mut status = self.status_bar.clone();
-            status.update_cursor_position(self.cursor_line, self.cursor_col);
+            // P2-1: 状态栏列号显示视觉列（字符数）而非字节偏移
+            let visual_col = self
+                .buffer
+                .get_line(self.cursor_line)
+                .map(|line| {
+                    // 把字节偏移转换为字符索引（对齐到不超出的最大字符边界）
+                    let byte_pos = self.cursor_col.min(line.len());
+                    let mut count = 0usize;
+                    for (i, _) in line.char_indices() {
+                        if i >= byte_pos {
+                            break;
+                        }
+                        count += 1;
+                    }
+                    count
+                })
+                .unwrap_or(self.cursor_col);
+            status.update_cursor_position(self.cursor_line, visual_col);
             status.update_status(&self.status_message);
             let lang_name = match self.language {
                 Language::PlainText => "Plain Text",
@@ -5159,14 +7258,35 @@ impl EditorState {
                 )
                 .unwrap();
 
+            // 确保矢量图标几何已创建（状态栏 Git 分支等需要）
+            self.icons.ensure_created_from_target(target);
+
             // 绘制各区域
             let regions = status.section_regions(width);
             for (i, (rx, _ry, rw, _rh)) in regions.iter().enumerate() {
                 if i < status.sections.len() {
                     let section = &status.sections[i];
+
+                    // 若有前置矢量图标，先绘制并给文本留出空间
+                    let mut text_left = x + rx;
+                    if let Some(icon_kind) = section.icon {
+                        let icon_size = 14.0f32;
+                        let icon_y = y + (height - icon_size) / 2.0;
+                        self.icons.draw(
+                            target,
+                            icon_kind,
+                            x + rx,
+                            icon_y,
+                            icon_size,
+                            icon_size,
+                            &text_brush,
+                        );
+                        text_left += icon_size + 4.0;
+                    }
+
                     let wide: Vec<u16> = section.label.encode_utf16().chain(Some(0)).collect();
                     let text_rect = D2D_RECT_F {
-                        left: x + rx,
+                        left: text_left,
                         top: y + 3.0,
                         right: x + rx + rw,
                         bottom: y + height,
@@ -5359,16 +7479,22 @@ impl EditorState {
             }
 
             // 按钮宽度
-            let btn_width = 46.0;
+            let btn_width = 40.0;
             let btn_height = height;
             let close_x = x + width - btn_width;
             let maximize_x = close_x - btn_width;
             let minimize_x = maximize_x - btn_width;
 
+            // 用户头像按钮（在面板按钮左侧）
+            let user_btn_size = 26.0;
+            let user_btn_x = minimize_x - 28.0 * 3.0 - user_btn_size - 4.0;
+            let user_btn_y = y + (height - user_btn_size) / 2.0;
+
             // 面板切换按钮（在最小化按钮左侧）
-            let panel_btn_width = 32.0;
+            let panel_btn_width = 28.0;
             let right_panel_btn_x = minimize_x - panel_btn_width;
             let bottom_panel_btn_x = right_panel_btn_x - panel_btn_width;
+            let left_sidebar_btn_x = bottom_panel_btn_x - panel_btn_width;
 
             // 在标题栏中间显示当前文件名
             let file_name = self.current_tab().file_name();
@@ -5408,7 +7534,7 @@ impl EditorState {
             let title_rect = D2D_RECT_F {
                 left: menu_end_x + 10.0,
                 top: y,
-                right: bottom_panel_btn_x - 10.0,
+                right: user_btn_x - 10.0,
                 bottom: y + height,
             };
             target.DrawText(
@@ -5506,6 +7632,23 @@ impl EditorState {
                     target.FillRectangle(&hover_rect, brush);
                 }
 
+                // 自定义模式：拖拽中项的半透明高亮覆盖
+                if self.menu_bar.customize_mode && self.menu_bar.drag_index == Some(i) {
+                    let drag_color = color_f(0.4, 0.6, 1.0, 0.45);
+                    let drag_brush = self
+                        .render_ctx
+                        .brush_cache
+                        .get_brush(target, &drag_color)
+                        .unwrap();
+                    let drag_rect = D2D_RECT_F {
+                        left: item_x_pos,
+                        top: y + 2.0,
+                        right: item_x_pos + item_width,
+                        bottom: y + height - 2.0,
+                    };
+                    target.FillRectangle(&drag_rect, &drag_brush);
+                }
+
                 let wide: Vec<u16> = item.label.encode_utf16().chain(Some(0)).collect();
                 let text_rect = D2D_RECT_F {
                     left: item_x_pos,
@@ -5521,6 +7664,41 @@ impl EditorState {
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
+            }
+
+            // 自定义模式：菜单栏拖拽放置指示线（垂直）
+            if self.menu_bar.customize_mode {
+                if let Some(drop_idx) = self.menu_bar.drop_index {
+                    let indicator_x = if drop_idx >= self.menu_bar.items.len() {
+                        // 放在最后一项的右边缘
+                        let last = self.menu_bar.items.len().saturating_sub(1);
+                        self.menu_bar
+                            .item_x_positions
+                            .get(last)
+                            .copied()
+                            .unwrap_or(0.0)
+                            + self.menu_bar.item_widths.get(last).copied().unwrap_or(0.0)
+                    } else {
+                        self.menu_bar
+                            .item_x_positions
+                            .get(drop_idx)
+                            .copied()
+                            .unwrap_or(0.0)
+                    };
+                    let line_color = color_f(1.0, 0.85, 0.2, 0.95);
+                    let line_brush = self
+                        .render_ctx
+                        .brush_cache
+                        .get_brush(target, &line_color)
+                        .unwrap();
+                    let line_rect = D2D_RECT_F {
+                        left: indicator_x - 1.5,
+                        top: y + 2.0,
+                        right: indicator_x + 1.5,
+                        bottom: y + height - 2.0,
+                    };
+                    target.FillRectangle(&line_rect, &line_brush);
+                }
             }
 
             // 最小化按钮
@@ -5645,6 +7823,78 @@ impl EditorState {
                 target.FillRectangle(&dot, &icon_brush);
             }
 
+            // 用户头像按钮
+            let user_btn_hover = self.user_menu.is_open || self.titlebar_hover_button == Some(5);
+            let user_btn_bg_color = if user_btn_hover {
+                color_f(0.25, 0.25, 0.25, 0.80)
+            } else {
+                default_bg
+            };
+            let _user_btn_bg = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &user_btn_bg_color)
+                .unwrap();
+            let _user_btn_rect = D2D_RECT_F {
+                left: user_btn_x,
+                top: user_btn_y,
+                right: user_btn_x + user_btn_size,
+                bottom: user_btn_y + user_btn_size,
+            };
+            // 绘制圆形背景
+            let ellipse = windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                point: windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F {
+                    x: user_btn_x + user_btn_size / 2.0,
+                    y: user_btn_y + user_btn_size / 2.0,
+                },
+                radiusX: user_btn_size / 2.0,
+                radiusY: user_btn_size / 2.0,
+            };
+            let user_avatar_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &color_f(0.0, 0.47, 0.83, 1.0))
+                .unwrap();
+            target.FillEllipse(&ellipse, &user_avatar_brush);
+            // 绘制用户首字母
+            let user_initial = self
+                .user_menu
+                .username
+                .chars()
+                .next()
+                .unwrap_or('U')
+                .to_string();
+            let initial_wide: Vec<u16> = user_initial.encode_utf16().chain(Some(0)).collect();
+            let initial_format = self
+                .render_ctx
+                .text_format_cache
+                .get_format(
+                    14.0,
+                    DWRITE_FONT_WEIGHT_BOLD.0 as u32,
+                    DWRITE_TEXT_ALIGNMENT_CENTER.0 as u32,
+                    DWRITE_PARAGRAPH_ALIGNMENT_CENTER.0 as u32,
+                )
+                .unwrap();
+            let initial_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &color_f(1.0, 1.0, 1.0, 1.0))
+                .unwrap();
+            let initial_rect = D2D_RECT_F {
+                left: user_btn_x,
+                top: user_btn_y,
+                right: user_btn_x + user_btn_size,
+                bottom: user_btn_y + user_btn_size,
+            };
+            target.DrawText(
+                &initial_wide,
+                &initial_format,
+                &initial_rect,
+                &initial_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+
             // 右侧面板切换按钮
             let right_panel_btn_bg = if self.titlebar_hover_button == Some(3) {
                 &hover_min_bg
@@ -5702,7 +7952,7 @@ impl EditorState {
                 bottom: y + btn_height,
             };
             target.FillRectangle(&bottom_panel_btn_rect, &bottom_panel_btn_brush);
-            // 底部面板图标（横条）
+            // 底部面板图标（横条）—— 切换为底部面板的激活状态
             let bottom_panel_icon_brush = if self.layout.bottom_panel_visible {
                 &active_icon_brush
             } else {
@@ -5722,6 +7972,269 @@ impl EditorState {
                 bottom: y + 22.0,
             };
             target.FillRectangle(&bp_rect2, bottom_panel_icon_brush);
+
+            // 左侧侧边栏切换按钮
+            let left_sidebar_btn_bg = if self.titlebar_hover_button == Some(6) {
+                &hover_min_bg
+            } else {
+                &default_bg
+            };
+            let left_sidebar_btn_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, left_sidebar_btn_bg)
+                .unwrap();
+            let left_sidebar_btn_rect = D2D_RECT_F {
+                left: left_sidebar_btn_x,
+                top: y,
+                right: left_sidebar_btn_x + panel_btn_width,
+                bottom: y + btn_height,
+            };
+            target.FillRectangle(&left_sidebar_btn_rect, &left_sidebar_btn_brush);
+            // 左侧侧边栏图标(窄竖条 + 宽方块,表示 activity bar + sidebar)
+            let left_sidebar_icon_brush = if self.layout.sidebar_visible {
+                &active_icon_brush
+            } else {
+                &icon_brush
+            };
+            // 窄竖条(activity bar)
+            let ls_rect1 = D2D_RECT_F {
+                left: left_sidebar_btn_x + 8.0,
+                top: y + 10.0,
+                right: left_sidebar_btn_x + 11.0,
+                bottom: y + height - 10.0,
+            };
+            target.FillRectangle(&ls_rect1, left_sidebar_icon_brush);
+            // 宽方块(sidebar content)
+            let ls_rect2 = D2D_RECT_F {
+                left: left_sidebar_btn_x + 14.0,
+                top: y + 10.0,
+                right: left_sidebar_btn_x + 22.0,
+                bottom: y + height - 10.0,
+            };
+            target.FillRectangle(&ls_rect2, left_sidebar_icon_brush);
+        }
+    }
+
+    fn render_user_menu(
+        &mut self,
+        target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+        x: f32,
+        y: f32,
+    ) {
+        unsafe {
+            let menu_width = self.user_menu.menu_width();
+            let menu_height = self.user_menu.menu_height();
+
+            // 边界检查：确保菜单不超出窗口右边界
+            let max_x = (self.window_width as f32 - menu_width).max(4.0);
+            let menu_x = x.min(max_x);
+
+            // 菜单背景
+            let bg_color = if self.theme.glass_enabled {
+                self.theme.submenu_bg
+            } else {
+                color_f(0.18, 0.18, 0.18, 1.0)
+            };
+            let bg_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &bg_color)
+                .unwrap();
+            let menu_rect = D2D_RECT_F {
+                left: menu_x,
+                top: y,
+                right: menu_x + menu_width,
+                bottom: y + menu_height,
+            };
+
+            // 绘制阴影（右侧和底部）
+            let shadow_color = color_f(0.0, 0.0, 0.0, 0.35);
+            let shadow_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &shadow_color)
+                .unwrap();
+            let shadow_right = D2D_RECT_F {
+                left: menu_rect.right,
+                top: menu_rect.top + 4.0,
+                right: menu_rect.right + 6.0,
+                bottom: menu_rect.bottom + 6.0,
+            };
+            target.FillRectangle(&shadow_right, &shadow_brush);
+            let shadow_bottom = D2D_RECT_F {
+                left: menu_rect.left + 4.0,
+                top: menu_rect.bottom,
+                right: menu_rect.right + 6.0,
+                bottom: menu_rect.bottom + 6.0,
+            };
+            target.FillRectangle(&shadow_bottom, &shadow_brush);
+
+            target.FillRectangle(&menu_rect, &bg_brush);
+
+            // 菜单边框
+            let border_color = color_f(0.3, 0.3, 0.3, 1.0);
+            let border_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &border_color)
+                .unwrap();
+            target.DrawRectangle(&menu_rect, &border_brush, 1.0, None);
+
+            // 保存菜单区域用于点击检测（使用调整后的位置）
+            self.user_menu.menu_rect = Some(crate::layout::Region::new(
+                menu_x,
+                y,
+                menu_width,
+                menu_height,
+            ));
+
+            let text_color = color_f(0.85, 0.85, 0.85, 1.0);
+            let text_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &text_color)
+                .unwrap();
+            let hover_bg = color_f(0.0, 0.47, 0.83, 1.0);
+            let hover_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &hover_bg)
+                .unwrap();
+            let text_format = self
+                .render_ctx
+                .text_format_cache
+                .get_format(
+                    13.0,
+                    DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+                    DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
+                    DWRITE_PARAGRAPH_ALIGNMENT_CENTER.0 as u32,
+                )
+                .unwrap();
+            let shortcut_format = self
+                .render_ctx
+                .text_format_cache
+                .get_format(
+                    12.0,
+                    DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+                    DWRITE_TEXT_ALIGNMENT_TRAILING.0 as u32,
+                    DWRITE_PARAGRAPH_ALIGNMENT_CENTER.0 as u32,
+                )
+                .unwrap();
+
+            // 绘制用户名头部（蓝色背景）
+            let header_height = 40.0;
+            let header_rect = D2D_RECT_F {
+                left: menu_x,
+                top: y,
+                right: menu_x + menu_width,
+                bottom: y + header_height,
+            };
+            target.FillRectangle(&header_rect, &hover_brush);
+            let username_wide: Vec<u16> = self
+                .user_menu
+                .username
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let username_rect = D2D_RECT_F {
+                left: menu_x + 12.0,
+                top: y,
+                right: menu_x + menu_width - 12.0,
+                bottom: y + header_height,
+            };
+            target.DrawText(
+                &username_wide,
+                &text_format,
+                &username_rect,
+                &self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &color_f(1.0, 1.0, 1.0, 1.0))
+                    .unwrap(),
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+
+            // 绘制菜单项
+            let item_height = 32.0;
+            let separator_height = 9.0;
+            let mut current_y = y + header_height;
+
+            for (i, item) in self.user_menu.items.iter().enumerate() {
+                if item.is_separator() {
+                    // 分隔线
+                    let sep_rect = D2D_RECT_F {
+                        left: menu_x + 8.0,
+                        top: current_y + 4.0,
+                        right: menu_x + menu_width - 8.0,
+                        bottom: current_y + 5.0,
+                    };
+                    let sep_color = color_f(0.3, 0.3, 0.3, 1.0);
+                    let sep_brush = self
+                        .render_ctx
+                        .brush_cache
+                        .get_brush(target, &sep_color)
+                        .unwrap();
+                    target.FillRectangle(&sep_rect, &sep_brush);
+                    current_y += separator_height;
+                } else {
+                    let is_hover = self.user_menu.hover_index == Some(i);
+                    if is_hover {
+                        let item_rect = D2D_RECT_F {
+                            left: menu_x + 4.0,
+                            top: current_y,
+                            right: menu_x + menu_width - 4.0,
+                            bottom: current_y + item_height,
+                        };
+                        target.FillRectangle(&item_rect, &hover_brush);
+                    }
+
+                    let label_wide: Vec<u16> = item.label().encode_utf16().chain(Some(0)).collect();
+                    let label_rect = D2D_RECT_F {
+                        left: menu_x + 16.0,
+                        top: current_y,
+                        right: menu_x + menu_width - 80.0,
+                        bottom: current_y + item_height,
+                    };
+                    target.DrawText(
+                        &label_wide,
+                        &text_format,
+                        &label_rect,
+                        &text_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+
+                    // 快捷键
+                    if let Some(shortcut) = item.shortcut() {
+                        let shortcut_wide: Vec<u16> =
+                            shortcut.encode_utf16().chain(Some(0)).collect();
+                        let shortcut_rect = D2D_RECT_F {
+                            left: menu_x + menu_width - 78.0,
+                            top: current_y,
+                            right: menu_x + menu_width - 16.0,
+                            bottom: current_y + item_height,
+                        };
+                        let shortcut_color = color_f(0.6, 0.6, 0.6, 1.0);
+                        let shortcut_brush = self
+                            .render_ctx
+                            .brush_cache
+                            .get_brush(target, &shortcut_color)
+                            .unwrap();
+                        target.DrawText(
+                            &shortcut_wide,
+                            &shortcut_format,
+                            &shortcut_rect,
+                            &shortcut_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                    }
+
+                    current_y += item_height;
+                }
+            }
         }
     }
 
@@ -6007,6 +8520,23 @@ impl EditorState {
                     target.FillRectangle(&hover_rect, &hover_brush);
                 }
 
+                // 自定义模式：拖拽中项的半透明高亮覆盖
+                if self.activity_bar.customize_mode && self.activity_bar.drag_index == Some(i) {
+                    let drag_color = color_f(0.4, 0.6, 1.0, 0.45);
+                    let drag_brush = self
+                        .render_ctx
+                        .brush_cache
+                        .get_brush(target, &drag_color)
+                        .unwrap();
+                    let drag_rect = D2D_RECT_F {
+                        left: x,
+                        top: icon_y,
+                        right: x + width,
+                        bottom: icon_y + icon_size,
+                    };
+                    target.FillRectangle(&drag_rect, &drag_brush);
+                }
+
                 let icon_text: Vec<u16> = item.view.icon().encode_utf16().chain(Some(0)).collect();
                 let icon_rect = D2D_RECT_F {
                     left: x,
@@ -6027,6 +8557,26 @@ impl EditorState {
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
+            }
+
+            // 自定义模式：拖拽放置指示线
+            if self.activity_bar.customize_mode {
+                if let Some(drop_idx) = self.activity_bar.drop_index {
+                    let indicator_y = y + drop_idx as f32 * icon_size;
+                    let line_color = color_f(1.0, 0.85, 0.2, 0.95);
+                    let line_brush = self
+                        .render_ctx
+                        .brush_cache
+                        .get_brush(target, &line_color)
+                        .unwrap();
+                    let line_rect = D2D_RECT_F {
+                        left: x,
+                        top: indicator_y - 1.5,
+                        right: x + width,
+                        bottom: indicator_y + 1.5,
+                    };
+                    target.FillRectangle(&line_rect, &line_brush);
+                }
             }
         }
     }
@@ -6319,6 +8869,9 @@ impl EditorState {
                 )
                 .unwrap();
 
+            // 确保矢量图标几何已创建
+            self.icons.ensure_created_from_target(target);
+
             for i in 0..visible_count {
                 let item_y = y + input_height + 8.0 + (i as f32 * item_height);
                 let is_selected = i == self.command_palette.selected_index;
@@ -6334,9 +8887,26 @@ impl EditorState {
                 }
 
                 if let Some(item) = self.command_palette.get_item(i) {
+                    // 前置矢量图标
+                    let mut text_left = x + 16.0;
+                    if let Some(icon_kind) = item.icon {
+                        let icon_size = 18.0f32;
+                        let icon_y = item_y + (item_height - icon_size) / 2.0;
+                        self.icons.draw(
+                            target,
+                            icon_kind,
+                            x + 16.0,
+                            icon_y,
+                            icon_size,
+                            icon_size,
+                            &text_brush,
+                        );
+                        text_left = x + 16.0 + icon_size + 8.0;
+                    }
+
                     let label_wide: Vec<u16> = item.label.encode_utf16().chain(Some(0)).collect();
                     let label_rect = D2D_RECT_F {
-                        left: x + 16.0,
+                        left: text_left,
                         top: item_y + 4.0,
                         right: x + width - 100.0,
                         bottom: item_y + 22.0,
@@ -6353,7 +8923,7 @@ impl EditorState {
                     if let Some(desc) = &item.description {
                         let desc_wide: Vec<u16> = desc.encode_utf16().chain(Some(0)).collect();
                         let desc_rect = D2D_RECT_F {
-                            left: x + 16.0,
+                            left: text_left,
                             top: item_y + 20.0,
                             right: x + width - 100.0,
                             bottom: item_y + 34.0,

@@ -142,43 +142,48 @@ impl RustLexer {
                 )
             }
             b'"' => {
-                // 字符串或格式化字符串
-                if pos + 1 < bytes.len()
-                    && bytes[pos + 1] == b'"'
-                    && pos + 2 < bytes.len()
-                    && bytes[pos + 2] == b'"'
-                {
-                    let end = skip_raw_string(bytes, pos);
-                    (
-                        LexemeSpan {
-                            start: pos,
-                            len: end - pos,
-                            kind: TokenKind::StringLiteral,
-                            flags: 0,
-                        },
-                        end,
-                    )
-                } else {
-                    let end = skip_string(bytes, pos);
-                    let kind = if bytes.get(pos.wrapping_sub(1)) == Some(&b'r') {
-                        TokenKind::RegexLiteral
-                    } else {
-                        TokenKind::StringLiteral
-                    };
-                    (
-                        LexemeSpan {
-                            start: pos,
-                            len: end - pos,
-                            kind,
-                            flags: 0,
-                        },
-                        end,
-                    )
-                }
+                // 字符串字面量（Rust 没有三引号语法）
+                let end = skip_string(bytes, pos);
+                (
+                    LexemeSpan {
+                        start: pos,
+                        len: end - pos,
+                        kind: TokenKind::StringLiteral,
+                        flags: 0,
+                    },
+                    end,
+                )
             }
             b'\'' => {
                 // 生命周期或字符字面量
-                if pos + 1 < bytes.len()
+                // CORE-H03: 反斜杠后必为转义字符字面量（如 '\n', '\t'），不会误分类为生命周期
+                if pos + 1 < bytes.len() && bytes[pos + 1] == b'\\' {
+                    let end = skip_char(bytes, pos);
+                    (
+                        LexemeSpan {
+                            start: pos,
+                            len: end - pos,
+                            kind: TokenKind::CharLiteral,
+                            flags: 0,
+                        },
+                        end,
+                    )
+                } else if pos + 2 < bytes.len()
+                    && bytes[pos + 1] != b'\''
+                    && bytes[pos + 2] == b'\''
+                {
+                    // 单字符字面量: 'a', 'x', 'z'（格式为 'X'）
+                    let end = skip_char(bytes, pos);
+                    (
+                        LexemeSpan {
+                            start: pos,
+                            len: end - pos,
+                            kind: TokenKind::CharLiteral,
+                            flags: 0,
+                        },
+                        end,
+                    )
+                } else if pos + 1 < bytes.len()
                     && bytes[pos + 1].is_ascii_alphabetic()
                     && bytes[pos + 1].is_ascii_lowercase()
                 {
@@ -492,18 +497,6 @@ fn skip_attribute(bytes: &[u8], pos: usize) -> usize {
         }
     }
     i
-}
-
-fn skip_raw_string(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos + 3;
-    // 查找下一个 """
-    while i + 2 < bytes.len() {
-        if bytes[i] == b'"' && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
-            return i + 3;
-        }
-        i += 1;
-    }
-    bytes.len()
 }
 
 fn skip_string(bytes: &[u8], pos: usize) -> usize {

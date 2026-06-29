@@ -1,4 +1,54 @@
+use std::sync::{Arc, Mutex};
+
 use aether_ai::{AiClient, ChatMessage};
+
+/// 脱敏错误消息，避免泄漏 API 密钥等敏感信息
+/// SEC-C04: 用于 test_connection 路径等所有 UI 错误展示
+/// AI-M04: 扩展覆盖 x-api-key、URL 参数、响应体中的密钥
+pub fn sanitize_error(err: &str) -> String {
+    let mut result = err.to_string();
+    // 移除 Bearer token 模式
+    if result.contains("Bearer ") {
+        if let Some(pos) = result.find("Bearer ") {
+            let start = pos + 7;
+            let end = result[start..]
+                .find(|c: char| c.is_whitespace() || c == '\n' || c == '\r')
+                .map(|p| start + p)
+                .unwrap_or(result.len());
+            if end > start {
+                result.replace_range(start..end, "[REDACTED]");
+            }
+        }
+    }
+    // 移除 x-api-key 头（Claude 格式）
+    if let Some(pos) = result.to_lowercase().find("x-api-key:") {
+        let start = pos + 10;
+        let end = result[start..]
+            .find(|c: char| c == '\n' || c == '\r')
+            .map(|p| start + p)
+            .unwrap_or(result.len());
+        if end > start {
+            result.replace_range(start..end, " [REDACTED]");
+        }
+    }
+    // 移除 Authorization 头中的密钥
+    if let Some(pos) = result.to_lowercase().find("authorization:") {
+        let start = pos + 14;
+        let end = result[start..]
+            .find(|c: char| c == '\n' || c == '\r')
+            .map(|p| start + p)
+            .unwrap_or(result.len());
+        if end > start {
+            result.replace_range(start..end, " [REDACTED]");
+        }
+    }
+    // 限制长度
+    if result.len() > 500 {
+        result.truncate(500);
+        result.push_str("...");
+    }
+    result
+}
 
 /// AI 助手消息
 #[derive(Clone, Debug)]
@@ -91,6 +141,11 @@ pub struct AiPanel {
     pub action_rows: usize,
     /// 上次生成的完整回复（用于追加）
     pub pending_response: String,
+    /// AI-H01: 后台线程异步结果，UI 渲染时轮询此字段
+    #[allow(clippy::type_complexity)]
+    pub background_result: Arc<Mutex<Option<Result<String, String>>>>,
+    /// C-10: 输入框是否聚焦。仅当聚焦时才拦截键盘输入，避免面板可见即劫持编辑器
+    pub input_focused: bool,
 }
 
 impl AiPanel {
@@ -109,6 +164,8 @@ impl AiPanel {
             hover_apply_button: false,
             action_rows: 2,
             pending_response: String::new(),
+            background_result: Arc::new(Mutex::new(None)),
+            input_focused: false,
         }
     }
 
@@ -142,7 +199,7 @@ impl AiPanel {
         ]
     }
 
-    /// 发送消息（同步阻塞，简化实现）
+    /// 发送消息（AI-H01: 非阻塞 — HTTP 调用在后台线程执行，结果通过 background_result 返回）
     pub fn send_message(
         &mut self,
         settings: &aether_shared::settings::AiSettings,
@@ -151,13 +208,43 @@ impl AiPanel {
             return Err("输入为空".to_string());
         }
 
-        let user_input = self.input.clone();
-        self.add_user_message(user_input);
+        // 限制输入长度（M-03）
+        const MAX_INPUT_LEN: usize = 10000;
+        let user_input = if self.input.len() > MAX_INPUT_LEN {
+            let safe_len = self.input.floor_char_boundary(MAX_INPUT_LEN);
+            self.input[..safe_len].to_string()
+        } else {
+            self.input.clone()
+        };
+
+        self.add_user_message(user_input.clone());
         self.input.clear();
         self.is_generating = true;
         self.pending_response.clear();
 
-        let client = AiClient::new(settings);
+        // 限制消息历史长度（M-05: 滑动窗口，保留最近 20 条）
+        const MAX_HISTORY: usize = 20;
+        if self.messages.len() > MAX_HISTORY + 1 {
+            let system_msgs: Vec<AiMessage> = self
+                .messages
+                .iter()
+                .filter(|m| m.role == AiRole::System)
+                .cloned()
+                .collect();
+            let non_system: Vec<AiMessage> = self
+                .messages
+                .iter()
+                .filter(|m| m.role != AiRole::System)
+                .cloned()
+                .collect();
+            let recent_start = non_system.len().saturating_sub(MAX_HISTORY);
+            let recent: Vec<AiMessage> = non_system.into_iter().skip(recent_start).collect();
+            self.messages = system_msgs;
+            self.messages.extend(recent);
+        }
+
+        // AI-H01: 后台线程执行 HTTP 请求，不阻塞 UI 线程
+        let settings = settings.clone();
         let messages: Vec<ChatMessage> = self
             .messages
             .iter()
@@ -168,23 +255,23 @@ impl AiPanel {
                 AiRole::System => ChatMessage::user(m.content.clone()),
             })
             .collect();
+        let result_arc = Arc::clone(&self.background_result);
 
-        match client.chat_completion(&messages) {
-            Ok(response) => {
-                self.add_assistant_message(response.clone());
-                self.is_generating = false;
-                Ok(response)
+        std::thread::spawn(move || {
+            let client = AiClient::new(&settings);
+            let response = match client.chat_completion(&messages) {
+                Ok(resp) => Ok(resp),
+                Err(e) => Err(format!("请求失败: {}", sanitize_error(&e.to_string()))),
+            };
+            if let Ok(mut guard) = result_arc.lock() {
+                *guard = Some(response);
             }
-            Err(e) => {
-                self.is_generating = false;
-                let err_msg = format!("请求失败: {}", e);
-                self.add_assistant_message(err_msg.clone());
-                Err(err_msg)
-            }
-        }
+        });
+
+        Ok("请求已提交".to_string())
     }
 
-    /// 使用快捷操作发送代码
+    /// 使用快捷操作发送代码（AI-H01: 非阻塞版本）
     pub fn send_quick_action(
         &mut self,
         action: AiQuickAction,
@@ -198,26 +285,36 @@ impl AiPanel {
             return Ok(msg);
         }
 
+        // 限制代码长度（M-03）
+        const MAX_CODE_LEN: usize = 50000;
+        let code = if code.len() > MAX_CODE_LEN {
+            let safe_len = code.floor_char_boundary(MAX_CODE_LEN);
+            &code[..safe_len]
+        } else {
+            code
+        };
+
         let prompt = action.build_prompt(code);
         self.add_user_message(format!("[{}]\n{}", action.label(), code));
         self.is_generating = true;
 
-        let client = AiClient::new(settings);
+        // AI-H01: 后台线程执行 HTTP 请求
+        let settings = settings.clone();
         let messages = vec![ChatMessage::user(prompt)];
+        let result_arc = Arc::clone(&self.background_result);
 
-        match client.chat_completion(&messages) {
-            Ok(response) => {
-                self.add_assistant_message(response.clone());
-                self.is_generating = false;
-                Ok(response)
+        std::thread::spawn(move || {
+            let client = AiClient::new(&settings);
+            let response = match client.chat_completion(&messages) {
+                Ok(resp) => Ok(resp),
+                Err(e) => Err(format!("请求失败: {}", sanitize_error(&e.to_string()))),
+            };
+            if let Ok(mut guard) = result_arc.lock() {
+                *guard = Some(response);
             }
-            Err(e) => {
-                self.is_generating = false;
-                let err_msg = format!("请求失败: {}", e);
-                self.add_assistant_message(err_msg.clone());
-                Err(err_msg)
-            }
-        }
+        });
+
+        Ok("请求已提交".to_string())
     }
 
     /// 输入字符
@@ -243,6 +340,37 @@ impl AiPanel {
             content: "你好！我是 AI 助手，可以帮助你解释代码、重构、修复问题、生成测试等。"
                 .to_string(),
         });
+        // 重置后台结果
+        if let Ok(mut guard) = self.background_result.lock() {
+            *guard = None;
+        }
+        self.is_generating = false;
+    }
+
+    /// AI-H01: 轮询后台线程结果，应在渲染循环中调用
+    pub fn check_background_result(&mut self) {
+        if !self.is_generating {
+            return;
+        }
+        // 先取出结果并释放锁，再修改 self
+        let pending = {
+            if let Ok(mut guard) = self.background_result.lock() {
+                guard.take()
+            } else {
+                None
+            }
+        };
+        if let Some(result) = pending {
+            match result {
+                Ok(response) => {
+                    self.add_assistant_message(response);
+                }
+                Err(err_msg) => {
+                    self.add_assistant_message(err_msg);
+                }
+            }
+            self.is_generating = false;
+        }
     }
 
     /// 从最后一条助手消息中提取代码块
@@ -285,6 +413,14 @@ impl AiPanel {
                 }
                 code_content.push_str(line);
             }
+        }
+
+        // AI-L01: 未闭合代码围栏时，将累积内容也加入结果
+        if in_code && !code_content.is_empty() {
+            if !result.is_empty() {
+                result.push('\n');
+            }
+            result.push_str(&code_content);
         }
 
         if !result.is_empty() {

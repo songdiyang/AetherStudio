@@ -66,7 +66,7 @@ impl GitRepository {
                 return Some(content[16..].to_string());
             }
             // 分离 HEAD（detached HEAD）
-            return Some(content[..7].to_string());
+            return Some(content.get(..7).unwrap_or(content).to_string());
         }
         None
     }
@@ -94,9 +94,20 @@ impl GitRepository {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
                     if line.len() >= 3 {
-                        let index_status = line.chars().nth(0).unwrap_or(' ');
-                        let worktree_status = line.chars().nth(1).unwrap_or(' ');
+                        let bytes = line.as_bytes();
+                        // H-29: 使用字节索引获取状态字符，避免多字节 UTF-8 panic
+                        let index_status = bytes.get(0).copied().map(|b| b as char).unwrap_or(' ');
+                        let worktree_status =
+                            bytes.get(1).copied().map(|b| b as char).unwrap_or(' ');
+                        // H-30: 处理重命名文件的箭头标记，取最后一个路径
                         let file_path = &line[3..];
+                        let file_path = if (index_status == 'R' || index_status == 'C')
+                            && file_path.contains(" -> ")
+                        {
+                            file_path.split(" -> ").last().unwrap_or(file_path)
+                        } else {
+                            file_path
+                        };
 
                         let status = match (index_status, worktree_status) {
                             ('A', ' ') | ('A', 'M') | ('A', 'D') => GitFileStatus::Added,
@@ -191,7 +202,7 @@ impl GitCommand {
 
     /// git add <file>
     pub fn add(path: &Path, file: &str) -> Result<String, String> {
-        let (stdout, stderr, success) = Self::exec(path, &["add", file]);
+        let (stdout, stderr, success) = Self::exec(path, &["add", "--", file]);
         if success {
             Ok(stdout)
         } else {
@@ -211,7 +222,7 @@ impl GitCommand {
 
     /// git reset HEAD <file>
     pub fn unstage(path: &Path, file: &str) -> Result<String, String> {
-        let (stdout, stderr, success) = Self::exec(path, &["reset", "HEAD", file]);
+        let (stdout, stderr, success) = Self::exec(path, &["reset", "HEAD", "--", file]);
         if success {
             Ok(stdout)
         } else {
@@ -261,7 +272,7 @@ impl GitCommand {
 
     /// git checkout -b <branch>
     pub fn create_branch(path: &Path, branch: &str) -> Result<String, String> {
-        let (stdout, stderr, success) = Self::exec(path, &["checkout", "-b", branch]);
+        let (stdout, stderr, success) = Self::exec(path, &["checkout", "-b", "--", branch]);
         if success {
             Ok(stdout)
         } else {
@@ -271,7 +282,7 @@ impl GitCommand {
 
     /// git checkout <branch>
     pub fn switch_branch(path: &Path, branch: &str) -> Result<String, String> {
-        let (stdout, stderr, success) = Self::exec(path, &["checkout", branch]);
+        let (stdout, stderr, success) = Self::exec(path, &["checkout", "--", branch]);
         if success {
             Ok(stdout)
         } else {
@@ -304,9 +315,21 @@ impl GitCommand {
 
     /// git clone <url> <path>
     pub fn clone(url: &str, path: &Path) -> Result<String, String> {
+        // SEC-H04: 校验 clone URL 协议，拒绝危险协议
+        let allowed = url.starts_with("https://")
+            || url.starts_with("http://")
+            || url.starts_with("git@")
+            || url.starts_with("ssh://")
+            || url.starts_with("git://");
+        if !allowed {
+            return Err(format!(
+                "不支持的 clone 协议: {}. 仅允许 https, ssh, git 协议。",
+                url.split("://").next().unwrap_or(url)
+            ));
+        }
         let (stdout, stderr, success) = Self::exec(
             Path::new("."),
-            &["clone", url, path.to_str().unwrap_or(".")],
+            &["clone", "--", url, path.to_str().unwrap_or(".")],
         );
         if success {
             Ok(stdout)

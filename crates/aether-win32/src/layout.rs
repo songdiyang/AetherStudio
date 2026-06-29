@@ -36,7 +36,7 @@ pub enum ActivityBarView {
     Explorer,
     SourceControl,
     Terminal,
-    Settings,
+    RemoteManager,
     AiAssistant,
 }
 
@@ -46,7 +46,7 @@ impl ActivityBarView {
             ActivityBarView::Explorer => "资源管理器",
             ActivityBarView::SourceControl => "源代码管理",
             ActivityBarView::Terminal => "终端",
-            ActivityBarView::Settings => "设置",
+            ActivityBarView::RemoteManager => "SSH 远程管理",
             ActivityBarView::AiAssistant => "AI 助手",
         }
     }
@@ -56,8 +56,41 @@ impl ActivityBarView {
             ActivityBarView::Explorer => "📁",
             ActivityBarView::SourceControl => "🌿",
             ActivityBarView::Terminal => "⌨",
-            ActivityBarView::Settings => "⚙",
+            ActivityBarView::RemoteManager => "🔌",
             ActivityBarView::AiAssistant => "🤖",
+        }
+    }
+
+    /// 稳定字符串标识，用于持久化排序
+    pub fn key(&self) -> &'static str {
+        match self {
+            ActivityBarView::Explorer => "explorer",
+            ActivityBarView::SourceControl => "sourceControl",
+            ActivityBarView::Terminal => "terminal",
+            ActivityBarView::RemoteManager => "remoteManager",
+            ActivityBarView::AiAssistant => "aiAssistant",
+        }
+    }
+
+    /// 默认顺序
+    pub fn default_order() -> Vec<ActivityBarView> {
+        vec![
+            ActivityBarView::Explorer,
+            ActivityBarView::SourceControl,
+            ActivityBarView::RemoteManager,
+        ]
+    }
+
+    /// 从字符串键解析
+    pub fn from_key(key: &str) -> Option<ActivityBarView> {
+        match key {
+            "explorer" => Some(ActivityBarView::Explorer),
+            "sourceControl" => Some(ActivityBarView::SourceControl),
+            "terminal" => None, // 终端已迁移到标题栏按钮
+            "remoteManager" => Some(ActivityBarView::RemoteManager),
+            "openTabs" => Some(ActivityBarView::RemoteManager), // 兼容旧设置
+            "aiAssistant" => None,                              // AI助手已迁移到标题栏按钮
+            _ => None,
         }
     }
 }
@@ -68,7 +101,7 @@ pub enum SidebarContent {
     FileTree,
     SourceControlPanel,
     TerminalPanel,
-    SettingsPanel,
+    RemoteManagerPanel,
     RemoteFileTree,
     AiAssistantPanel,
 }
@@ -79,7 +112,7 @@ impl SidebarContent {
             ActivityBarView::Explorer => SidebarContent::FileTree,
             ActivityBarView::SourceControl => SidebarContent::SourceControlPanel,
             ActivityBarView::Terminal => SidebarContent::TerminalPanel,
-            ActivityBarView::Settings => SidebarContent::SettingsPanel,
+            ActivityBarView::RemoteManager => SidebarContent::RemoteManagerPanel,
             ActivityBarView::AiAssistant => SidebarContent::AiAssistantPanel,
         }
     }
@@ -184,16 +217,17 @@ impl LayoutManager {
 
     /// 计算侧边栏区域
     pub fn sidebar_region(&self) -> Region {
+        // UI-L06: 活动栏隐藏时侧边栏应从 x=0 开始，而非固定偏移 48px
+        let x = if self.activity_bar_visible {
+            self.activity_bar_width
+        } else {
+            0.0
+        };
         if !self.sidebar_visible {
-            return Region::new(
-                self.activity_bar_width,
-                self.top_offset(),
-                0.0,
-                self.content_height(),
-            );
+            return Region::new(x, self.top_offset(), 0.0, self.content_height());
         }
         Region::new(
-            self.activity_bar_width,
+            x,
             self.top_offset(),
             self.sidebar_width,
             self.content_height(),
@@ -262,19 +296,21 @@ impl LayoutManager {
     }
 
     /// 计算底部面板区域
+    /// 底部面板只占据中间编辑器区域（活动栏和侧边栏之间），不覆盖左右侧边栏
     pub fn bottom_panel_region(&self) -> Region {
         if !self.bottom_panel_visible {
             return Region::new(
-                0.0,
+                self.editor_region().x,
                 self.window_height - self.status_bar_height,
-                self.window_width,
+                self.editor_region().width,
                 0.0,
             );
         }
+        let editor = self.editor_region();
         Region::new(
-            0.0,
+            editor.x,
             self.window_height - self.status_bar_height - self.bottom_panel_height,
-            self.window_width,
+            editor.width,
             self.bottom_panel_height,
         )
     }
@@ -379,6 +415,17 @@ impl LayoutManager {
             self.right_panel_width = 300.0;
         } else {
             self.right_panel_width = 0.0;
+        }
+    }
+
+    /// 切换终端面板可见性。
+    /// 终端渲染在底部面板区域，不覆盖主编辑器内容区域。
+    pub fn toggle_terminal_panel(&mut self) {
+        self.bottom_panel_visible = !self.bottom_panel_visible;
+        if self.bottom_panel_visible {
+            self.bottom_panel_height = 200.0;
+        } else {
+            self.bottom_panel_height = 0.0;
         }
     }
 }

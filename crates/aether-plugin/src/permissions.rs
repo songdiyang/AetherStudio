@@ -24,10 +24,23 @@ impl PermissionLevel {
     }
 
     /// 检查是否包含另一级别权限
+    /// 使用显式匹配替代枚举数值比较，避免重排变体导致静默破坏
     pub fn contains(&self, other: PermissionLevel) -> bool {
-        let self_level = *self as u8;
-        let other_level = other as u8;
-        self_level >= other_level
+        match (self, other) {
+            // L4 包含所有权限
+            (PermissionLevel::L4_System, _) => true,
+            // L3 包含 L3/L2/L1
+            (PermissionLevel::L3_Network, PermissionLevel::L3_Network)
+            | (PermissionLevel::L3_Network, PermissionLevel::L2_FileIO)
+            | (PermissionLevel::L3_Network, PermissionLevel::L1_ReadOnly) => true,
+            // L2 包含 L2/L1
+            (PermissionLevel::L2_FileIO, PermissionLevel::L2_FileIO)
+            | (PermissionLevel::L2_FileIO, PermissionLevel::L1_ReadOnly) => true,
+            // L1 仅包含 L1
+            (PermissionLevel::L1_ReadOnly, PermissionLevel::L1_ReadOnly) => true,
+            // 其他组合均不满足
+            _ => false,
+        }
     }
 }
 
@@ -70,7 +83,10 @@ impl PermissionManager {
 
     fn is_expired(grant: &PermissionGrant) -> bool {
         if let Some(expires) = grant.expires_at {
-            std::time::SystemTime::now() > expires
+            // SEC-H06: 检查 expires_at 不能是过去时间（防止"已过期但永久有效"的权限）
+            // 同时也验证 granted_at 不能是未来时间
+            let now = std::time::SystemTime::now();
+            now > expires || grant.granted_at > now
         } else {
             false
         }

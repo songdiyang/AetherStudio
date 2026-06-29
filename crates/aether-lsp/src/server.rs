@@ -1,15 +1,23 @@
 use lsp_types::*;
 use std::collections::HashMap;
-use tokio::process::Child;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::time::timeout;
 
-use crate::transport::{spawn_server, LspTransport};
+use crate::client::LspEvent;
+use crate::transport::{spawn_server, spawn_stderr_drain, LspTransport};
 use crate::types::*;
+
+/// 默认请求超时（秒）。
+///
+/// 大多数 LSP 请求应在 30 秒内完成。initialize 可能更慢，单独设置。
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// initialize 请求超时（秒）。
+const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// 语言服务器实例管理
 /// 负责单个语言服务器的完整生命周期：发现→启动→初始化→运行→关闭
 pub struct LanguageServer {
-    /// 服务器进程
-    _process: Child,
     /// 传输层
     transport: LspTransport,
     /// 服务器配置
@@ -26,18 +34,34 @@ pub struct LanguageServer {
     initialized: bool,
     /// 语言ID（如 "rust", "python"）
     pub language_id: String,
+    /// 事件发送器（向UI层推送诊断等推送通知）
+    /// None 时不转发，但不会丢弃导致循环卡死
+    event_tx: Option<mpsc::UnboundedSender<LspEvent>>,
 }
 
 impl LanguageServer {
     /// 启动并初始化语言服务器
-    pub async fn start(config: ServerConfig, language_id: String) -> std::io::Result<Self> {
+    ///
+    /// `event_tx` 用于转发服务器推送的 notifications（如 diagnostics）到 UI 层。
+    /// 传 None 时通知将被静默忽略但不会阻塞消息泵。
+    pub async fn start(
+        config: ServerConfig,
+        language_id: String,
+        event_tx: Option<mpsc::UnboundedSender<LspEvent>>,
+    ) -> std::io::Result<Self> {
         let mut process = spawn_server(&config).await?;
-        let stdin = process.stdin.take().unwrap();
-        let stdout = process.stdout.take().unwrap();
+        let stdin = process.stdin.take().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Other, "Failed to capture stdin")
+        })?;
+        let stdout = process.stdout.take().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Other, "Failed to capture stdout")
+        })?;
         let transport = LspTransport::new(stdin, stdout);
 
+        // 启动后台 stderr 读取任务，避免子进程 stderr 缓冲区满后阻塞
+        spawn_stderr_drain(process);
+
         let mut server = Self {
-            _process: process,
             transport,
             config: config.clone(),
             capabilities: ServerCapabilitiesCache::default(),
@@ -46,12 +70,140 @@ impl LanguageServer {
             open_documents: HashMap::new(),
             initialized: false,
             language_id,
+            event_tx,
         };
 
         // 发送 initialize 请求
         server.initialize().await?;
 
         Ok(server)
+    }
+
+    /// 序列化参数为 JSON Value，失败时返回 io::Error 而非 panic
+    fn serialize_params<T: serde::Serialize>(params: T) -> std::io::Result<serde_json::Value> {
+        serde_json::to_value(params).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("JSON serialize error: {}", e),
+            )
+        })
+    }
+
+    /// 发送请求并跟踪 pending 状态
+    async fn send_request(
+        &mut self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> std::io::Result<serde_json::Value> {
+        let id = self.id_generator.next();
+        let request = LspMessage::Request(LspRequest {
+            jsonrpc: "2.0".to_string(),
+            id: id.clone(),
+            method: method.to_string(),
+            params,
+        });
+
+        self.transport.send(&request).await?;
+        self.pending_requests.insert(id.clone(), method.to_string());
+        Ok(id)
+    }
+
+    /// 接收并匹配指定 id 的响应，期间处理通知和错误响应。
+    ///
+    /// - 成功响应：反序列化为 T，返回 Ok(Some(T))；result 为 null 时返回 Ok(None)
+    /// - 错误响应：返回 Err(io::Error)，携带 LSP 错误码和消息
+    /// - 通知消息：转发 diagnostics/logMessage 等到 event_tx，避免静默丢失
+    /// - 超时：超过 `timeout` 后返回 Err(io::Error)
+    async fn receive_response<T: serde::de::DeserializeOwned>(
+        &mut self,
+        id: &serde_json::Value,
+        request_timeout: Duration,
+    ) -> std::io::Result<Option<T>> {
+        let fut = async {
+            loop {
+                let message = self.transport.receive().await?;
+                match message {
+                    LspMessage::Response(resp) if resp.id == *id => {
+                        self.pending_requests.remove(&resp.id);
+                        if let Some(err) = resp.error {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                format!("LSP error {}: {}", err.code, err.message),
+                            ));
+                        }
+                        return match resp.result {
+                            Some(val) => {
+                                let parsed = serde_json::from_value(val).map_err(|e| {
+                                    std::io::Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        format!("JSON deserialize error: {}", e),
+                                    )
+                                })?;
+                                Ok(Some(parsed))
+                            }
+                            None => Ok(None),
+                        };
+                    }
+                    LspMessage::Response(resp) => {
+                        // 不属于本次请求的响应（可能是过期请求的回包）
+                        // 记录后丢弃，避免无限循环
+                        self.pending_requests.remove(&resp.id);
+                        tracing::debug!("Dropping orphan LSP response for id={:?}", resp.id);
+                    }
+                    LspMessage::Notification(notif) => {
+                        self.handle_notification(notif);
+                    }
+                    LspMessage::Request(req) => {
+                        // 服务器发起的反向请求（如 workspace/configuration）
+                        // 当前未实现处理，回 error 避免服务器卡死
+                        tracing::debug!("Unhandled server->client request: {}", req.method);
+                    }
+                }
+            }
+        };
+
+        timeout(request_timeout, fut).await.map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "LSP request timed out")
+        })?
+    }
+
+    /// 处理服务器推送的 notification，转发到 UI 层。
+    ///
+    /// 这是修复「通知静默丢失」缺陷的核心：原实现 `_ => {}` 会丢弃所有
+    /// diagnostics、logMessage、showMessage 等推送，导致 UI 永远收不到诊断。
+    fn handle_notification(&self, notif: LspNotification) {
+        match notif.method.as_str() {
+            "textDocument/publishDiagnostics" => {
+                if let Some(tx) = &self.event_tx {
+                    if let Some(params) = notif.params {
+                        if let Ok(p) = serde_json::from_value::<PublishDiagnosticsParams>(params) {
+                            let _ = tx.send(LspEvent::Diagnostics {
+                                uri: p.uri,
+                                diagnostics: p.diagnostics,
+                            });
+                        }
+                    }
+                }
+            }
+            "window/logMessage" => {
+                if let Some(tx) = &self.event_tx {
+                    if let Some(params) = notif.params {
+                        let message = params
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let _ = tx.send(LspEvent::Log {
+                            language_id: self.language_id.clone(),
+                            message,
+                        });
+                    }
+                }
+            }
+            _ => {
+                tracing::trace!("Unhandled LSP notification: {}", notif.method);
+            }
+        }
     }
 
     /// 发送 initialize 请求并等待响应
@@ -215,39 +367,21 @@ impl LanguageServer {
             work_done_progress_params: WorkDoneProgressParams::default(),
         };
 
-        let id = self.id_generator.next();
-        let request = LspMessage::Request(LspRequest {
-            jsonrpc: "2.0".to_string(),
-            id: id.clone(),
-            method: "initialize".to_string(),
-            params: Some(serde_json::to_value(params).unwrap()),
-        });
+        let params_value = Self::serialize_params(params)?;
+        let id = self.send_request("initialize", Some(params_value)).await?;
 
-        self.transport.send(&request).await?;
-        self.pending_requests
-            .insert(id.clone(), "initialize".to_string());
-
-        // 等待 initialize 响应
-        loop {
-            let message = self.transport.receive().await?;
-            match message {
-                LspMessage::Response(resp) if resp.id == id => {
-                    if let Some(result) = resp.result {
-                        let init_result: InitializeResult = serde_json::from_value(result)
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-                        self.cache_capabilities(&init_result.capabilities);
-                    }
-                    break;
-                }
-                _ => {}
-            }
+        // initialize 允许更长超时（服务器首次启动慢）
+        let result: Option<InitializeResult> =
+            self.receive_response(&id, INITIALIZE_TIMEOUT).await?;
+        if let Some(init_result) = result {
+            self.cache_capabilities(&init_result.capabilities);
         }
 
         // 发送 initialized 通知
         let notification = LspMessage::Notification(LspNotification {
             jsonrpc: "2.0".to_string(),
             method: "initialized".to_string(),
-            params: Some(serde_json::to_value(InitializedParams {}).unwrap()),
+            params: Some(Self::serialize_params(InitializedParams {})?),
         });
         self.transport.send(&notification).await?;
         self.initialized = true;
@@ -295,7 +429,7 @@ impl LanguageServer {
         let notification = LspMessage::Notification(LspNotification {
             jsonrpc: "2.0".to_string(),
             method: "textDocument/didOpen".to_string(),
-            params: Some(serde_json::to_value(params).unwrap()),
+            params: Some(Self::serialize_params(params)?),
         });
 
         self.transport.send(&notification).await?;
@@ -322,7 +456,7 @@ impl LanguageServer {
         let notification = LspMessage::Notification(LspNotification {
             jsonrpc: "2.0".to_string(),
             method: "textDocument/didClose".to_string(),
-            params: Some(serde_json::to_value(params).unwrap()),
+            params: Some(Self::serialize_params(params)?),
         });
 
         self.transport.send(&notification).await?;
@@ -349,7 +483,7 @@ impl LanguageServer {
         let notification = LspMessage::Notification(LspNotification {
             jsonrpc: "2.0".to_string(),
             method: "textDocument/didChange".to_string(),
-            params: Some(serde_json::to_value(params).unwrap()),
+            params: Some(Self::serialize_params(params)?),
         });
 
         self.transport.send(&notification).await?;
@@ -382,26 +516,14 @@ impl LanguageServer {
             jsonrpc: "2.0".to_string(),
             id: id.clone(),
             method: "textDocument/completion".to_string(),
-            params: Some(serde_json::to_value(params).unwrap()),
+            params: Some(Self::serialize_params(params)?),
         });
 
         self.transport.send(&request).await?;
         self.pending_requests
             .insert(id.clone(), "textDocument/completion".to_string());
 
-        // 等待响应（简化版：实际应在后台循环中处理）
-        loop {
-            let message = self.transport.receive().await?;
-            match message {
-                LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp
-                        .result
-                        .map(|r| serde_json::from_value(r).unwrap())
-                        .unwrap_or(None));
-                }
-                _ => {}
-            }
-        }
+        self.receive_response(&id, DEFAULT_REQUEST_TIMEOUT).await
     }
 
     /// 请求悬停提示
@@ -423,25 +545,14 @@ impl LanguageServer {
             jsonrpc: "2.0".to_string(),
             id: id.clone(),
             method: "textDocument/hover".to_string(),
-            params: Some(serde_json::to_value(params).unwrap()),
+            params: Some(Self::serialize_params(params)?),
         });
 
         self.transport.send(&request).await?;
         self.pending_requests
             .insert(id.clone(), "textDocument/hover".to_string());
 
-        loop {
-            let message = self.transport.receive().await?;
-            match message {
-                LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp
-                        .result
-                        .map(|r| serde_json::from_value(r).unwrap())
-                        .unwrap_or(None));
-                }
-                _ => {}
-            }
-        }
+        self.receive_response(&id, DEFAULT_REQUEST_TIMEOUT).await
     }
 
     /// 请求跳转到定义
@@ -464,25 +575,14 @@ impl LanguageServer {
             jsonrpc: "2.0".to_string(),
             id: id.clone(),
             method: "textDocument/definition".to_string(),
-            params: Some(serde_json::to_value(params).unwrap()),
+            params: Some(Self::serialize_params(params)?),
         });
 
         self.transport.send(&request).await?;
         self.pending_requests
             .insert(id.clone(), "textDocument/definition".to_string());
 
-        loop {
-            let message = self.transport.receive().await?;
-            match message {
-                LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp
-                        .result
-                        .map(|r| serde_json::from_value(r).unwrap())
-                        .unwrap_or(None));
-                }
-                _ => {}
-            }
-        }
+        self.receive_response(&id, DEFAULT_REQUEST_TIMEOUT).await
     }
 
     /// 优雅关闭服务器
@@ -501,16 +601,9 @@ impl LanguageServer {
 
         self.transport.send(&request).await?;
 
-        // 等待 shutdown 响应
-        loop {
-            let message = self.transport.receive().await?;
-            match message {
-                LspMessage::Response(resp) if resp.id == id => {
-                    break;
-                }
-                _ => {}
-            }
-        }
+        // shutdown 响应通常很快，但给予充足超时
+        let _: Option<serde_json::Value> =
+            self.receive_response(&id, Duration::from_secs(10)).await?;
 
         // 发送 exit 通知
         let notification = LspMessage::Notification(LspNotification {
@@ -568,25 +661,14 @@ impl LanguageServer {
             jsonrpc: "2.0".to_string(),
             id: id.clone(),
             method: "textDocument/references".to_string(),
-            params: Some(serde_json::to_value(params).unwrap()),
+            params: Some(Self::serialize_params(params)?),
         });
 
         self.transport.send(&request).await?;
         self.pending_requests
             .insert(id.clone(), "textDocument/references".to_string());
 
-        loop {
-            let message = self.transport.receive().await?;
-            match message {
-                LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp
-                        .result
-                        .map(|r| serde_json::from_value(r).unwrap())
-                        .unwrap_or(None));
-                }
-                _ => {}
-            }
-        }
+        self.receive_response(&id, DEFAULT_REQUEST_TIMEOUT).await
     }
 
     /// 请求重命名
@@ -610,25 +692,14 @@ impl LanguageServer {
             jsonrpc: "2.0".to_string(),
             id: id.clone(),
             method: "textDocument/rename".to_string(),
-            params: Some(serde_json::to_value(params).unwrap()),
+            params: Some(Self::serialize_params(params)?),
         });
 
         self.transport.send(&request).await?;
         self.pending_requests
             .insert(id.clone(), "textDocument/rename".to_string());
 
-        loop {
-            let message = self.transport.receive().await?;
-            match message {
-                LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp
-                        .result
-                        .map(|r| serde_json::from_value(r).unwrap())
-                        .unwrap_or(None));
-                }
-                _ => {}
-            }
-        }
+        self.receive_response(&id, DEFAULT_REQUEST_TIMEOUT).await
     }
 
     /// 请求代码操作
@@ -655,25 +726,14 @@ impl LanguageServer {
             jsonrpc: "2.0".to_string(),
             id: id.clone(),
             method: "textDocument/codeAction".to_string(),
-            params: Some(serde_json::to_value(params).unwrap()),
+            params: Some(Self::serialize_params(params)?),
         });
 
         self.transport.send(&request).await?;
         self.pending_requests
             .insert(id.clone(), "textDocument/codeAction".to_string());
 
-        loop {
-            let message = self.transport.receive().await?;
-            match message {
-                LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp
-                        .result
-                        .map(|r| serde_json::from_value(r).unwrap())
-                        .unwrap_or(None));
-                }
-                _ => {}
-            }
-        }
+        self.receive_response(&id, DEFAULT_REQUEST_TIMEOUT).await
     }
 
     /// 请求格式化
@@ -693,25 +753,14 @@ impl LanguageServer {
             jsonrpc: "2.0".to_string(),
             id: id.clone(),
             method: "textDocument/formatting".to_string(),
-            params: Some(serde_json::to_value(params).unwrap()),
+            params: Some(Self::serialize_params(params)?),
         });
 
         self.transport.send(&request).await?;
         self.pending_requests
             .insert(id.clone(), "textDocument/formatting".to_string());
 
-        loop {
-            let message = self.transport.receive().await?;
-            match message {
-                LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp
-                        .result
-                        .map(|r| serde_json::from_value(r).unwrap())
-                        .unwrap_or(None));
-                }
-                _ => {}
-            }
-        }
+        self.receive_response(&id, DEFAULT_REQUEST_TIMEOUT).await
     }
 
     /// 是否支持查找引用
@@ -760,25 +809,14 @@ impl LanguageServer {
             jsonrpc: "2.0".to_string(),
             id: id.clone(),
             method: "textDocument/semanticTokens/full".to_string(),
-            params: Some(serde_json::to_value(params).unwrap()),
+            params: Some(Self::serialize_params(params)?),
         });
 
         self.transport.send(&request).await?;
         self.pending_requests
             .insert(id.clone(), "textDocument/semanticTokens/full".to_string());
 
-        loop {
-            let message = self.transport.receive().await?;
-            match message {
-                LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp
-                        .result
-                        .map(|r| serde_json::from_value(r).unwrap())
-                        .unwrap_or(None));
-                }
-                _ => {}
-            }
-        }
+        self.receive_response(&id, DEFAULT_REQUEST_TIMEOUT).await
     }
 
     /// 请求语义令牌delta更新
@@ -799,7 +837,7 @@ impl LanguageServer {
             jsonrpc: "2.0".to_string(),
             id: id.clone(),
             method: "textDocument/semanticTokens/full/delta".to_string(),
-            params: Some(serde_json::to_value(params).unwrap()),
+            params: Some(Self::serialize_params(params)?),
         });
 
         self.transport.send(&request).await?;
@@ -808,18 +846,7 @@ impl LanguageServer {
             "textDocument/semanticTokens/full/delta".to_string(),
         );
 
-        loop {
-            let message = self.transport.receive().await?;
-            match message {
-                LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp
-                        .result
-                        .map(|r| serde_json::from_value(r).unwrap())
-                        .unwrap_or(None));
-                }
-                _ => {}
-            }
-        }
+        self.receive_response(&id, DEFAULT_REQUEST_TIMEOUT).await
     }
 
     /// 请求范围语义令牌
@@ -840,25 +867,14 @@ impl LanguageServer {
             jsonrpc: "2.0".to_string(),
             id: id.clone(),
             method: "textDocument/semanticTokens/range".to_string(),
-            params: Some(serde_json::to_value(params).unwrap()),
+            params: Some(Self::serialize_params(params)?),
         });
 
         self.transport.send(&request).await?;
         self.pending_requests
             .insert(id.clone(), "textDocument/semanticTokens/range".to_string());
 
-        loop {
-            let message = self.transport.receive().await?;
-            match message {
-                LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp
-                        .result
-                        .map(|r| serde_json::from_value(r).unwrap())
-                        .unwrap_or(None));
-                }
-                _ => {}
-            }
-        }
+        self.receive_response(&id, DEFAULT_REQUEST_TIMEOUT).await
     }
 
     /// 请求内联提示
@@ -878,25 +894,14 @@ impl LanguageServer {
             jsonrpc: "2.0".to_string(),
             id: id.clone(),
             method: "textDocument/inlayHint".to_string(),
-            params: Some(serde_json::to_value(params).unwrap()),
+            params: Some(Self::serialize_params(params)?),
         });
 
         self.transport.send(&request).await?;
         self.pending_requests
             .insert(id.clone(), "textDocument/inlayHint".to_string());
 
-        loop {
-            let message = self.transport.receive().await?;
-            match message {
-                LspMessage::Response(resp) if resp.id == id => {
-                    return Ok(resp
-                        .result
-                        .map(|r| serde_json::from_value(r).unwrap())
-                        .unwrap_or(None));
-                }
-                _ => {}
-            }
-        }
+        self.receive_response(&id, DEFAULT_REQUEST_TIMEOUT).await
     }
 }
 

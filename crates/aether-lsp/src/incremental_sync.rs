@@ -209,23 +209,24 @@ impl OptimizedDocumentSync {
     }
 
     /// 生成增量变更（从最近一次同步到现在）
+    ///
+    /// `line_index` 必须是当前文档文本对应的行索引，用于将字节偏移转换为 LSP Position。
+    ///
+    /// **注意**：由于多次编辑后旧记录的字节偏移可能已失效，本方法仅在
+    /// 「自上次同步后仅有一次编辑」时保证完全正确。多次编辑场景应改用
+    /// `from_edit_op`（在编辑发生时立即调用）或在每次编辑后重建 line_index。
     pub fn generate_changes_since(
         &self,
         since_version: i32,
+        line_index: &dyn LineIndexProvider,
     ) -> Vec<TextDocumentContentChangeEvent> {
         self.edit_history
             .iter()
             .filter(|r| r.version > since_version)
             .map(|r| TextDocumentContentChangeEvent {
                 range: Some(Range {
-                    start: Position {
-                        line: 0,
-                        character: 0,
-                    },
-                    end: Position {
-                        line: 0,
-                        character: 0,
-                    },
+                    start: line_index.byte_to_position(r.start_byte),
+                    end: line_index.byte_to_position(r.end_byte),
                 }),
                 range_length: Some((r.end_byte - r.start_byte) as u32),
                 text: r.text.clone(),
@@ -395,8 +396,28 @@ mod tests {
         sync.record_edit(0, 0, "fn main() {}".to_string());
         assert_eq!(sync.version(), 1);
 
-        let changes = sync.generate_changes_since(0);
+        // 提供行索引用于将字节偏移转换为 LSP Position
+        let line_index = FastLineIndex::from_text("fn main() {}");
+        let changes = sync.generate_changes_since(0, &line_index);
         assert_eq!(changes.len(), 1);
+        // 验证位置不再是硬编码的 (0,0)
+        let change = &changes[0];
+        assert!(change.range.is_some());
+        let range = change.range.unwrap();
+        assert_eq!(
+            range.start,
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(
+            range.end,
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
     }
 
     #[test]

@@ -136,6 +136,10 @@ pub struct IncrementalLexerManager {
     current_file: Option<String>,
 }
 
+/// P4-6 补充: 缓存文件最大数量，避免长时间运行后无界增长
+/// （与 TreeSitterHighlighter 的 MAX_HIGHLIGHTER_DOCS 保持一致）
+const MAX_INCREMENTAL_LEXER_FILES: usize = 32;
+
 impl IncrementalLexerManager {
     pub fn new() -> Self {
         Self {
@@ -147,6 +151,10 @@ impl IncrementalLexerManager {
     /// 打开文件，获取或创建增量lexer
     pub fn open_file(&mut self, path: &str, language: Language) -> &mut IncrementalLexer {
         self.current_file = Some(path.to_string());
+        // P4-6 补充: 缓存上限保护，避免打开大量文件后无界增长
+        if self.lexers.len() >= MAX_INCREMENTAL_LEXER_FILES && !self.lexers.contains_key(path) {
+            self.lexers.clear();
+        }
         self.lexers
             .entry(path.to_string())
             .or_insert_with(|| IncrementalLexer::new(language))

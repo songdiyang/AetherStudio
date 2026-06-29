@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -26,6 +27,8 @@ pub struct TerminalPanel {
     child_stdout: Option<Arc<Mutex<std::process::ChildStdout>>>,
     /// 子进程stderr（用于读取错误输出）
     child_stderr: Option<Arc<Mutex<std::process::ChildStderr>>>,
+    /// 子进程句柄（用于终止进程）
+    child_process: Option<std::process::Child>,
     /// 输出接收器（从读取线程接收终端输出）
     output_receiver: Option<mpsc::Receiver<String>>,
     /// 是否运行中
@@ -34,6 +37,8 @@ pub struct TerminalPanel {
     pub cwd: String,
     /// 是否聚焦
     pub focused: bool,
+    /// 输出滚动偏移（从底部算起的行数，0 表示贴底显示最新输出）
+    pub scroll_offset: usize,
 }
 
 impl TerminalPanel {
@@ -48,12 +53,14 @@ impl TerminalPanel {
             child_stdin: None,
             child_stdout: None,
             child_stderr: None,
+            child_process: None,
             output_receiver: None,
             running: false,
             cwd: std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| ".".to_string()),
             focused: false,
+            scroll_offset: 0,
         }
     }
 
@@ -71,6 +78,7 @@ impl TerminalPanel {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .current_dir(&self.cwd)
+            .creation_flags(0x00000200) // CREATE_NEW_PROCESS_GROUP
             .spawn()
             .map_err(|e| format!("启动终端失败: {}", e))?;
 
@@ -81,6 +89,7 @@ impl TerminalPanel {
         self.child_stdin = Some(Arc::new(Mutex::new(stdin)));
         self.child_stdout = Some(Arc::new(Mutex::new(stdout)));
         self.child_stderr = Some(Arc::new(Mutex::new(stderr)));
+        self.child_process = Some(child);
         self.running = true;
 
         // 启动读取线程，使用 channel 传递输出到主线程
@@ -112,10 +121,19 @@ impl TerminalPanel {
 
     /// 发送 Ctrl+C
     pub fn send_interrupt(&mut self) {
-        // 在 Windows 上发送 Ctrl+C 比较复杂
-        // 简化实现：直接重启终端
-        self.stop();
-        let _ = self.start();
+        // H-20: 尝试向子进程发送 Ctrl+C 事件，而非杀死整个 shell
+        // Windows 上使用 GenerateConsoleCtrlEvent 向子进程组发送信号
+        if let Some(ref child) = self.child_process {
+            #[cfg(windows)]
+            {
+                use windows::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_C_EVENT};
+                unsafe {
+                    // SEC-W02: 向子进程组发送 Ctrl+C，而非当前进程组
+                    let pid = child.id();
+                    let _ = GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid);
+                }
+            }
+        }
     }
 
     /// 停止终端
@@ -125,8 +143,23 @@ impl TerminalPanel {
         self.child_stdout = None;
         self.child_stderr = None;
         self.output_receiver = None;
-    }
 
+        // 显式终止子进程，避免孤儿进程泄漏
+        if let Some(mut child) = self.child_process.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+// H-28: 为 TerminalPanel 实现 Drop，确保窗口关闭时子进程被终止
+impl Drop for TerminalPanel {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+impl TerminalPanel {
     /// 从接收器拉取输出（应在主线程每帧调用）
     pub fn flush_output(&mut self) {
         // 先取出 receiver 避免借用冲突
@@ -147,6 +180,10 @@ impl TerminalPanel {
                 self.output_lines.pop_front();
             }
             self.output_lines.push_back(line.to_string());
+        }
+        // 新输出到达后自动滚动到底部（除非用户手动向上滚动浏览历史）
+        if self.scroll_offset > 0 {
+            self.scroll_offset = 0;
         }
     }
 
@@ -206,9 +243,41 @@ impl TerminalPanel {
         self.output_lines.iter().cloned().collect()
     }
 
+    /// 获取指定行数窗口的输出（用于滚动渲染）。
+    /// `visible_lines` 为可显示行数，返回从底部向上偏移 `scroll_offset` 行的窗口。
+    pub fn visible_window(&self, visible_lines: usize) -> Vec<String> {
+        let total = self.output_lines.len();
+        if total == 0 || visible_lines == 0 {
+            return Vec::new();
+        }
+        // 从末尾向前计算窗口结束位置（不含），考虑 scroll_offset
+        let end = total.saturating_sub(self.scroll_offset);
+        let start = end.saturating_sub(visible_lines);
+        self.output_lines
+            .iter()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .cloned()
+            .collect()
+    }
+
+    /// 向上滚动（查看更早的历史输出）
+    pub fn scroll_up(&mut self, lines: usize) {
+        let total = self.output_lines.len();
+        // 最大可滚动到顶部，滚动偏移不能超过 total
+        let max_offset = total;
+        self.scroll_offset = (self.scroll_offset + lines).min(max_offset);
+    }
+
+    /// 向下滚动（回到最新输出）
+    pub fn scroll_down(&mut self, lines: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+    }
+
     /// 清除输出
     pub fn clear(&mut self) {
         self.output_lines.clear();
+        self.scroll_offset = 0;
     }
 }
 

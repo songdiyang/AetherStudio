@@ -6,12 +6,14 @@
 /// 快速计算字节数组中的换行符数量
 ///
 /// 使用 16 字节批量处理（u128），比 8 字节版本快 ~2 倍
+/// CORE-C01: 修复 SWAR 跨字节借位导致的误计 — 使用 has_zero_byte 做快速跳过，
+/// 在有换行符的块内逐字节精确计数，避免 borrow artifact
 pub fn count_newlines_simd(data: &[u8]) -> u32 {
     let mut count = 0u32;
     let len = data.len();
     let mut i = 0;
 
-    // 16 字节对齐批量处理（u128）
+    // 16 字节批量处理（u128）
     while i + 16 <= len {
         let chunk = u128::from_le_bytes([
             data[i],
@@ -33,8 +35,15 @@ pub fn count_newlines_simd(data: &[u8]) -> u32 {
         ]);
 
         let xor_result = chunk ^ 0x0A0A0A0A0A0A0A0A0A0A0A0A0A0A0A0Au128;
-        let is_zero = has_zero_byte_u128(xor_result);
-        count += is_zero.count_ones();
+        // has_zero_byte 仅用于快速检测（可能有 borrow artifact，不能直接 count_ones）
+        if has_zero_byte_u128(xor_result) != 0 {
+            // 块内有换行符 — 逐字节精确计数，避免借位传播误计
+            for j in 0..16 {
+                if data[i + j] == b'\n' {
+                    count += 1;
+                }
+            }
+        }
         i += 16;
     }
 
@@ -51,8 +60,13 @@ pub fn count_newlines_simd(data: &[u8]) -> u32 {
             data[i + 7],
         ]);
         let xor_result = chunk ^ 0x0A0A0A0A0A0A0A0Au64;
-        let is_zero = has_zero_byte(xor_result);
-        count += is_zero.count_ones();
+        if has_zero_byte(xor_result) != 0 {
+            for j in 0..8 {
+                if data[i + j] == b'\n' {
+                    count += 1;
+                }
+            }
+        }
         i += 8;
     }
 
@@ -183,7 +197,7 @@ pub fn skip_whitespace_simd(data: &[u8], start: usize) -> usize {
 
         let is_whitespace = zero_space | zero_tab | zero_cr;
 
-        if is_whitespace != 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFu128 {
+        if is_whitespace != 0x80808080808080808080808080808080u128 {
             // 不是所有字节都是空白，逐个处理
             break;
         }
@@ -214,7 +228,7 @@ pub fn skip_whitespace_simd(data: &[u8], start: usize) -> usize {
 
         let is_whitespace = zero_space | zero_tab | zero_cr;
 
-        if is_whitespace != 0xFFFFFFFFFFFFFFFFu64 {
+        if is_whitespace != 0x8080808080808080u64 {
             break;
         }
 

@@ -1,8 +1,28 @@
-use git2::{Repository, Signature, Time};
+//! Git 仓库管理(通过 shell out 调用系统 `git` 二进制)
+//!
+//! 设计取舍:面向 Windows 开发者,默认已安装 Git for Windows。
+//! 不依赖 libgit2/git2/gix 等库,编译期零 C 依赖,运行期依赖系统 git。
+//! 调用方应先调 [`git_available`] 校验,缺失时引导用户访问 [`GIT_DOWNLOAD_URL`]。
+
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::remote_fs::Result;
-use crate::ssh::SshConfig;
+
+/// Git 官方下载页(用户缺失 git 时引导跳转)
+pub const GIT_DOWNLOAD_URL: &str = "https://git-scm.com/downloads";
+
+/// 校验系统是否安装 git 并在 PATH 中可调用
+///
+/// UI 层应在初始化时调用此函数,返回 false 时提示用户安装 git
+/// 并跳转 [`GIT_DOWNLOAD_URL`]。
+pub fn git_available() -> bool {
+    Command::new("git")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
 
 /// Git 仓库类型
 #[derive(Clone, Debug, PartialEq)]
@@ -17,7 +37,6 @@ pub enum GitRepoType {
 pub struct GitRepoConfig {
     pub url: String,
     pub repo_type: GitRepoType,
-    pub ssh_config: Option<SshConfig>,
     pub local_path: Option<PathBuf>,
 }
 
@@ -37,15 +56,8 @@ impl GitRepoConfig {
         Ok(Self {
             url: url.to_string(),
             repo_type,
-            ssh_config: None,
             local_path: None,
         })
-    }
-
-    /// 设置 SSH 配置
-    pub fn with_ssh_config(mut self, config: SshConfig) -> Self {
-        self.ssh_config = Some(config);
-        self
     }
 
     /// 设置本地路径
@@ -70,6 +82,8 @@ pub enum GitError {
     InvalidRepo(String),
     ConfigError(String),
     AuthenticationError(String),
+    /// 系统 git 未安装或不在 PATH
+    GitNotInstalled,
 }
 
 impl std::fmt::Display for GitError {
@@ -87,135 +101,156 @@ impl std::fmt::Display for GitError {
             GitError::InvalidRepo(msg) => write!(f, "无效仓库: {}", msg),
             GitError::ConfigError(msg) => write!(f, "配置错误: {}", msg),
             GitError::AuthenticationError(msg) => write!(f, "认证失败: {}", msg),
+            GitError::GitNotInstalled => write!(
+                f,
+                "系统未安装 git 或不在 PATH 中,请访问 {} 下载安装",
+                GIT_DOWNLOAD_URL
+            ),
         }
     }
 }
 
 impl std::error::Error for GitError {}
 
-/// Git 仓库管理器
+/// Git 仓库管理器(通过系统 git 二进制实现)
 pub struct GitRepository {
-    repo: Repository,
-    /// 仓库配置（预留字段，当前未使用）
-    #[allow(dead_code)]
+    /// 工作区路径
+    workdir: PathBuf,
+    /// 仓库配置
     config: GitRepoConfig,
 }
 
 impl GitRepository {
     /// 克隆远程仓库
+    ///
+    /// SSH 走系统 `ssh` 二进制,自动用 `~/.ssh/config` 和 ssh-agent。
     pub fn clone(url: &str, path: &Path) -> Result<Self> {
-        let config = GitRepoConfig::from_url(url)?;
+        // 校验 URL 格式(from_url 内部完成),config 由 open 重新构造
+        let _config = GitRepoConfig::from_url(url)?;
 
-        let repo =
-            Repository::clone(url, path).map_err(|e| GitError::CloneFailed(e.to_string()))?;
+        let (stdout, stderr, ok) = Self::run(
+            Path::new("."),
+            &["clone", "--", url, path.to_str().unwrap_or(".")],
+        );
+        if !ok {
+            return Err(GitError::CloneFailed(format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&stderr),
+                String::from_utf8_lossy(&stdout)
+            ))
+            .to_string());
+        }
 
-        Ok(Self { repo, config })
+        // 重新打开以构造 GitRepository
+        Self::open(path)
     }
 
     /// 打开现有仓库
     pub fn open(path: &Path) -> Result<Self> {
-        let repo = Repository::open(path).map_err(|e| GitError::InvalidRepo(e.to_string()))?;
+        // 校验是否为 git 仓库
+        let git_dir = path.join(".git");
+        if !git_dir.exists() {
+            return Err(
+                GitError::InvalidRepo(format!("{} 下未找到 .git 目录", path.display())).to_string(),
+            );
+        }
 
-        let url = repo
-            .remotes()
-            .ok()
-            .and_then(|remotes| {
-                remotes
-                    .iter()
-                    .nth(0)
-                    .and_then(|name| name)
-                    .and_then(|name| repo.find_remote(name).ok())
-                    .and_then(|remote| Some(remote.url().unwrap_or("").to_string()))
+        // 读取 origin 远程 URL(用于推断 repo_type)
+        let (stdout, _, ok) = Self::run(path, &["remote", "get-url", "origin"]);
+        let url = if ok {
+            String::from_utf8_lossy(&stdout).trim().to_string()
+        } else {
+            String::new()
+        };
+
+        let config = if url.is_empty() {
+            GitRepoConfig {
+                url: String::new(),
+                repo_type: GitRepoType::Local,
+                local_path: Some(path.to_path_buf()),
+            }
+        } else {
+            GitRepoConfig::from_url(&url).unwrap_or_else(|_| GitRepoConfig {
+                url,
+                repo_type: GitRepoType::Local,
+                local_path: Some(path.to_path_buf()),
             })
-            .unwrap_or_default();
+        };
 
-        let config = GitRepoConfig::from_url(&url).unwrap_or_else(|_| GitRepoConfig {
-            url,
-            repo_type: GitRepoType::Local,
-            ssh_config: None,
-            local_path: Some(path.to_path_buf()),
-        });
-
-        Ok(Self { repo, config })
+        Ok(Self {
+            workdir: path.to_path_buf(),
+            config,
+        })
     }
 
     /// 获取当前分支名称
+    ///
+    /// 用 `git symbolic-ref --short HEAD`,在 unborn HEAD(空仓库)时也能返回当前分支名。
+    /// detached HEAD 时 symbolic-ref 失败,返回 "detached"。
     pub fn current_branch(&self) -> Result<String> {
-        let head = self.repo.head();
-
-        match head {
-            Ok(head) => {
-                let shorthand = head.shorthand().ok_or("HEAD 未指向任何分支")?;
-                Ok(shorthand.to_string())
-            }
-            Err(e) if e.code() == git2::ErrorCode::UnbornBranch => {
-                // 仓库刚初始化，没有提交，默认返回 master/main
-                Ok("master".to_string())
-            }
-            Err(e) => Err(GitError::StatusFailed(e.to_string()).into()),
+        let (stdout, _, ok) = Self::run(&self.workdir, &["symbolic-ref", "--short", "HEAD"]);
+        if ok {
+            return Ok(String::from_utf8_lossy(&stdout).trim().to_string());
         }
+        // symbolic-ref 失败 = detached HEAD
+        Ok("detached".to_string())
     }
 
     /// 获取仓库状态
     pub fn status(&self) -> Result<GitStatus> {
-        let statuses = self
-            .repo
-            .statuses(None)
-            .map_err(|e| GitError::StatusFailed(e.to_string()))?;
-
+        let branch = self.current_branch()?;
         let mut status = GitStatus {
             is_clean: true,
             staged_files: Vec::new(),
             unstaged_files: Vec::new(),
             untracked_files: Vec::new(),
             conflicts: Vec::new(),
-            branch: self.current_branch()?,
+            branch,
             ahead_behind: None,
         };
 
-        for entry in statuses.iter() {
-            let path = entry.path().unwrap_or("").to_string();
-            let flags = entry.status();
+        // porcelain v1 -z 格式:每条记录以 NUL 分隔,格式 "XY path"
+        let (stdout, stderr, ok) = Self::run(&self.workdir, &["status", "--porcelain=v1", "-z"]);
+        if !ok {
+            return Err(GitError::StatusFailed(format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&stderr),
+                String::from_utf8_lossy(&stdout)
+            ))
+            .to_string());
+        }
+
+        let stdout = String::from_utf8_lossy(&stdout);
+        for entry in stdout.split('\0') {
+            if entry.is_empty() || entry.len() < 3 {
+                continue;
+            }
+
+            let x = entry.as_bytes()[0] as char;
+            let y = entry.as_bytes()[1] as char;
+            let path = entry[3..].to_string();
 
             status.is_clean = false;
 
-            if flags.is_index_new() || flags.is_index_modified() || flags.is_index_deleted() {
-                status.staged_files.push(path.clone());
-            }
+            if x == '?' && y == '?' {
+                status.untracked_files.push(path);
+            } else if x == '!' && y == '!' {
+                // ignored, skip
+            } else {
+                let is_conflict = x == 'U'
+                    || y == 'U'
+                    || (x == 'A' && y == 'A')
+                    || (x == 'D' && y == 'D')
+                    || (x == 'U' && y == 'U');
 
-            if flags.is_wt_new() {
-                status.untracked_files.push(path.clone());
-            } else if flags.is_wt_modified() || flags.is_wt_deleted() {
-                status.unstaged_files.push(path.clone());
-            }
-
-            if flags.is_conflicted() {
-                status.conflicts.push(path);
-            }
-        }
-
-        // 获取领先/落后信息
-        if let Ok(local_branch) = self.repo.head() {
-            if let Some(local_branch_name) = local_branch.shorthand() {
-                if let Ok(local_ref) = self
-                    .repo
-                    .resolve_reference_from_short_name(local_branch_name)
-                {
-                    if let Some(target_oid) = local_ref.target() {
-                        if let Ok(upstream) = self.repo.branch_upstream_name(local_branch_name) {
-                            let upstream_str = std::str::from_utf8(&upstream).map_err(|e| {
-                                GitError::StatusFailed(format!("无法解析分支名: {}", e))
-                            })?;
-                            if let Ok(remote_ref) = self.repo.find_reference(upstream_str) {
-                                if let Some(remote_oid) = remote_ref.target() {
-                                    if let Ok((ahead, behind)) =
-                                        self.repo.graph_ahead_behind(target_oid, remote_oid)
-                                    {
-                                        status.ahead_behind = Some((ahead, behind));
-                                    }
-                                }
-                            }
-                        }
+                if is_conflict {
+                    status.conflicts.push(path);
+                } else {
+                    if x != ' ' && x != '?' {
+                        status.staged_files.push(path.clone());
+                    }
+                    if y != ' ' && y != '?' {
+                        status.unstaged_files.push(path);
                     }
                 }
             }
@@ -224,118 +259,158 @@ impl GitRepository {
         Ok(status)
     }
 
-    /// 拉取远程更改
-    pub fn pull(&self, remote_name: Option<&str>, branch_name: Option<&str>) -> Result<()> {
-        let remote = remote_name.unwrap_or("origin");
-        let binding = self.current_branch()?;
-        let branch = branch_name.unwrap_or(&binding);
+    /// 添加文件到暂存区
+    pub fn add(&self, pathspec: &str) -> Result<()> {
+        let (stdout, stderr, ok) = Self::run(&self.workdir, &["add", "--", pathspec]);
+        if !ok {
+            return Err(GitError::StatusFailed(format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&stderr),
+                String::from_utf8_lossy(&stdout)
+            ))
+            .to_string());
+        }
+        Ok(())
+    }
 
-        let mut remote_obj = self
-            .repo
-            .find_remote(remote)
-            .map_err(|e| GitError::PullFailed(format!("未找到远程: {}", e)))?;
-
-        remote_obj
-            .fetch(&[branch], None, None)
-            .map_err(|e| GitError::FetchFailed(e.to_string()))?;
-
-        let fetch_head = self
-            .repo
-            .find_reference("FETCH_HEAD")
-            .map_err(|e| GitError::FetchFailed(e.to_string()))?;
-
-        let fetch_commit = self
-            .repo
-            .reference_to_annotated_commit(&fetch_head)
-            .map_err(|e| GitError::FetchFailed(e.to_string()))?;
-
-        let head = self
-            .repo
-            .head()
-            .map_err(|e| GitError::PullFailed(e.to_string()))?;
-
-        let _head_commit = self
-            .repo
-            .reference_to_annotated_commit(&head)
-            .map_err(|e| GitError::PullFailed(e.to_string()))?;
-
-        let analysis = self
-            .repo
-            .merge_analysis(&[&fetch_commit])
-            .map_err(|e| GitError::PullFailed(e.to_string()))?;
-
-        if analysis.0.is_up_to_date() {
-            return Ok(());
+    /// 提交更改,返回新 commit 的 full hash
+    pub fn commit(&self, message: &str) -> Result<String> {
+        let (stdout, stderr, ok) = Self::run(&self.workdir, &["commit", "-m", message]);
+        if !ok {
+            return Err(GitError::CommitFailed(format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&stderr),
+                String::from_utf8_lossy(&stdout)
+            ))
+            .to_string());
         }
 
-        if analysis.0.is_fast_forward() {
-            let fetch_commit_obj = self
-                .repo
-                .find_commit(fetch_commit.id())
-                .map_err(|e| GitError::CheckoutFailed(e.to_string()))?;
-            let tree = fetch_commit_obj
-                .tree()
-                .map_err(|e| GitError::CheckoutFailed(e.to_string()))?;
+        // 取新 commit 的 full hash
+        let (stdout, stderr, ok) = Self::run(&self.workdir, &["rev-parse", "HEAD"]);
+        if !ok {
+            return Err(GitError::CommitFailed(format!(
+                "rev-parse HEAD 失败: {}\n{}",
+                String::from_utf8_lossy(&stderr),
+                String::from_utf8_lossy(&stdout)
+            ))
+            .to_string());
+        }
+        Ok(String::from_utf8_lossy(&stdout).trim().to_string())
+    }
 
-            let tree_obj = tree.as_object();
-            self.repo
-                .checkout_tree(tree_obj, None)
-                .map_err(|e| GitError::CheckoutFailed(e.to_string()))?;
+    /// 创建并切换分支(create=true)或切换已有分支(create=false)
+    pub fn checkout_branch(&self, branch_name: &str, create: bool) -> Result<()> {
+        let args: Vec<&str> = if create {
+            vec!["checkout", "-b", branch_name]
+        } else {
+            vec!["checkout", branch_name]
+        };
+        let (stdout, stderr, ok) = Self::run(&self.workdir, &args);
+        if !ok {
+            return Err(GitError::CheckoutFailed(format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&stderr),
+                String::from_utf8_lossy(&stdout)
+            ))
+            .to_string());
+        }
+        Ok(())
+    }
 
-            self.repo
-                .head()
-                .unwrap()
-                .set_target(fetch_commit.id(), "Fast-forward pull")
-                .map_err(|e| GitError::PullFailed(e.to_string()))?;
-        } else if analysis.0.is_normal() {
-            // 执行合并
-            let _merge_result = self
-                .repo
-                .merge(&[&fetch_commit], None, None)
-                .map_err(|e| GitError::MergeFailed(e.to_string()))?;
+    /// 列出所有本地分支
+    pub fn list_branches(&self) -> Result<Vec<String>> {
+        let (stdout, stderr, ok) =
+            Self::run(&self.workdir, &["branch", "--format=%(refname:short)"]);
+        if !ok {
+            return Err(GitError::BranchFailed(format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&stderr),
+                String::from_utf8_lossy(&stdout)
+            ))
+            .to_string());
+        }
+        let branches = String::from_utf8_lossy(&stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        Ok(branches)
+    }
 
-            // 需要提交合并结果
-            let signature = self.create_signature()?;
-            let head_commit_obj = self.repo.head().unwrap().peel_to_commit().unwrap();
-            let fetch_commit_obj = self
-                .repo
-                .find_commit(fetch_commit.id())
-                .map_err(|e| GitError::MergeFailed(e.to_string()))?;
-
-            let mut index = self
-                .repo
-                .merge_commits(&head_commit_obj, &fetch_commit_obj, None)
-                .map_err(|e| GitError::MergeFailed(e.to_string()))?;
-
-            if index.has_conflicts() {
-                return Err(GitError::MergeFailed("存在合并冲突，需要手动解决".to_string()).into());
+    /// 获取提交历史
+    ///
+    /// 格式:`%H%x00%h%x00%an%x00%ae%x00%at%x00%s%x00%B%x1e`
+    /// - %H = full hash, %h = short hash
+    /// - %an = author name, %ae = author email
+    /// - %at = author unix timestamp
+    /// - %s = subject (summary)
+    /// - %B = raw body (full message)
+    /// - %x00 = NUL 字段分隔, %x1e = RS 记录分隔
+    pub fn log(&self, max_count: usize) -> Result<Vec<GitCommit>> {
+        let max_str = max_count.to_string();
+        let format = "%H%x00%h%x00%an%x00%ae%x00%at%x00%s%x00%B%x1e";
+        let (stdout, stderr, ok) = Self::run(
+            &self.workdir,
+            &["log", "-n", &max_str, &format!("--format={}", format)],
+        );
+        if !ok {
+            // 空仓库(无 HEAD 提交)返回空列表,不算错误
+            let err = String::from_utf8_lossy(&stderr);
+            if err.contains("does not have any commits") || err.contains("unknown revision") {
+                return Ok(Vec::new());
             }
-
-            let tree_oid = index
-                .write_tree_to(&self.repo)
-                .map_err(|e| GitError::CommitFailed(e.to_string()))?;
-
-            let tree = self
-                .repo
-                .find_tree(tree_oid)
-                .map_err(|e| GitError::CommitFailed(e.to_string()))?;
-
-            self.repo
-                .commit(
-                    Some("HEAD"),
-                    &signature,
-                    &signature,
-                    &format!("Merge branch '{}' of {}", branch, remote),
-                    &tree,
-                    &[&head_commit_obj, &fetch_commit_obj],
-                )
-                .map_err(|e| GitError::CommitFailed(e.to_string()))?;
-
-            self.repo
-                .cleanup_state()
-                .map_err(|e| GitError::PullFailed(e.to_string()))?;
+            return Err(GitError::StatusFailed(format!(
+                "{}\n{}",
+                err,
+                String::from_utf8_lossy(&stdout)
+            ))
+            .to_string());
         }
 
+        let stdout = String::from_utf8_lossy(&stdout);
+        let mut commits = Vec::new();
+        for record in stdout.split('\x1e') {
+            let record = record.trim_matches('\n');
+            if record.is_empty() {
+                continue;
+            }
+            let fields: Vec<&str> = record.splitn(7, '\0').collect();
+            if fields.len() < 7 {
+                continue;
+            }
+            commits.push(GitCommit {
+                id: fields[0].to_string(),
+                short_id: fields[1].to_string(),
+                author_name: fields[2].to_string(),
+                author_email: fields[3].to_string(),
+                time: fields[4].parse::<i64>().unwrap_or(0),
+                message: fields[5].to_string(),
+                full_message: fields[6].trim_end().to_string(),
+            });
+        }
+        Ok(commits)
+    }
+
+    /// 拉取远程更改(fast-forward only)
+    ///
+    /// 非 fast-forward 时返回错误,符合"normal merge should return error for manual handling"。
+    pub fn pull(&self, remote_name: Option<&str>, branch_name: Option<&str>) -> Result<()> {
+        let mut args = vec!["pull", "--ff-only"];
+        if let Some(r) = remote_name {
+            args.push(r);
+        }
+        if let Some(b) = branch_name {
+            args.push(b);
+        }
+        let (stdout, stderr, ok) = Self::run(&self.workdir, &args);
+        if !ok {
+            return Err(GitError::PullFailed(format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&stderr),
+                String::from_utf8_lossy(&stdout)
+            ))
+            .to_string());
+        }
         Ok(())
     }
 
@@ -346,187 +421,48 @@ impl GitRepository {
         branch_name: Option<&str>,
         force: bool,
     ) -> Result<()> {
-        let remote = remote_name.unwrap_or("origin");
-        let binding = self.current_branch()?;
-        let branch = branch_name.unwrap_or(&binding);
-
-        let mut remote_obj = self
-            .repo
-            .find_remote(remote)
-            .map_err(|e| GitError::PushFailed(format!("未找到远程: {}", e)))?;
-
-        let refspec = format!(
-            "{}refs/heads/{}:refs/heads/{}",
-            if force { "+" } else { "" },
-            branch,
-            branch
-        );
-
-        remote_obj
-            .push(&[&refspec], None)
-            .map_err(|e| GitError::PushFailed(e.to_string()))?;
-
-        Ok(())
-    }
-
-    /// 添加文件到暂存区
-    pub fn add(&self, pathspec: &str) -> Result<()> {
-        let mut index = self
-            .repo
-            .index()
-            .map_err(|e| GitError::StatusFailed(e.to_string()))?;
-
-        index
-            .add_path(Path::new(pathspec))
-            .map_err(|e| GitError::StatusFailed(e.to_string()))?;
-
-        index
-            .write()
-            .map_err(|e| GitError::StatusFailed(e.to_string()))?;
-
-        Ok(())
-    }
-
-    /// 提交更改
-    pub fn commit(&self, message: &str) -> Result<String> {
-        let signature = self.create_signature()?;
-        let mut index = self
-            .repo
-            .index()
-            .map_err(|e| GitError::CommitFailed(e.to_string()))?;
-
-        let tree_oid = index
-            .write_tree()
-            .map_err(|e| GitError::CommitFailed(e.to_string()))?;
-
-        let tree = self
-            .repo
-            .find_tree(tree_oid)
-            .map_err(|e| GitError::CommitFailed(e.to_string()))?;
-
-        let parent_commit = self.repo.head().and_then(|head| head.peel_to_commit()).ok();
-
-        let commit_id = if let Some(parent) = parent_commit {
-            self.repo
-                .commit(
-                    Some("HEAD"),
-                    &signature,
-                    &signature,
-                    message,
-                    &tree,
-                    &[&parent],
-                )
-                .map_err(|e| GitError::CommitFailed(e.to_string()))?
-        } else {
-            self.repo
-                .commit(Some("HEAD"), &signature, &signature, message, &tree, &[])
-                .map_err(|e| GitError::CommitFailed(e.to_string()))?
-        };
-
-        Ok(commit_id.to_string())
-    }
-
-    /// 创建并切换分支
-    pub fn checkout_branch(&self, branch_name: &str, create: bool) -> Result<()> {
-        if create {
-            let commit = self
-                .repo
-                .head()
-                .and_then(|head| head.peel_to_commit())
-                .map_err(|e| GitError::BranchFailed(e.to_string()))?;
-
-            self.repo
-                .branch(branch_name, &commit, false)
-                .map_err(|e| GitError::BranchFailed(e.to_string()))?;
+        let mut args = vec!["push"];
+        if force {
+            args.push("--force");
         }
-
-        let obj = self
-            .repo
-            .revparse_single(&format!("refs/heads/{}", branch_name))
-            .map_err(|e| GitError::CheckoutFailed(e.to_string()))?;
-
-        self.repo
-            .checkout_tree(&obj, None)
-            .map_err(|e| GitError::CheckoutFailed(e.to_string()))?;
-
-        self.repo
-            .set_head(&format!("refs/heads/{}", branch_name))
-            .map_err(|e| GitError::CheckoutFailed(e.to_string()))?;
-
+        if let Some(r) = remote_name {
+            args.push(r);
+        }
+        if let Some(b) = branch_name {
+            args.push(b);
+        }
+        let (stdout, stderr, ok) = Self::run(&self.workdir, &args);
+        if !ok {
+            return Err(GitError::PushFailed(format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&stderr),
+                String::from_utf8_lossy(&stdout)
+            ))
+            .to_string());
+        }
         Ok(())
     }
 
-    /// 列出所有分支
-    pub fn list_branches(&self) -> Result<Vec<String>> {
-        let mut branches = Vec::new();
-
-        let branches_iter = self
-            .repo
-            .branches(None)
-            .map_err(|e| GitError::StatusFailed(e.to_string()))?;
-
-        for branch in branches_iter {
-            if let Ok((branch, _)) = branch {
-                if let Some(name) = branch.name().ok().flatten() {
-                    branches.push(name.to_string());
-                }
-            }
+    /// 在 workdir 下执行 git 命令,返回 (stdout, stderr, success)
+    fn run(workdir: &Path, args: &[&str]) -> (Vec<u8>, Vec<u8>, bool) {
+        match Command::new("git").current_dir(workdir).args(args).output() {
+            Ok(o) => (o.stdout, o.stderr, o.status.success()),
+            Err(e) => (
+                Vec::new(),
+                format!("执行 git 命令失败: {}", e).into_bytes(),
+                false,
+            ),
         }
-
-        Ok(branches)
     }
 
-    /// 获取提交历史
-    pub fn log(&self, max_count: usize) -> Result<Vec<GitCommit>> {
-        let mut revwalk = self
-            .repo
-            .revwalk()
-            .map_err(|e| GitError::StatusFailed(e.to_string()))?;
-
-        revwalk
-            .push_head()
-            .map_err(|e| GitError::StatusFailed(e.to_string()))?;
-
-        let commits: Vec<GitCommit> = revwalk
-            .take(max_count)
-            .filter_map(|id| id.ok())
-            .filter_map(|id| self.repo.find_commit(id).ok())
-            .map(|commit| {
-                let author = commit.author();
-                let message = commit.message().unwrap_or("");
-                let summary = message.lines().next().unwrap_or("");
-
-                GitCommit {
-                    id: commit.id().to_string(),
-                    short_id: commit.id().to_string()[..7].to_string(),
-                    message: summary.to_string(),
-                    full_message: message.to_string(),
-                    author_name: author.name().unwrap_or("").to_string(),
-                    author_email: author.email().unwrap_or("").to_string(),
-                    time: author.when(),
-                }
-            })
-            .collect();
-
-        Ok(commits)
+    /// 获取工作区路径
+    pub fn workdir(&self) -> &Path {
+        &self.workdir
     }
 
-    /// 创建签名
-    fn create_signature(&self) -> Result<Signature<'static>> {
-        // 尝试从 Git 配置获取用户信息
-        let config = self
-            .repo
-            .config()
-            .map_err(|e| GitError::ConfigError(e.to_string()))?;
-
-        let name = config
-            .get_string("user.name")
-            .unwrap_or_else(|_| "Unknown".to_string());
-        let email = config
-            .get_string("user.email")
-            .unwrap_or_else(|_| "unknown@example.com".to_string());
-
-        Ok(Signature::now(&name, &email).map_err(|e| GitError::ConfigError(e.to_string()))?)
+    /// 获取配置
+    pub fn config(&self) -> &GitRepoConfig {
+        &self.config
     }
 }
 
@@ -539,10 +475,10 @@ pub struct GitStatus {
     pub untracked_files: Vec<String>,
     pub conflicts: Vec<String>,
     pub branch: String,
-    pub ahead_behind: Option<(usize, usize)>, // (ahead, behind)
+    pub ahead_behind: Option<(u32, u32)>,
 }
 
-/// Git 提交信息
+/// Git 提交记录
 #[derive(Clone, Debug)]
 pub struct GitCommit {
     pub id: String,
@@ -551,35 +487,6 @@ pub struct GitCommit {
     pub full_message: String,
     pub author_name: String,
     pub author_email: String,
-    pub time: Time,
-}
-
-impl From<GitError> for String {
-    fn from(err: GitError) -> Self {
-        err.to_string()
-    }
-}
-
-/// SSH Git 凭证助手
-pub fn setup_ssh_credentials(config: &SshConfig) -> Result<git2::Cred> {
-    use git2::Cred;
-
-    match &config.auth {
-        crate::ssh::SshAuth::Password(password) => {
-            Cred::userpass_plaintext(&config.username, password)
-                .map_err(|e| GitError::AuthenticationError(e.to_string()).into())
-        }
-        crate::ssh::SshAuth::Key { path, passphrase } => Cred::ssh_key_from_agent(&config.username)
-            .or_else(|_| {
-                Cred::ssh_key(
-                    &config.username,
-                    None,
-                    Path::new(path),
-                    passphrase.as_deref(),
-                )
-            })
-            .map_err(|e| GitError::AuthenticationError(e.to_string()).into()),
-        crate::ssh::SshAuth::Agent => Cred::ssh_key_from_agent(&config.username)
-            .map_err(|e| GitError::AuthenticationError(e.to_string()).into()),
-    }
+    /// Unix 时间戳(秒)
+    pub time: i64,
 }

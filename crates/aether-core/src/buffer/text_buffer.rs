@@ -188,12 +188,21 @@ impl MultiCursorState {
         }
     }
 
+    /// H-05: 返回钳位后的主光标索引，避免外部设置非法值导致越界 panic。
+    /// primary_cursor 字段保持 pub 以兼容现有代码，但所有内部访问都通过此方法。
+    fn primary_idx(&self) -> usize {
+        self.primary_cursor
+            .min(self.cursors.len().saturating_sub(1))
+    }
+
     pub fn primary_cursor(&self) -> &Cursor {
-        &self.cursors[self.primary_cursor]
+        let idx = self.primary_idx();
+        &self.cursors[idx]
     }
 
     pub fn primary_cursor_mut(&mut self) -> &mut Cursor {
-        &mut self.cursors[self.primary_cursor]
+        let idx = self.primary_idx();
+        &mut self.cursors[idx]
     }
 
     pub fn add_cursor(&mut self, cursor: Cursor) {
@@ -203,8 +212,10 @@ impl MultiCursorState {
 
     pub fn clear_secondary_cursors(&mut self) {
         if self.cursors.len() > 1 {
-            let primary = self.cursors[self.primary_cursor];
-            let primary_sel = self.selections[self.primary_cursor];
+            // H-05: 用钳位索引避免越界
+            let idx = self.primary_idx();
+            let primary = self.cursors[idx];
+            let primary_sel = self.selections[idx];
             self.cursors = vec![primary];
             self.selections = vec![primary_sel];
             self.primary_cursor = 0;

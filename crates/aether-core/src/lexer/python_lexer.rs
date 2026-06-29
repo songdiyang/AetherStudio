@@ -60,9 +60,8 @@ impl PythonLexer {
             b'"' => {
                 if pos + 2 < bytes.len() && bytes[pos + 1] == b'"' && bytes[pos + 2] == b'"' {
                     let end = skip_triple_quoted(bytes, pos, b'"');
-                    let kind = if bytes[pos..end].starts_with(b"\"\"\"f")
-                        || bytes[pos..end].starts_with(b"\"\"\"F")
-                    {
+                    // CORE-H05: Python f-string 前缀在引号之前: f"""...""", 不是 """f...
+                    let kind = if pos > 0 && (bytes[pos - 1] == b'f' || bytes[pos - 1] == b'F') {
                         TokenKind::FormatString
                     } else {
                         TokenKind::StringLiteral

@@ -14,6 +14,12 @@ use windows::Win32::Graphics::DirectWrite::{
 /// 预存画笔槽位数量（覆盖最常用的主题颜色）
 const PRECOMPUTED_BRUSH_SLOTS: usize = 16;
 
+/// P4-5: 回退 HashMap 最大条目数，超出时清空重建避免无界增长
+const MAX_BRUSH_CACHE_ENTRIES: usize = 64;
+
+/// P4-5: TextFormatCache 回退 HashMap 最大条目数
+const MAX_TEXT_FORMAT_CACHE_ENTRIES: usize = 64;
+
 /// 画刷缓存 - 避免每帧创建 COM 对象
 ///
 /// 优化策略：
@@ -74,6 +80,10 @@ impl BrushCache {
         }
 
         // 3. 新建并缓存到 HashMap
+        // P4-5: 超过最大条目数时清空回退缓存（简单 LRU 替代方案）
+        if self.brushes.len() >= MAX_BRUSH_CACHE_ENTRIES {
+            self.brushes.clear();
+        }
         let brush = unsafe { target.CreateSolidColorBrush(color, None)? };
         let result = brush.clone();
         self.brushes.insert(key, brush);
@@ -235,6 +245,10 @@ impl TextFormatCache {
         }
 
         // 3. 新建并缓存到 HashMap
+        // P4-5: 超过最大条目数时清空回退缓存（简单 LRU 替代方案）
+        if self.formats.len() >= MAX_TEXT_FORMAT_CACHE_ENTRIES {
+            self.formats.clear();
+        }
         let format = self.create_format_internal(
             font_size,
             font_weight,

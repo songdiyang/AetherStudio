@@ -41,6 +41,7 @@ pub enum CommandId {
     FileNewWindow,
     FileOpen,
     FileOpenFolder,
+    FileCloseWorkspace,
     FileSave,
     FileSaveAs,
     FileExit,
@@ -81,6 +82,7 @@ impl CommandId {
             CommandId::FileNewWindow => "新建窗口",
             CommandId::FileOpen => "打开文件",
             CommandId::FileOpenFolder => "打开文件夹",
+            CommandId::FileCloseWorkspace => "关闭工作区",
             CommandId::FileSave => "保存",
             CommandId::FileSaveAs => "另存为",
             CommandId::FileExit => "退出",
@@ -124,6 +126,16 @@ impl MenuBarItem {
             expanded: false,
         }
     }
+
+    /// 持久化键：去除 "(F)" 等助记符后的纯文本（如 "文件(F)" → "文件"）
+    pub fn key(&self) -> String {
+        self.label
+            .split('(')
+            .next()
+            .unwrap_or(&self.label)
+            .trim()
+            .to_string()
+    }
 }
 
 /// 菜单栏
@@ -137,6 +149,12 @@ pub struct MenuBar {
     pub item_x_positions: Vec<f32>,
     /// 布局是否需要重建（菜单项或 DPI 变化时设为 true）
     pub layout_dirty: bool,
+    /// 自定义模式（长按进入）
+    pub customize_mode: bool,
+    /// 正在拖拽的项索引
+    pub drag_index: Option<usize>,
+    /// 拖拽放置目标索引
+    pub drop_index: Option<usize>,
 }
 
 impl MenuBar {
@@ -152,6 +170,7 @@ impl MenuBar {
                         MenuItem::new("打开文件...", CommandId::FileOpen).with_shortcut("Ctrl+O"),
                         MenuItem::new("打开文件夹...", CommandId::FileOpenFolder)
                             .with_shortcut("Ctrl+K"),
+                        MenuItem::new("关闭工作区", CommandId::FileCloseWorkspace),
                         MenuItem::separator(),
                         MenuItem::new("保存", CommandId::FileSave).with_shortcut("Ctrl+S"),
                         MenuItem::new("另存为...", CommandId::FileSaveAs)
@@ -218,6 +237,9 @@ impl MenuBar {
             item_widths: Vec::new(),
             item_x_positions: Vec::new(),
             layout_dirty: true,
+            customize_mode: false,
+            drag_index: None,
+            drop_index: None,
         }
     }
 
@@ -299,5 +321,91 @@ impl MenuBar {
             }
         }
         None
+    }
+
+    /// 进入自定义模式并开始拖拽指定项
+    pub fn begin_drag(&mut self, index: usize) {
+        self.customize_mode = true;
+        // 进入自定义模式时关闭所有展开的子菜单
+        self.close_all();
+        self.drag_index = Some(index);
+        self.drop_index = Some(index);
+    }
+
+    /// 退出自定义模式
+    pub fn exit_customize(&mut self) {
+        self.customize_mode = false;
+        self.drag_index = None;
+        self.drop_index = None;
+    }
+
+    /// 根据鼠标 x 计算放置目标索引（0..=items.len()）
+    pub fn drop_index_at(&self, x: f32) -> usize {
+        let mut current_x = 0.0;
+        for (i, width) in self.item_widths.iter().enumerate() {
+            let mid = current_x + width / 2.0;
+            if x < mid {
+                return i;
+            }
+            current_x += width;
+        }
+        self.items.len()
+    }
+
+    /// 执行重排：将 drag_index 移到 drop_index 位置
+    pub fn reorder(&mut self) {
+        if let (Some(from), Some(to)) = (self.drag_index, self.drop_index) {
+            if from < self.items.len() && to <= self.items.len() && from != to {
+                let item = self.items.remove(from);
+                let insert_at = if to > from { to - 1 } else { to };
+                let insert_at = insert_at.min(self.items.len());
+                self.items.insert(insert_at, item);
+                // active_index 跟随移动
+                if self.active_index == Some(from) {
+                    self.active_index = Some(insert_at);
+                } else if let Some(ai) = self.active_index {
+                    if from < ai && to >= ai {
+                        self.active_index = Some(ai - 1);
+                    } else if from > ai && to <= ai {
+                        self.active_index = Some(ai + 1);
+                    }
+                }
+                self.layout_dirty = true;
+            }
+        }
+    }
+
+    /// 当前顺序的键列表（用于持久化）
+    pub fn order_keys(&self) -> Vec<String> {
+        self.items.iter().map(|i| i.key()).collect()
+    }
+
+    /// 应用持久化的顺序（保留默认项中存在但配置缺失的项）
+    pub fn apply_order(&mut self, keys: &[String]) {
+        let mut new_items: Vec<MenuBarItem> = Vec::new();
+        let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for k in keys {
+            if let Some(item) = self.items.iter().find(|i| i.key() == *k).cloned() {
+                if used.insert(k.clone()) {
+                    new_items.push(item);
+                }
+            }
+        }
+        // 补充默认顺序中未被配置覆盖的项
+        for item in &self.items {
+            let k = item.key();
+            if !used.contains(&k) {
+                new_items.push(item.clone());
+            }
+        }
+        if !new_items.is_empty() {
+            // 重排后强制关闭所有展开状态
+            for item in &mut new_items {
+                item.expanded = false;
+            }
+            self.items = new_items;
+            self.active_index = None;
+            self.layout_dirty = true;
+        }
     }
 }

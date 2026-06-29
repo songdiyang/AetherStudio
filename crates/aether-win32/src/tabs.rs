@@ -13,6 +13,8 @@ pub struct Tab {
     pub selection_start: Option<(usize, usize)>,
     pub selection_end: Option<(usize, usize)>,
     pub scroll_y: f32,
+    /// P0-3: 水平滚动偏移（与 EditorState.scroll_x 同步）
+    pub scroll_x: f32,
     pub history: History,
     pub is_dirty: bool,
     // 渲染缓存（同crate内可访问）
@@ -44,6 +46,7 @@ impl Tab {
             selection_start: None,
             selection_end: None,
             scroll_y: 0.0,
+            scroll_x: 0.0,
             history: History::new(),
             is_dirty: false,
             cached_lines: Vec::new(),
@@ -65,6 +68,7 @@ impl Tab {
             selection_start: None,
             selection_end: None,
             scroll_y: 0.0,
+            scroll_x: 0.0,
             history: History::new(),
             is_dirty: false,
             cached_lines: Vec::new(),

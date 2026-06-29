@@ -21,8 +21,9 @@ impl RenderContext {
         Self {
             target: None,
             brush_cache: BrushCache::new(),
+            // UI-H03: 移除双重 unwrap 重试（第一次失败第二次必然失败），使用 expect 提供清晰错误信息
             text_format_cache: TextFormatCache::new()
-                .unwrap_or_else(|_| TextFormatCache::new().unwrap()),
+                .expect("无法初始化 DirectWrite 文本格式缓存，请确认 DirectX 已安装"),
         }
     }
 
@@ -92,6 +93,31 @@ impl RenderContext {
     pub fn pop_clip(&self) {
         if let Some(rt) = &self.target {
             rt.pop_clip();
+        }
+    }
+
+    /// 填充指定矩形区域（用于局部背景清除）
+    pub fn fill_rect(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        color: &windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F,
+    ) {
+        use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
+        if let Some(rt) = &self.target {
+            let rect = D2D_RECT_F {
+                left: x,
+                top: y,
+                right: x + width,
+                bottom: y + height,
+            };
+            unsafe {
+                if let Ok(brush) = self.brush_cache.get_brush(rt.target(), color) {
+                    rt.target().FillRectangle(&rect, &brush);
+                }
+            }
         }
     }
 

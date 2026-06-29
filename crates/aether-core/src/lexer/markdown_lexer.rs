@@ -275,9 +275,14 @@ fn skip_emphasis(bytes: &[u8], pos: usize, marker: u8, count: usize) -> usize {
                 return j;
             }
         }
+        if bytes[i] == b'\n' {
+            // CORE-M03: 换行前未找到闭合标记，返回仅开放标记（不消耗整行）
+            return pos + count;
+        }
         i += 1;
     }
-    bytes.len()
+    // CORE-M03: 未找到闭合标记时仅消耗开放标记，避免将整行标记为强调
+    pos + count
 }
 
 fn skip_html_tag(bytes: &[u8], pos: usize) -> usize {

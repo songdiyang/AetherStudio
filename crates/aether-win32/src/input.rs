@@ -1,9 +1,17 @@
 use std::collections::HashMap;
 
+use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     VIRTUAL_KEY, VK_BACK, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_F12, VK_HOME, VK_LEFT,
     VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
 };
+
+/// 长按目标（用于进入自定义排序模式）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PressTarget {
+    ActivityBar,
+    MenuBar,
+}
 
 /// 按键类型
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -101,9 +109,17 @@ pub enum EditorAction {
     ToggleFullScreen,
     ShowCommandPalette,
     TriggerAi,
+
+    // 标签页事件
+    SwitchTab(usize),
+    CloseTabByIndex(usize),
+    OpenTabsPanel,
 }
 
 /// 键盘映射
+/// UI-M04: 完整的快捷键架构已定义，待接入 WM_KEYDOWN 处理器。
+/// 当前快捷键硬编码在 window.rs 中，接入 KeyMap 后可支持用户自定义快捷键。
+#[allow(dead_code)]
 pub struct KeyMap {
     bindings: HashMap<(Key, bool, bool, bool), EditorAction>,
 }
@@ -223,7 +239,7 @@ impl KeyMap {
     }
 }
 
-/// 将虚拟键码转换为字符（简化）
+/// 将虚拟键码转换为字符（使用 Win32 ToUnicode 支持多键盘布局）
 fn vk_to_char(vk: VIRTUAL_KEY, shift: bool) -> Option<char> {
     let vk_code = vk.0;
     match vk_code {
@@ -239,17 +255,30 @@ fn vk_to_char(vk: VIRTUAL_KEY, shift: bool) -> Option<char> {
             };
             Some(ch)
         }
-        0xBA => Some(if shift { ':' } else { ';' }),
-        0xBB => Some(if shift { '+' } else { '=' }),
-        0xBC => Some(if shift { '<' } else { ',' }),
-        0xBD => Some(if shift { '_' } else { '-' }),
-        0xBE => Some(if shift { '>' } else { '.' }),
-        0xBF => Some(if shift { '?' } else { '/' }),
-        0xC0 => Some(if shift { '~' } else { '`' }),
-        0xDB => Some(if shift { '{' } else { '[' }),
-        0xDC => Some(if shift { '|' } else { '\\' }),
-        0xDD => Some(if shift { '}' } else { ']' }),
-        0xDE => Some(if shift { '"' } else { '\'' }),
+        0xBA..=0xDE => {
+            // SEC-W01: 使用 ToUnicode 获取当前键盘布局的字符映射
+            unsafe {
+                let _hkl = GetKeyboardLayout(0);
+                let mut state = [0u8; 256];
+                if shift {
+                    state[0x10] = 0x80; // VK_SHIFT
+                }
+                let mut buf = [0u16; 4];
+                let count = windows::Win32::UI::Input::KeyboardAndMouse::ToUnicode(
+                    vk_code as u32,
+                    0,
+                    Some(&state),
+                    &mut buf,
+                    0,
+                );
+                if count > 0 {
+                    let s = String::from_utf16_lossy(&buf[..count as usize]);
+                    s.chars().next()
+                } else {
+                    None
+                }
+            }
+        }
         _ => None,
     }
 }

@@ -3,9 +3,10 @@ use windows::core::Result;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_POINT_2F, D2D_RECT_F};
 use windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget;
 use windows::Win32::Graphics::DirectWrite::{
-    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
-    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
-    DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_LEADING,
+    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
+    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_LEADING,
+    DWRITE_TEXT_METRICS,
 };
 
 use super::factory::{color_f, colors};
@@ -39,8 +40,9 @@ impl TextRenderer {
             text_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
             text_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
 
-            // 估算字符宽度和行高（基于逻辑像素，后续乘以 DPI 缩放）
-            let char_width = font_size * 0.6;
+            // UI-M03: 使用 DirectWrite 实测等宽字体字符宽度，替代硬编码 font_size * 0.6
+            let char_width = Self::measure_monospace_width(&dwrite_factory, &text_format)
+                .unwrap_or(font_size * 0.6);
             let line_height = font_size * 1.5;
 
             Ok(Self {
@@ -51,6 +53,21 @@ impl TextRenderer {
                 char_width,
                 dpi_scale: 1.0,
             })
+        }
+    }
+
+    /// UI-M03: 使用 IDWriteTextLayout 实测等宽字体单字符推进宽度
+    fn measure_monospace_width(
+        factory: &IDWriteFactory,
+        format: &IDWriteTextFormat,
+    ) -> Result<f32> {
+        unsafe {
+            let text: Vec<u16> = "W".encode_utf16().collect();
+            let layout: IDWriteTextLayout =
+                factory.CreateTextLayout(&text, format, f32::MAX, f32::MAX)?;
+            let mut metrics = DWRITE_TEXT_METRICS::default();
+            layout.GetMetrics(&mut metrics)?;
+            Ok(metrics.width)
         }
     }
 
@@ -78,9 +95,40 @@ impl TextRenderer {
                 self.text_format = tf;
             }
         }
-        // 重新计算字符宽度和行高
-        self.char_width = self.font_size * 0.6 * scale;
+        // UI-M03: 使用 DirectWrite 实测新 DPI 下的字符宽度
+        self.char_width = Self::measure_monospace_width(&self.dwrite_factory, &self.text_format)
+            .unwrap_or(self.font_size * 0.6 * scale);
         self.line_height = self.font_size * 1.5 * scale;
+    }
+
+    /// P2-3: 设置基础字体大小（用户快捷键缩放），按当前 DPI 重新创建格式
+    pub fn set_font_size(&mut self, font_size: f32) {
+        // 限制在合理范围避免极端值导致渲染异常
+        let clamped = font_size.clamp(8.0, 72.0);
+        if (self.font_size - clamped).abs() < 0.01 {
+            return;
+        }
+        self.font_size = clamped;
+        let scaled_font_size = self.font_size * self.dpi_scale;
+        unsafe {
+            let new_text_format = self.dwrite_factory.CreateTextFormat(
+                windows::core::w!("Consolas"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                scaled_font_size,
+                windows::core::w!("zh-CN"),
+            );
+            if let Ok(tf) = new_text_format {
+                let _ = tf.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                let _ = tf.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                self.text_format = tf;
+            }
+        }
+        self.char_width = Self::measure_monospace_width(&self.dwrite_factory, &self.text_format)
+            .unwrap_or(self.font_size * 0.6 * self.dpi_scale);
+        self.line_height = self.font_size * 1.5 * self.dpi_scale;
     }
 
     pub fn dpi_scale(&self) -> f32 {

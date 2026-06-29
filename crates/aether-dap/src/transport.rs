@@ -3,6 +3,9 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 
 use crate::types::DapMessage;
 
+/// DAP 传输层最大消息大小（64MB，与 LSP 一致）
+const MAX_CONTENT_LENGTH: usize = 64 * 1024 * 1024;
+
 /// DAP 传输层
 /// 负责与调试适配器进程的 JSON-RPC 通信
 pub struct DapTransport {
@@ -60,6 +63,17 @@ impl DapTransport {
                 )
             })?;
 
+        // SEC-H02: 拒绝超大消息，防止恶意 DAP 服务器 OOM 崩溃编辑器
+        if content_length > MAX_CONTENT_LENGTH {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Content-Length {} 超过最大限制 {}",
+                    content_length, MAX_CONTENT_LENGTH
+                ),
+            ));
+        }
+
         // 读取消息体
         let mut buffer = vec![0u8; content_length];
         self.stdout.read_exact(&mut buffer).await?;
@@ -101,4 +115,28 @@ pub async fn spawn_adapter(config: &crate::types::AdapterConfig) -> std::io::Res
     }
 
     cmd.spawn()
+}
+
+/// 后台持续读取子进程 stderr，避免管道缓冲区满导致调试适配器阻塞。
+///
+/// 与 LSP 相同，DAP 适配器也会向 stderr 输出日志，若不读取会导致
+/// 64KB 缓冲区满后适配器进程完全阻塞，进而导致调试请求卡死。
+pub fn spawn_stderr_drain(mut child: tokio::process::Child) {
+    if let Some(mut stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = [0u8; 4096];
+            loop {
+                match stderr.read(&mut buf).await {
+                    Ok(0) => break, // EOF
+                    Ok(_) => {
+                        // 持续读取并丢弃。生产环境可接入日志系统。
+                    }
+                    Err(_) => break,
+                }
+            }
+            // 等待子进程退出，避免僵尸进程
+            let _ = child.wait().await;
+        });
+    }
 }

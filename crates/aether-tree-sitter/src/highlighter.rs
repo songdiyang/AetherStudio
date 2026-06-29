@@ -23,6 +23,9 @@ pub struct TreeSitterHighlighter {
     parser_cache: HashMap<String, Parser>,
 }
 
+/// P4-6: 文档缓存最大条目数，避免长时间运行后无限增长
+const MAX_HIGHLIGHTER_DOCS: usize = 32;
+
 impl TreeSitterHighlighter {
     pub fn new() -> Self {
         let mut highlighter = Self {
@@ -228,6 +231,13 @@ impl TreeSitterHighlighter {
     /// 增量解析：更新文档的语法树
     pub fn parse_document(&mut self, doc_id: &str, language: &str, text: &str) -> Option<&Tree> {
         let lang = self.get_language(language)?;
+
+        // P4-6: 在解析前检查缓存上限，避免无界增长。
+        // 若已达上限且当前 doc 不在缓存中，清空 tree_cache（parser_cache 保留，
+        // 因 Parser 对象较轻量且可复用）。这相当于"全量淘汰"策略。
+        if self.tree_cache.len() >= MAX_HIGHLIGHTER_DOCS && !self.tree_cache.contains_key(doc_id) {
+            self.tree_cache.clear();
+        }
 
         let parser = self
             .parser_cache

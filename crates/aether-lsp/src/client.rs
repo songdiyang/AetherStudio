@@ -91,7 +91,10 @@ impl LspClient {
         language_id: &str,
         config: ServerConfig,
     ) -> std::io::Result<()> {
-        let server = LanguageServer::start(config, language_id.to_string()).await?;
+        // 克隆 event_tx 用于接收服务器推送的 diagnostics 等通知
+        let server =
+            LanguageServer::start(config, language_id.to_string(), Some(self.event_tx.clone()))
+                .await?;
 
         let event = LspEvent::ServerReady {
             language_id: language_id.to_string(),

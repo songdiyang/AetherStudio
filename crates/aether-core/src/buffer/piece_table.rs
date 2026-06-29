@@ -64,10 +64,6 @@ impl LineIndex {
         self.line_starts.clear();
     }
 
-    fn push(&mut self, byte_offset: usize) {
-        self.line_starts.push(byte_offset);
-    }
-
     fn len(&self) -> usize {
         self.line_starts.len()
     }
@@ -75,6 +71,33 @@ impl LineIndex {
     /// 获取指定行的起始字节偏移
     pub fn line_start(&self, line_idx: usize) -> Option<usize> {
         self.line_starts.get(line_idx).copied()
+    }
+
+    /// 在指定位置插入新的行起始偏移，O(K + N) 其中 K=new_starts.len(), N=尾部移动量
+    /// 比重建整个 Vec 高效：避免重新分配和前半部分复制
+    fn splice_insert(&mut self, insert_at: usize, new_starts: Vec<usize>) {
+        self.line_starts.splice(insert_at..insert_at, new_starts);
+    }
+
+    /// 从指定行开始，所有行起始偏移加上 delta（增量调整，O(N-tail)）
+    fn shift_from(&mut self, from_line: usize, delta: usize) {
+        for start in &mut self.line_starts[from_line..] {
+            *start += delta;
+        }
+    }
+
+    /// 删除指定行范围的起始偏移 [start_line, end_line)
+    fn drain_range(&mut self, start_line: usize, end_line: usize) {
+        if start_line < end_line && end_line <= self.line_starts.len() {
+            self.line_starts.drain(start_line..end_line);
+        }
+    }
+
+    /// 从指定行开始，所有行起始偏移减去 delta（用于删除后调整）
+    fn shift_from_sub(&mut self, from_line: usize, delta: usize) {
+        for start in &mut self.line_starts[from_line..] {
+            *start -= delta;
+        }
     }
 
     /// 获取指定行的结束字节偏移（即下一行的起始，或文本末尾）
@@ -164,7 +187,9 @@ impl PieceTable {
         self.add_buffer.extend_from_slice(text_bytes);
         let line_breaks = count_line_breaks(text_bytes);
 
-        if pos >= total_len && !self.pieces.is_empty() {
+        // C-01: 允许空表走此分支（pos>=total_len 且 pieces 为空时直接 push 新 piece），
+        // 否则空表插入会落到 find_piece_at_byte -> pieces[0] 越界 panic
+        if pos >= total_len {
             self.pieces.push(Piece {
                 source: Source::Add,
                 start: add_start,
@@ -261,6 +286,11 @@ impl PieceTable {
 
     /// 删除指定字节范围 [start, end)，返回受影响的行范围
     pub fn delete_with_result(&mut self, start: usize, end: usize) -> EditResult {
+        if start >= end {
+            return EditResult::default();
+        }
+        // C-19: 边界钳位，防止 end 超出缓冲区长度导致数据损坏
+        let end = end.min(self.len_bytes());
         if start >= end {
             return EditResult::default();
         }
@@ -384,19 +414,27 @@ impl PieceTable {
         self.len_lines
     }
 
-    /// 获取总字节数
+    /// 获取总字节数 — CORE-H01: O(1) 使用前缀和缓存
     pub fn len_bytes(&self) -> usize {
-        self.pieces.iter().map(|p| p.len).sum()
+        if !self.piece_offset_cache.is_empty() {
+            // piece_offset_cache 最后一个元素是总字节数
+            *self.piece_offset_cache.last().unwrap_or(&0)
+        } else {
+            self.pieces.iter().map(|p| p.len).sum()
+        }
     }
 
     /// 获取指定行的字节切片（零拷贝，性能优于 get_line）
+    /// 返回 None 表示行不存在或该行跨越多个 piece（需改用 get_line 获取拼接结果）
     pub fn get_line_bytes(&self, line_idx: usize) -> Option<&[u8]> {
         let (start_byte, end_byte) = self.line_byte_range(line_idx)?;
-        Some(self.get_text_bytes(start_byte, end_byte))
+        self.get_text_bytes(start_byte, end_byte)
     }
 
     /// 获取指定字节范围的文本字节切片（零拷贝）
-    fn get_text_bytes(&self, start: usize, end: usize) -> &[u8] {
+    /// C-03: 返回 Option 区分"单 piece 命中（含空切片=空行）"与"跨 piece 无法零拷贝"。
+    /// 跨 piece 时返回 None，调用方应回退到 get_text 拼接，避免静默返回空数据。
+    fn get_text_bytes(&self, start: usize, end: usize) -> Option<&[u8]> {
         // 尝试找到单个piece覆盖整个范围的情况（常见场景）
         let mut current = 0;
         for piece in &self.pieces {
@@ -405,35 +443,40 @@ impl PieceTable {
                 let buf = self.buffer_for(piece.source);
                 let piece_start = piece.start + (start - current);
                 let piece_end_local = piece.start + (end - current);
-                return &buf[piece_start..piece_end_local];
+                return Some(&buf[piece_start..piece_end_local]);
             }
             current = piece_end;
         }
-        // 跨piece情况：无法零拷贝，返回空切片（调用方应使用get_text）
-        &[]
+        // 跨piece情况：无法零拷贝，返回 None（调用方应使用 get_text）
+        None
     }
 
     /// 获取指定行的文本（不包含换行符）
     /// 优化：优先使用零拷贝的 get_line_bytes，避免跨 piece 时的额外分配
     pub fn get_line(&self, line_idx: usize) -> Option<String> {
-        let bytes = self.get_line_bytes(line_idx)?;
-        if bytes.is_empty() {
-            // 跨 piece 情况：回退到 get_text
-            let (start_byte, end_byte) = self.line_byte_range(line_idx)?;
-            let text = self.get_text(start_byte, end_byte);
-            return Some(
-                text.strip_suffix('\n')
-                    .map(|s| s.to_string())
-                    .unwrap_or(text),
-            );
+        // C-03: get_line_bytes 返回 None 表示行不存在或跨 piece；
+        // 行不存在时 line_byte_range 已返回 None，这里 None 表示跨 piece
+        let (start_byte, end_byte) = self.line_byte_range(line_idx)?;
+        match self.get_text_bytes(start_byte, end_byte) {
+            // 单 piece 命中：零拷贝路径
+            Some(bytes) => {
+                let text = String::from_utf8_lossy(bytes);
+                Some(
+                    text.strip_suffix('\n')
+                        .map(|s| s.strip_suffix('\r').unwrap_or(s).to_string())
+                        .unwrap_or_else(|| text.into_owned()),
+                )
+            }
+            // C-03: 跨 piece 时回退到 get_text 拼接，避免静默返回空数据
+            None => {
+                let text = self.get_text(start_byte, end_byte);
+                Some(
+                    text.strip_suffix('\n')
+                        .map(|s| s.strip_suffix('\r').unwrap_or(s).to_string())
+                        .unwrap_or(text),
+                )
+            }
         }
-        // 零拷贝路径：直接从 bytes 构建 String，避免 Cow 中间层
-        let text = String::from_utf8_lossy(bytes);
-        Some(
-            text.strip_suffix('\n')
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| text.into_owned()),
-        )
     }
 
     /// 获取所有文本
@@ -496,16 +539,70 @@ impl PieceTable {
         }
     }
 
-    /// 找到包含指定字节位置的piece索引
-    fn find_piece_at_byte(&self, pos: usize) -> usize {
-        let mut current = 0;
-        for (i, piece) in self.pieces.iter().enumerate() {
-            if current + piece.len > pos {
-                return i;
-            }
-            current += piece.len;
+    /// P4-1: 获取指定字节位置的单个字节（零拷贝，无堆分配）
+    ///
+    /// 相比 `get_text(p, p+1).as_bytes()[0]` 避免了 String 堆分配和
+    /// UTF-8 lossy 转换开销。利用 `find_piece_at_byte` 的二分查找，O(log n)。
+    /// 用于 `find_prev_char_boundary` / `find_next_char_boundary` 等逐字节扫描场景。
+    pub fn byte_at(&self, pos: usize) -> Option<u8> {
+        if pos >= self.len_bytes() {
+            return None;
         }
-        self.pieces.len().saturating_sub(1)
+        // 空 buffer：直接返回 None
+        if self.pieces.is_empty() {
+            return None;
+        }
+        let piece_idx = self.find_piece_at_byte(pos);
+        let piece = self.pieces.get(piece_idx)?;
+        let offset_in_piece = pos.saturating_sub(self.byte_offset_of_piece(piece_idx));
+        // 边界保护：偏移必须落在当前 piece 内
+        if offset_in_piece >= piece.len {
+            return None;
+        }
+        let buf = self.buffer_for(piece.source);
+        buf.get(piece.start + offset_in_piece).copied()
+    }
+
+    /// 找到包含指定字节位置的piece索引
+    /// P4-3: 优先使用 piece_offset_cache 做二分查找 O(log n)；
+    /// 缓存未构建时回退到线性扫描 O(n)。
+    fn find_piece_at_byte(&self, pos: usize) -> usize {
+        // CORE-C02: 空 piece table 返回 0 而非越界索引
+        if self.pieces.is_empty() {
+            return 0;
+        }
+        // P4-3: 使用前缀和缓存做二分查找
+        if !self.piece_offset_cache.is_empty() {
+            // piece_offset_cache 末尾存有总字节数（哨兵），整体仍保持升序
+            match self.piece_offset_cache.binary_search(&pos) {
+                Ok(idx) => {
+                    // pos 恰好等于某 piece 起点；若 idx == pieces.len() 表示 pos == 总字节数
+                    if idx >= self.pieces.len() {
+                        return self.pieces.len() - 1;
+                    }
+                    idx
+                }
+                Err(idx) => {
+                    // pos 落在 piece_offset_cache[idx-1] 与 piece_offset_cache[idx] 之间
+                    if idx == 0 {
+                        0
+                    } else {
+                        // idx-1 不可能超过 pieces.len()-1，因为 piece_offset_cache 长度 = pieces.len()+1
+                        (idx - 1).min(self.pieces.len() - 1)
+                    }
+                }
+            }
+        } else {
+            // 回退：缓存未构建时线性扫描
+            let mut current = 0;
+            for (i, piece) in self.pieces.iter().enumerate() {
+                if current + piece.len > pos {
+                    return i;
+                }
+                current += piece.len;
+            }
+            self.pieces.len().saturating_sub(1)
+        }
     }
 
     /// 计算指定piece之前的字节偏移 —— O(1) 前缀和查找
@@ -588,47 +685,26 @@ impl PieceTable {
 
         // 找到插入位置所在的行
         let insert_line = self.byte_to_line(pos);
-        let line_start = self.line_index.line_start(insert_line).unwrap_or(0);
 
-        // 计算插入位置在行内的偏移
-        let offset_in_line = pos - line_start;
-
-        // 收集插入文本中的换行位置（相对于插入位置）
-        let mut new_line_offsets: Vec<usize> = Vec::new();
-        for (i, byte) in text_bytes.iter().enumerate() {
-            if *byte == b'\n' {
-                new_line_offsets.push(offset_in_line + i + 1);
+        // 收集插入文本产生的新行起始位置（绝对字节偏移）
+        // 新行从每个 '\n' 后一个字节开始
+        let mut new_line_starts: Vec<usize> = Vec::new();
+        for (i, &byte) in text_bytes.iter().enumerate() {
+            if byte == b'\n' {
+                new_line_starts.push(pos + i + 1);
             }
         }
 
-        // 从插入行开始，所有后续行的起始位置都需要增加 insert_len
-        // 同时在该行偏移处插入新的换行点
-        let mut new_line_starts =
-            Vec::with_capacity(self.line_index.len() + new_line_offsets.len());
-
-        // 复制插入行之前的所有行
-        for i in 0..=insert_line {
-            if let Some(start) = self.line_index.line_start(i) {
-                new_line_starts.push(start);
-            }
+        // 真正的增量更新：避免重建整个 Vec
+        // 1. 从 insert_line+1 开始，后续行的起始位置 += insert_len
+        if insert_line + 1 < self.line_index.len() {
+            self.line_index.shift_from(insert_line + 1, insert_len);
         }
 
-        // 添加插入文本产生的新行起始位置
-        let base_offset = line_start;
-        for offset in &new_line_offsets {
-            new_line_starts.push(base_offset + offset);
-        }
-
-        // 更新后续所有行的起始位置（增加插入长度）
-        for i in (insert_line + 1)..self.line_index.len() {
-            if let Some(start) = self.line_index.line_start(i) {
-                new_line_starts.push(start + insert_len);
-            }
-        }
-
-        self.line_index.clear();
-        for start in new_line_starts {
-            self.line_index.push(start);
+        // 2. 在 insert_line 之后插入新行（splice 原地插入，无需重新分配前半部分）
+        if !new_line_starts.is_empty() {
+            self.line_index
+                .splice_insert(insert_line + 1, new_line_starts);
         }
     }
 
@@ -641,46 +717,30 @@ impl PieceTable {
 
         let start_line = self.byte_to_line(start);
         let end_line = self.byte_to_line(end);
-        let _start_line_start = self.line_index.line_start(start_line).unwrap_or(0);
 
-        // 计算删除范围在起始行内的偏移
-        let _start_offset = start - _start_line_start;
-        let _end_offset = end - _start_line_start;
-
-        // 计算删除范围内有多少个换行符
-        let mut deleted_line_breaks = 0usize;
-        for i in (start_line + 1)..=end_line {
-            if let Some(line_start) = self.line_index.line_start(i) {
-                if line_start >= start && line_start < end {
-                    deleted_line_breaks += 1;
-                }
+        // 确定需要删除的行范围 [start_line+1, drain_end)
+        // start_line+1..end_line 的行起始必在 [start, end) 内，必删
+        // end_line 行起始若 <= end-1（即位于 end 之前的换行符产生的行起点）则该行也应被删除；
+        // H-02: 原条件 ls < end 漏删了 ls == end 的边界情况（该行起点由 end-1 处的 '\n' 产生），
+        // 导致删除区间恰好结束于某行起点前的换行符时残留幽灵行起点。改为 ls <= end。
+        let drain_end = if end_line > start_line {
+            match self.line_index.line_start(end_line) {
+                Some(ls) if ls <= end => end_line + 1,
+                _ => end_line,
             }
+        } else {
+            start_line + 1
+        };
+
+        // 真正的增量更新：
+        // 1. 删除 [start_line+1, drain_end) 范围的行起始
+        if start_line + 1 < drain_end {
+            self.line_index.drain_range(start_line + 1, drain_end);
         }
 
-        // 构建新的行索引
-        let mut new_line_starts = Vec::with_capacity(self.line_index.len() - deleted_line_breaks);
-
-        // 复制起始行及之前的行
-        for i in 0..=start_line {
-            if let Some(line_start) = self.line_index.line_start(i) {
-                new_line_starts.push(line_start);
-            }
-        }
-
-        // 处理被删除范围跨越的行的合并
-        // 如果删除范围结束在下一行之前，则不需要新增行
-        // 如果删除范围跨越多行，则这些行被合并为一行
-
-        // 更新后续行的起始位置
-        for i in (end_line + 1)..self.line_index.len() {
-            if let Some(line_start) = self.line_index.line_start(i) {
-                new_line_starts.push(line_start - delete_len);
-            }
-        }
-
-        self.line_index.clear();
-        for line_start in new_line_starts {
-            self.line_index.push(line_start);
+        // 2. 从 start_line+1 开始，后续所有行起始 -= delete_len
+        if start_line + 1 < self.line_index.len() {
+            self.line_index.shift_from_sub(start_line + 1, delete_len);
         }
     }
 }
@@ -871,29 +931,54 @@ impl TextBuffer for PieceTable {
     }
 
     fn line_col_to_byte(&self, line: usize, col: usize) -> usize {
-        let mut pos = 0;
-        for i in 0..line {
-            if let Some(text) = self.get_line(i) {
-                pos += text.len() + 1; // +1 for '\n'
-            }
-        }
-        if let Some(text) = self.get_line(line) {
-            pos + col.min(text.len())
+        // C-20: 使用 line_index 实现 O(1) 查找，替代 O(n) 逐行扫描
+        let line_start = self.line_index.line_start(line).unwrap_or(0);
+        let line_end = if line + 1 < self.line_index.line_starts.len() {
+            self.line_index.line_starts[line + 1]
         } else {
-            pos
-        }
+            self.len_bytes()
+        };
+        // 行长度（不含换行符）
+        let line_len = if line_end > line_start {
+            // 减去换行符字节（1 或 2 字节 CRLF）
+            let raw_len = line_end - line_start;
+            if raw_len >= 2 {
+                let text = self.get_text(line_start, line_end);
+                if text.ends_with("\r\n") {
+                    raw_len - 2
+                } else if text.ends_with('\n') {
+                    raw_len - 1
+                } else {
+                    raw_len
+                }
+            } else if raw_len == 1 {
+                let text = self.get_text(line_start, line_end);
+                if text.ends_with('\n') {
+                    0
+                } else {
+                    1
+                }
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        line_start + col.min(line_len)
     }
 
     fn byte_to_line_col(&self, byte: usize) -> (usize, usize) {
-        // 使用行索引二分查找：O(log n) 替代 O(n) 逐字节遍历
-        let byte = byte.min(self.len_bytes().saturating_sub(1));
+        let total_bytes = self.len_bytes();
+        // CORE-C03: 缓冲区末尾光标是合法位置，不应被 clamp 到上一行
+        if byte >= total_bytes {
+            // 光标在文本末尾之后，返回最后一行末尾位置
+            let last_line = self.len_lines.saturating_sub(1);
+            let line_start = self.line_index.line_start(last_line).unwrap_or(0);
+            return (last_line, total_bytes.saturating_sub(line_start));
+        }
         match self.line_index.line_starts.binary_search(&byte) {
-            Ok(idx) => {
-                // 恰好是某行起始位置
-                (idx, 0)
-            }
+            Ok(idx) => (idx, 0),
             Err(idx) => {
-                // idx 是 byte 应该插入的位置，即 byte 所在行号
                 let line = idx.saturating_sub(1);
                 let line_start = self.line_index.line_start(line).unwrap_or(0);
                 (line, byte - line_start)
@@ -904,6 +989,7 @@ impl TextBuffer for PieceTable {
     fn create_snapshot(&self) -> Box<dyn TextBufferSnapshot> {
         // 零拷贝快照：直接克隆 Arc<Mmap>，共享内存映射引用
         // 避免大文件的全量内存拷贝，显著提升打开文件性能
+        // CORE-M01: add_buffer 仍需克隆（待改为 Arc<Vec<u8>> 实现真正零拷贝）
         let original = self.original.as_ref().map(|arc_mmap| arc_mmap.clone());
         Box::new(PieceTableSnapshot {
             pieces: self.pieces.clone(),
@@ -914,13 +1000,13 @@ impl TextBuffer for PieceTable {
     }
 
     fn save_state(&self) -> BufferState {
-        // 序列化 piece 元数据
-        let mut pieces_data = Vec::with_capacity(self.pieces.len() * 16);
+        // 序列化 piece 元数据 — CORE-H02: 使用 u64 防止大文件偏移截断
+        let mut pieces_data = Vec::with_capacity(self.pieces.len() * 24);
         for piece in &self.pieces {
-            pieces_data.extend_from_slice(&(piece.source as u32).to_le_bytes());
-            pieces_data.extend_from_slice(&piece.start.to_le_bytes());
-            pieces_data.extend_from_slice(&piece.len.to_le_bytes());
-            pieces_data.extend_from_slice(&piece.line_breaks.to_le_bytes());
+            pieces_data.extend_from_slice(&(piece.source as u64).to_le_bytes());
+            pieces_data.extend_from_slice(&(piece.start as u64).to_le_bytes());
+            pieces_data.extend_from_slice(&(piece.len as u64).to_le_bytes());
+            pieces_data.extend_from_slice(&(piece.line_breaks as u64).to_le_bytes());
         }
         BufferState {
             pieces_data,
@@ -932,35 +1018,51 @@ impl TextBuffer for PieceTable {
 
     fn restore_state(&mut self, state: BufferState) {
         // 反序列化 piece 元数据
-        let piece_size = 16; // 4 * 4 bytes
+        let piece_size = 32; // 8 * 4 bytes
         let piece_count = state.pieces_data.len() / piece_size;
         let mut pieces = Vec::with_capacity(piece_count);
         for i in 0..piece_count {
             let offset = i * piece_size;
-            let source = u32::from_le_bytes([
+            let source = u64::from_le_bytes([
                 state.pieces_data[offset],
                 state.pieces_data[offset + 1],
                 state.pieces_data[offset + 2],
                 state.pieces_data[offset + 3],
-            ]);
-            let start = u32::from_le_bytes([
                 state.pieces_data[offset + 4],
                 state.pieces_data[offset + 5],
                 state.pieces_data[offset + 6],
                 state.pieces_data[offset + 7],
-            ]) as usize;
-            let len = u32::from_le_bytes([
+            ]);
+            let start = u64::from_le_bytes([
                 state.pieces_data[offset + 8],
                 state.pieces_data[offset + 9],
                 state.pieces_data[offset + 10],
                 state.pieces_data[offset + 11],
-            ]) as usize;
-            let line_breaks = u32::from_le_bytes([
                 state.pieces_data[offset + 12],
                 state.pieces_data[offset + 13],
                 state.pieces_data[offset + 14],
                 state.pieces_data[offset + 15],
-            ]);
+            ]) as usize;
+            let len = u64::from_le_bytes([
+                state.pieces_data[offset + 16],
+                state.pieces_data[offset + 17],
+                state.pieces_data[offset + 18],
+                state.pieces_data[offset + 19],
+                state.pieces_data[offset + 20],
+                state.pieces_data[offset + 21],
+                state.pieces_data[offset + 22],
+                state.pieces_data[offset + 23],
+            ]) as usize;
+            let line_breaks = u64::from_le_bytes([
+                state.pieces_data[offset + 24],
+                state.pieces_data[offset + 25],
+                state.pieces_data[offset + 26],
+                state.pieces_data[offset + 27],
+                state.pieces_data[offset + 28],
+                state.pieces_data[offset + 29],
+                state.pieces_data[offset + 30],
+                state.pieces_data[offset + 31],
+            ]) as u32;
             pieces.push(Piece {
                 source: if source == 0 {
                     Source::Original

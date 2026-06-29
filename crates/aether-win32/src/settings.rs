@@ -1,6 +1,6 @@
 use aether_shared::settings::{AiSettings, AppSettings};
 
-/// Settings panel field identifier
+/// 设置面板字段标识
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsField {
     Provider,
@@ -9,11 +9,42 @@ pub enum SettingsField {
     Model,
 }
 
-/// Settings panel button identifier
+/// 设置面板按钮标识
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsButton {
     Save,
     TestConnection,
+}
+
+/// 设置标签页类型
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsTab {
+    /// 通用：主题、字体等
+    General,
+    /// AI 接口：provider / key / url / model / 测试连接
+    Ai,
+    /// 外观：侧边栏、密度等
+    Appearance,
+    /// 远程：SSH 主机等
+    Remote,
+}
+
+impl SettingsTab {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::General => "通用",
+            Self::Ai => "AI",
+            Self::Appearance => "外观",
+            Self::Remote => "远程",
+        }
+    }
+
+    pub const ALL: [SettingsTab; 4] = [
+        SettingsTab::General,
+        SettingsTab::Ai,
+        SettingsTab::Appearance,
+        SettingsTab::Remote,
+    ];
 }
 
 /// AI 设置面板状态
@@ -30,6 +61,12 @@ pub struct SettingsPanel {
     // Cached layout for hit testing
     pub field_regions: Vec<(SettingsField, f32, f32, f32, f32)>,
     pub button_regions: Vec<(SettingsButton, f32, f32, f32, f32)>,
+    /// 标签页：当前激活
+    pub active_tab: SettingsTab,
+    /// 标签页：鼠标悬停
+    pub hover_tab: Option<SettingsTab>,
+    /// 标签页命中区域缓存 (tab, x, y, w, h)
+    pub tab_regions: Vec<(SettingsTab, f32, f32, f32, f32)>,
 }
 
 impl SettingsPanel {
@@ -45,6 +82,9 @@ impl SettingsPanel {
             is_testing: false,
             field_regions: Vec::new(),
             button_regions: Vec::new(),
+            active_tab: SettingsTab::Ai,
+            hover_tab: None,
+            tab_regions: Vec::new(),
         }
     }
 
@@ -60,6 +100,9 @@ impl SettingsPanel {
             is_testing: false,
             field_regions: Vec::new(),
             button_regions: Vec::new(),
+            active_tab: SettingsTab::Ai,
+            hover_tab: None,
+            tab_regions: Vec::new(),
         }
     }
 
@@ -86,6 +129,7 @@ impl SettingsPanel {
     pub fn clear_regions(&mut self) {
         self.field_regions.clear();
         self.button_regions.clear();
+        self.tab_regions.clear();
     }
 
     pub fn add_field_region(&mut self, field: SettingsField, x: f32, y: f32, w: f32, h: f32) {
@@ -94,6 +138,20 @@ impl SettingsPanel {
 
     pub fn add_button_region(&mut self, button: SettingsButton, x: f32, y: f32, w: f32, h: f32) {
         self.button_regions.push((button, x, y, w, h));
+    }
+
+    pub fn add_tab_region(&mut self, tab: SettingsTab, x: f32, y: f32, w: f32, h: f32) {
+        self.tab_regions.push((tab, x, y, w, h));
+    }
+
+    /// 命中检测：标签页
+    pub fn hit_test_tab(&self, x: f32, y: f32) -> Option<SettingsTab> {
+        for (tab, tx, ty, tw, th) in &self.tab_regions {
+            if x >= *tx && x < tx + tw && y >= *ty && y < ty + th {
+                return Some(*tab);
+            }
+        }
+        None
     }
 
     pub fn hit_test_field(&self, x: f32, y: f32) -> Option<SettingsField> {
@@ -144,6 +202,18 @@ impl SettingsPanel {
         }
     }
 
+    /// UI-M05: Delete 键清除活动字段（区别于 Backspace 删除末尾字符）
+    pub fn delete_forward(&mut self) {
+        if let Some(field) = self.active_field {
+            match field {
+                SettingsField::Provider => self.provider.clear(),
+                SettingsField::ApiKey => self.api_key.clear(),
+                SettingsField::BaseUrl => self.base_url.clear(),
+                SettingsField::Model => self.model.clear(),
+            }
+        }
+    }
+
     pub fn next_field(&mut self) {
         let next = match self.active_field {
             None => Some(SettingsField::Provider),
@@ -168,15 +238,13 @@ impl SettingsPanel {
 
     /// Mask API key for display (show last 4 chars, rest as dots)
     pub fn masked_api_key(&self) -> String {
-        if self.api_key.len() <= 4 {
-            "•".repeat(self.api_key.len())
+        let chars: Vec<char> = self.api_key.chars().collect();
+        if chars.len() <= 4 {
+            "•".repeat(chars.len())
         } else {
-            let dots = "•".repeat(self.api_key.len().saturating_sub(4));
-            format!(
-                "{}{}",
-                dots,
-                &self.api_key[self.api_key.len().saturating_sub(4)..]
-            )
+            let dots = "•".repeat(chars.len().saturating_sub(4));
+            let last_four: String = chars.iter().rev().take(4).rev().collect();
+            format!("{}{}", dots, last_four)
         }
     }
 }

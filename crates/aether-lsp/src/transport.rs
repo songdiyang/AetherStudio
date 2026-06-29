@@ -81,16 +81,23 @@ impl LspTransport {
     /// 解析 Header，返回 (content_length, header_end_position)
     fn parse_header(&self) -> Option<(usize, usize)> {
         let buf = &self.read_buffer;
-        let header_str = std::str::from_utf8(buf).ok()?;
 
-        // 查找 header 结束标记 \r\n\r\n
-        let header_end = header_str.find("\r\n\r\n")?;
-        let header_part = &header_str[..header_end];
+        // H-31: 先在原始字节中搜索 \r\n\r\n，避免 body 中部分 UTF-8 序列导致失败
+        let header_end_bytes = buf.windows(4).position(|window| window == b"\r\n\r\n")?;
+        let header_bytes = &buf[..header_end_bytes];
+        let header_str = std::str::from_utf8(header_bytes).ok()?;
 
         // 解析 Content-Length
-        for line in header_part.lines() {
+        for line in header_str.lines() {
             if let Some(val) = line.strip_prefix("Content-Length: ") {
-                return Some((val.parse().ok()?, header_end + 4));
+                // H-33: 找不到 Content-Length 时返回错误而非 None
+                let content_len: usize = val.parse().ok()?;
+                // H-32: 添加最大 Content-Length 检查（64MB）
+                const MAX_CONTENT_LENGTH: usize = 64 * 1024 * 1024;
+                if content_len > MAX_CONTENT_LENGTH {
+                    return None;
+                }
+                return Some((content_len, header_end_bytes + 4));
             }
         }
 
@@ -118,4 +125,29 @@ pub async fn spawn_server(config: &crate::types::ServerConfig) -> io::Result<Chi
     }
 
     cmd.spawn()
+}
+
+/// 后台持续读取子进程 stderr，避免管道缓冲区满导致子进程阻塞。
+///
+/// LSP/DAP 服务器在 stderr 输出日志，若不读取，64KB 缓冲区满后
+/// 服务器进程会完全阻塞，进而导致编辑器请求超时卡死。
+pub fn spawn_stderr_drain(mut child: tokio::process::Child) {
+    if let Some(mut stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = [0u8; 4096];
+            loop {
+                match stderr.read(&mut buf).await {
+                    Ok(0) => break, // EOF
+                    Ok(_) => {
+                        // 持续读取并丢弃，避免缓冲区满。
+                        // 生产环境可在此处接入日志系统。
+                    }
+                    Err(_) => break,
+                }
+            }
+            // 等待子进程退出，避免僵尸进程
+            let _ = child.wait().await;
+        });
+    }
 }

@@ -559,6 +559,10 @@ fn skip_operator(bytes: &[u8], pos: usize) -> usize {
             b'*' => {
                 if next == b'=' || next == b'*' {
                     i += 1;
+                    // C-23: **= 四字符运算符
+                    if i < bytes.len() && bytes[i] == b'=' {
+                        i += 1;
+                    }
                 }
             }
             b'/' => {
@@ -572,13 +576,23 @@ fn skip_operator(bytes: &[u8], pos: usize) -> usize {
                 }
             }
             b'=' => {
-                if next == b'=' || next == b'>' {
+                if next == b'=' {
+                    i += 1;
+                    // C-23: === 三字符运算符
+                    if i < bytes.len() && bytes[i] == b'=' {
+                        i += 1;
+                    }
+                } else if next == b'>' {
                     i += 1;
                 }
             }
             b'!' => {
                 if next == b'=' {
                     i += 1;
+                    // C-23: !== 三字符运算符
+                    if i < bytes.len() && bytes[i] == b'=' {
+                        i += 1;
+                    }
                 }
             }
             b'<' => {
@@ -589,6 +603,10 @@ fn skip_operator(bytes: &[u8], pos: usize) -> usize {
             b'>' => {
                 if next == b'=' || next == b'>' {
                     i += 1;
+                    // C-23: >>> 三字符运算符
+                    if i < bytes.len() && bytes[i] == b'>' {
+                        i += 1;
+                    }
                 }
             }
             b'&' => {
@@ -603,6 +621,18 @@ fn skip_operator(bytes: &[u8], pos: usize) -> usize {
             }
             b'^' => {
                 if next == b'=' {
+                    i += 1;
+                }
+            }
+            // C-23: ?? 和 ??= 运算符
+            b'?' => {
+                if next == b'?' {
+                    i += 1;
+                    if i < bytes.len() && bytes[i] == b'=' {
+                        i += 1;
+                    }
+                } else if next == b'.' {
+                    // C-23: ?. 可选链运算符
                     i += 1;
                 }
             }

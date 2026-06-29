@@ -5,6 +5,7 @@ use aether_core::lexer::TokenKind;
 use crate::d2d::factory::{color_f, colors};
 
 /// 主题系统
+#[derive(Clone, Copy)]
 pub struct Theme {
     pub editor_bg: D2D1_COLOR_F,
     pub line_highlight_bg: D2D1_COLOR_F,
@@ -29,6 +30,7 @@ pub struct Theme {
     pub syntax: SyntaxColors,
 }
 
+#[derive(Clone, Copy)]
 pub struct SyntaxColors {
     pub keyword: D2D1_COLOR_F,
     pub string: D2D1_COLOR_F,

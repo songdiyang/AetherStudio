@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::time::Instant;
 
 use super::piece_table::Piece;
@@ -5,9 +6,9 @@ use super::piece_table::Piece;
 /// 基于Piece Table快照的高效Undo/Redo
 /// 不是保存文本内容，而是保存piece表的元数据状态
 pub struct History {
-    /// 操作记录栈
-    undos: Vec<EditRecord>,
-    redos: Vec<EditRecord>,
+    /// 操作记录栈 — CORE-M02: 使用 VecDeque 替代 Vec，O(1) 淘汰而非 O(n) remove(0)
+    undos: VecDeque<EditRecord>,
+    redos: VecDeque<EditRecord>,
     /// 合并窗口（连续输入合并为一个undo组）
     merge_state: MergeState,
     /// 最大记录数（默认10000）
@@ -60,8 +61,8 @@ enum MergeState {
 impl History {
     pub fn new() -> Self {
         Self {
-            undos: Vec::new(),
-            redos: Vec::new(),
+            undos: VecDeque::new(),
+            redos: VecDeque::new(),
             merge_state: MergeState::Idle,
             max_records: 10000,
         }
@@ -107,7 +108,7 @@ impl History {
 
         if should_merge && !self.undos.is_empty() {
             // 更新合并组的最终状态
-            if let Some(last) = self.undos.last_mut() {
+            if let Some(last) = self.undos.back_mut() {
                 last.cursor_after = cursor_after;
             }
         } else {
@@ -120,12 +121,12 @@ impl History {
                 timestamp: now,
                 op_type,
             };
-            self.undos.push(record);
+            self.undos.push_back(record);
             self.redos.clear(); // 新操作清空redo栈
 
-            // 限制记录数量
-            if self.undos.len() > self.max_records {
-                self.undos.remove(0);
+            // 限制记录数量 — CORE-M02: O(1) pop_front 替代 O(n) remove(0)
+            while self.undos.len() > self.max_records {
+                self.undos.pop_front();
             }
         }
 
@@ -151,11 +152,11 @@ impl History {
         current_add_len: usize,
         current_cursor: CursorPosition,
     ) -> Option<(Vec<Piece>, usize, CursorPosition)> {
-        let record = self.undos.pop()?;
+        let record = self.undos.pop_back()?;
         let cursor = record.cursor_before.clone();
 
         // 保存当前状态到redo栈
-        self.redos.push(EditRecord {
+        self.redos.push_back(EditRecord {
             prev_pieces: current_pieces,
             prev_add_len: current_add_len,
             cursor_before: cursor.clone(),
@@ -175,11 +176,11 @@ impl History {
         current_add_len: usize,
         current_cursor: CursorPosition,
     ) -> Option<(Vec<Piece>, usize, CursorPosition)> {
-        let record = self.redos.pop()?;
+        let record = self.redos.pop_back()?;
         let cursor = record.cursor_after.clone();
 
         // 保存当前状态到undo栈
-        self.undos.push(EditRecord {
+        self.undos.push_back(EditRecord {
             prev_pieces: current_pieces,
             prev_add_len: current_add_len,
             cursor_before: current_cursor,

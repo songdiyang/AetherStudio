@@ -139,19 +139,12 @@ impl TomlLexer {
             }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 let end = skip_identifier(bytes, pos);
-                let _text = std::str::from_utf8(&bytes[pos..end]).unwrap_or("");
-                // 检测是否为键（后面跟着 =）
-                let is_key = is_toml_key(bytes, end);
-                let kind = if is_key {
-                    TokenKind::JsonKey
-                } else {
-                    TokenKind::Identifier
-                };
+                // CORE-L01: TOML 键统一使用 Identifier 替代 JsonKey
                 (
                     LexemeSpan {
                         start: pos,
                         len: end - pos,
-                        kind,
+                        kind: TokenKind::Identifier,
                         flags: 0,
                     },
                     end,
@@ -208,14 +201,6 @@ impl Default for TomlLexer {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn is_toml_key(bytes: &[u8], after_ident: usize) -> bool {
-    let mut i = after_ident;
-    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
-        i += 1;
-    }
-    i < bytes.len() && bytes[i] == b'='
 }
 
 fn skip_whitespace(bytes: &[u8], pos: usize) -> usize {
@@ -314,11 +299,12 @@ mod tests {
     fn test_toml_keys() {
         let lexer = TomlLexer::new();
         let tokens = lexer.lex_full("name = \"test\"\nversion = \"1.0\"");
-        let key_count = tokens
+        // CORE-L01: TOML 键使用 Identifier 替代 JsonKey
+        let id_count = tokens
             .iter()
-            .filter(|t| t.kind == TokenKind::JsonKey)
+            .filter(|t| t.kind == TokenKind::Identifier)
             .count();
-        assert_eq!(key_count, 2);
+        assert_eq!(id_count, 2);
     }
 
     #[test]

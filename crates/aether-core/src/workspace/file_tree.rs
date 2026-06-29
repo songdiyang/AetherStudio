@@ -22,6 +22,9 @@ pub struct FileNode {
     pub next_sibling: u32,
     pub depth: u8,
     pub is_expanded: bool,
+    /// 目录的子节点是否已扫描加载（懒加载标记）
+    /// false 表示该目录尚未扫描子节点，展开时需先加载
+    pub is_loaded: bool,
     pub is_git_tracked: bool,
     pub is_git_modified: bool,
     pub file_size: u64,
@@ -49,8 +52,11 @@ impl StringPool {
     }
 
     pub fn add(&mut self, s: &str) -> (u32, u16) {
-        let offset = self.data.len() as u32;
-        let len = s.len() as u16;
+        // M-15: 用 try_from 检查溢出，避免静默截断导致后续 get() 返回错误数据
+        let offset = u32::try_from(self.data.len())
+            .expect("M-15: StringPool offset overflow (pool data > 4GB)");
+        let len =
+            u16::try_from(s.len()).expect("M-15: StringPool length overflow (single name > 64KB)");
         self.data.push_str(s);
         (offset, len)
     }
@@ -82,7 +88,10 @@ impl FileTree {
             last_child: u32::MAX,
             next_sibling: u32::MAX,
             depth,
-            is_expanded: kind == FileKind::Directory,
+            // 只有第一层目录（depth==0）默认展开，减少打开文件夹时的初始节点数
+            is_expanded: kind == FileKind::Directory && depth == 0,
+            // 新建节点默认未加载子节点；open_folder 会对根层显式标记
+            is_loaded: false,
             is_git_tracked: false,
             is_git_modified: false,
             file_size: 0,
@@ -104,12 +113,22 @@ impl FileTree {
                 };
 
                 if let Some(last) = last_child_opt {
-                    // 使用 unsafe 绕过借用检查：我们知道 parent_idx != last
-                    let parent_ptr = self.nodes.as_mut_ptr();
-                    unsafe {
-                        (*parent_ptr.add(parent_idx_usize)).last_child = idx;
-                        (*parent_ptr.add(last as usize)).next_sibling = idx;
+                    let last_usize = last as usize;
+                    // C-02: 用 split_at_mut 消除 unsafe 指针别名，保证两个可变引用指向不同元素
+                    debug_assert_ne!(
+                        parent_idx_usize, last_usize,
+                        "C-02: parent_idx 与 last_child 相同会导致别名 UB（数据损坏）"
+                    );
+                    if parent_idx_usize < last_usize {
+                        let (left, right) = self.nodes.split_at_mut(last_usize);
+                        left[parent_idx_usize].last_child = idx;
+                        right[0].next_sibling = idx;
+                    } else if parent_idx_usize > last_usize {
+                        let (left, right) = self.nodes.split_at_mut(parent_idx_usize);
+                        left[last_usize].next_sibling = idx;
+                        right[0].last_child = idx;
                     }
+                    // parent_idx_usize == last_usize 时数据损坏，不修改避免 UB
                 } else {
                     let parent = &mut self.nodes[parent_idx_usize];
                     parent.first_child = idx;
@@ -170,6 +189,11 @@ impl FileTree {
 
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
+    }
+
+    /// 遍历所有节点（用于懒加载预扫描等）
+    pub fn nodes_iter(&self) -> impl Iterator<Item = &FileNode> {
+        self.nodes.iter()
     }
 
     pub fn first_root_node(&self) -> Option<u32> {

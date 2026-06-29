@@ -1,8 +1,14 @@
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::Input::Ime::{
-    ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow, ImmSetCompositionWindow,
-    CANDIDATEFORM, CFS_CANDIDATEPOS, CFS_POINT, COMPOSITIONFORM,
+    ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow,
+    ImmSetCompositionWindow, CANDIDATEFORM, CFS_CANDIDATEPOS, CFS_POINT, COMPOSITIONFORM,
+    IME_COMPOSITION_STRING,
 };
+
+/// GCS_COMPSTR：合成串（pre-edit text）查询标志
+const GCS_COMPSTR: u32 = 0x0008;
+/// GCS_RESULTSTR：结果串（已提交文本）查询标志
+const GCS_RESULTSTR: u32 = 0x0800;
 
 /// TSF (Text Services Framework) / IMM32 输入法集成
 /// 支持中文、日文、韩文等 CJK 输入法的候选窗口定位
@@ -80,6 +86,68 @@ impl ImeIntegration {
         self.set_candidate_window_position(x, bottom);
     }
 
+    /// 读取 IME 合成串（pre-edit text）。
+    /// 在 WM_IME_COMPOSITION 收到 GCS_COMPSTR 标志时调用。
+    pub fn get_composition_string(&self) -> Option<String> {
+        self.get_ime_string(GCS_COMPSTR)
+    }
+
+    /// 读取 IME 结果串（已提交文本）。
+    /// 在 WM_IME_COMPOSITION 收到 GCS_RESULTSTR 标志时调用。
+    pub fn get_result_string(&self) -> Option<String> {
+        self.get_ime_string(GCS_RESULTSTR)
+    }
+
+    /// 通用：按标志从 ImmGetCompositionStringW 读取 UTF-16 字符串。
+    fn get_ime_string(&self, flag: u32) -> Option<String> {
+        if !self.enabled {
+            return None;
+        }
+
+        unsafe {
+            let himc = ImmGetContext(self.hwnd);
+            if himc.0.is_null() {
+                return None;
+            }
+
+            // 释放 HIMC 的 RAII 守卫
+            let _guard = HimcGuard(self.hwnd, himc);
+
+            let flag = IME_COMPOSITION_STRING(flag);
+
+            // 第一次调用获取字节长度（含结尾 NUL）
+            let byte_len = ImmGetCompositionStringW(himc, flag, None, 0);
+            if byte_len <= 0 {
+                return None;
+            }
+
+            let wchar_count = (byte_len as usize) / 2;
+            let mut buf: Vec<u16> = vec![0u16; wchar_count];
+
+            // 第二次调用填充缓冲区
+            let written = ImmGetCompositionStringW(
+                himc,
+                flag,
+                Some(buf.as_mut_ptr() as *mut _),
+                byte_len as u32,
+            );
+            if written <= 0 {
+                return None;
+            }
+
+            // 去掉结尾 NUL（若有）
+            let actual_len = (written as usize) / 2;
+            while buf.len() > actual_len {
+                buf.pop();
+            }
+            while buf.last() == Some(&0) {
+                buf.pop();
+            }
+
+            String::from_utf16(&buf).ok()
+        }
+    }
+
     /// 是否启用 IME 集成
     pub fn is_enabled(&self) -> bool {
         self.enabled
@@ -88,5 +156,16 @@ impl ImeIntegration {
     /// 启用/禁用 IME 集成
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
+    }
+}
+
+/// RAII 守卫：确保 ImmReleaseContext 在作用域结束时被调用
+struct HimcGuard(HWND, windows::Win32::UI::Input::Ime::HIMC);
+
+impl Drop for HimcGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = ImmReleaseContext(self.0, self.1);
+        }
     }
 }

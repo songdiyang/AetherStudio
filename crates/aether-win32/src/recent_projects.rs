@@ -49,6 +49,8 @@ impl RecentProjectsManager {
             max_count: Self::MAX_COUNT,
         };
         manager.load();
+        // 启动时清理已失效（不存在的）项目
+        manager.clean_invalid();
         manager
     }
 
@@ -133,16 +135,21 @@ impl RecentProjectsManager {
     fn to_json(projects: &VecDeque<RecentProject>) -> String {
         let mut json = String::from("[\n");
         for (i, p) in projects.iter().enumerate() {
+            let last_opened_secs = p
+                .last_opened
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
             json.push_str("  {\n");
             json.push_str(&format!(
                 "    \"name\": \"{}\",\n",
                 Self::escape_json(&p.name)
             ));
             json.push_str(&format!(
-                "    \"path\": \"{}\"\n",
+                "    \"path\": \"{}\",\n",
                 Self::escape_json(&p.path)
             ));
-            // last_opened 暂时不序列化，用文件修改时间代替
+            json.push_str(&format!("    \"last_opened\": {}\n", last_opened_secs));
             json.push('}');
             if i < projects.len() - 1 {
                 json.push(',');
@@ -158,6 +165,7 @@ impl RecentProjectsManager {
         let mut projects = VecDeque::new();
         let mut current_name = None;
         let mut current_path = None;
+        let mut current_last_opened = None;
 
         for line in json.lines() {
             let trimmed = line.trim();
@@ -169,12 +177,24 @@ impl RecentProjectsManager {
                 if let Some(val) = Self::extract_json_value(trimmed) {
                     current_path = Some(val);
                 }
+            } else if trimmed.starts_with("\"last_opened\"") {
+                // 解析数值字段
+                let colon_idx = match trimmed.find(':') {
+                    Some(idx) => idx,
+                    None => continue,
+                };
+                let after_colon = trimmed[colon_idx + 1..].trim();
+                if let Ok(secs) = after_colon.trim_end_matches(',').parse::<u64>() {
+                    current_last_opened =
+                        Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs));
+                }
             } else if trimmed == "}" || trimmed == "}," {
                 if let (Some(name), Some(path)) = (current_name.take(), current_path.take()) {
+                    let last_opened = current_last_opened.take().unwrap_or(SystemTime::now());
                     projects.push_back(RecentProject {
                         name,
                         path,
-                        last_opened: SystemTime::now(),
+                        last_opened,
                     });
                 }
             }

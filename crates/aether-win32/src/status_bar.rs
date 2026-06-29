@@ -4,6 +4,8 @@ pub struct StatusBarSection {
     pub label: String,
     pub width: f32,
     pub clickable: bool,
+    /// 可选前置矢量图标（替代 emoji）
+    pub icon: Option<crate::icons::IconKind>,
 }
 
 /// 状态栏
@@ -21,31 +23,37 @@ impl StatusBar {
                     label: "main".to_string(),
                     width: 120.0,
                     clickable: true,
+                    icon: None,
                 },
                 StatusBarSection {
                     label: "0 错误 0 警告".to_string(),
                     width: 100.0,
                     clickable: true,
+                    icon: None,
                 },
                 StatusBarSection {
                     label: "Ln 1, Col 1".to_string(),
                     width: 80.0,
                     clickable: false,
+                    icon: None,
                 },
                 StatusBarSection {
                     label: "UTF-8".to_string(),
                     width: 60.0,
                     clickable: true,
+                    icon: None,
                 },
                 StatusBarSection {
                     label: "Plain Text".to_string(),
                     width: 80.0,
                     clickable: true,
+                    icon: None,
                 },
                 StatusBarSection {
                     label: "".to_string(),
                     width: 100.0,
                     clickable: true,
+                    icon: None,
                 },
             ],
             hover_index: None,
@@ -55,9 +63,16 @@ impl StatusBar {
     /// 更新 Git 分支显示
     pub fn update_git_branch(&mut self, branch: Option<&str>) {
         if let Some(section) = self.sections.get_mut(5) {
-            section.label = branch
-                .map(|b| format!("{} {}", "🌿", b))
-                .unwrap_or_else(|| "".to_string());
+            match branch {
+                Some(b) => {
+                    section.label = b.to_string();
+                    section.icon = Some(crate::icons::IconKind::GitBranch);
+                }
+                None => {
+                    section.label.clear();
+                    section.icon = None;
+                }
+            }
         }
     }
 
