@@ -28,6 +28,33 @@ pub struct FileNode {
     pub modified_time: u64,
 }
 
+impl FileNode {
+    pub fn new(
+        name_offset: u32,
+        name_len: u16,
+        kind: FileKind,
+        parent_idx: u32,
+        depth: u8,
+        is_expanded: bool,
+    ) -> Self {
+        Self {
+            name_offset,
+            name_len,
+            kind,
+            parent_idx,
+            first_child: u32::MAX,
+            last_child: u32::MAX,
+            next_sibling: u32::MAX,
+            depth,
+            is_expanded,
+            is_git_tracked: false,
+            is_git_modified: false,
+            file_size: 0,
+            modified_time: 0,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FileKind {
     File,
@@ -71,23 +98,27 @@ impl FileTree {
     }
 
     pub fn add_node(&mut self, name: &str, kind: FileKind, parent_idx: u32, depth: u8) -> u32 {
+        self.add_node_with_expanded(name, kind, parent_idx, depth, false)
+    }
+
+    pub fn add_node_with_expanded(
+        &mut self,
+        name: &str,
+        kind: FileKind,
+        parent_idx: u32,
+        depth: u8,
+        is_expanded: bool,
+    ) -> u32 {
         let (name_offset, name_len) = self.names.add(name);
         let idx = self.nodes.len() as u32;
-        self.nodes.push(FileNode {
+        self.nodes.push(FileNode::new(
             name_offset,
             name_len,
             kind,
             parent_idx,
-            first_child: u32::MAX,
-            last_child: u32::MAX,
-            next_sibling: u32::MAX,
             depth,
-            is_expanded: kind == FileKind::Directory,
-            is_git_tracked: false,
-            is_git_modified: false,
-            file_size: 0,
-            modified_time: 0,
-        });
+            is_expanded,
+        ));
 
         // 更新父节点的first_child链表 - O(1) 尾指针插入
         if parent_idx != u32::MAX {
@@ -216,5 +247,21 @@ mod tests {
 
         let children: Vec<_> = tree.iter_children(root).collect();
         assert_eq!(children.len(), 2);
+    }
+
+    #[test]
+    fn test_add_node_default_not_expanded() {
+        let mut tree = FileTree::new();
+        let dir = tree.add_node("src", FileKind::Directory, u32::MAX, 0);
+        let node = tree.get_node(dir).unwrap();
+        assert!(!node.is_expanded);
+    }
+
+    #[test]
+    fn test_add_node_with_expanded() {
+        let mut tree = FileTree::new();
+        let dir = tree.add_node_with_expanded("src", FileKind::Directory, u32::MAX, 0, true);
+        let node = tree.get_node(dir).unwrap();
+        assert!(node.is_expanded);
     }
 }

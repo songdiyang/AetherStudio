@@ -1,7 +1,11 @@
 use std::path::PathBuf;
+#[allow(unused_imports)]
+use std::sync::mpsc;
+use std::thread;
 
 use windows::core::Result;
 use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
 use aether_core::buffer::history::{CursorPosition, History, OpType};
 use aether_core::buffer::piece_table::PieceTable;
@@ -13,6 +17,25 @@ use aether_render::d2d::text::TextRenderer;
 use aether_render::theme::Theme;
 
 use crate::activity_bar::ActivityBar;
+
+/// 扫描到的文件树条目（后台线程 -> UI 线程）
+#[derive(Clone, Debug)]
+pub(crate) struct ScannedEntry {
+    pub name: String,
+    pub kind: FileKind,
+    #[allow(dead_code)]
+    pub path: PathBuf,
+    pub depth: u8,
+}
+
+/// 一批扫描结果或完成标记（通过 Box::into_raw 经 WM_APP+3 传递）
+#[derive(Clone, Debug)]
+pub(crate) struct ScannedBatch {
+    pub generation: u64,
+    pub entries: Vec<ScannedEntry>,
+    pub complete: bool,
+}
+
 use crate::ai_panel::AiPanel;
 use crate::command_palette::CommandPalette;
 use crate::dialogs::Dialogs;
@@ -64,6 +87,8 @@ pub struct EditorState {
     pub(crate) cached_line_numbers: Vec<Vec<u16>>,
     /// 可复用的 UTF-16 文本缓冲区（避免 render_editor 中每 token 分配 Vec<u16>）
     pub(crate) text_utf16_buf: Vec<u16>,
+    /// 文件树渲染用的可复用 UTF-16 缓冲区（避免 render_tree_nodes 中每次分配 Vec<u16>）
+    pub(crate) tree_text_utf16_buf: Vec<u16>,
     // 当前语言
     pub(crate) language: Language,
     /// 标签页系统（后台存储，切换时同步）
@@ -90,12 +115,16 @@ pub struct EditorState {
     // 全局 UI 状态
     pub file_tree: Option<FileTree>,
     pub current_folder: Option<PathBuf>,
+    /// 当前文件夹加载世代，用于丢弃过期批次消息
+    pub(crate) folder_generation: u64,
     pub status_message: String,
     pub key_map: KeyMap,
     pub window_width: u32,
     pub window_height: u32,
     /// DPI 缩放因子（1.0 = 100%, 1.5 = 150%）
     pub dpi_scale: f32,
+    /// 系统高对比度模式是否激活（WCAG 可访问性）
+    pub high_contrast: bool,
     // 新布局系统
     pub layout: LayoutManager,
     pub menu_bar: MenuBar,
@@ -344,7 +373,12 @@ impl EditorState {
     pub fn new(hwnd: HWND) -> Result<Self> {
         let d2d_factory = D2DFactory::new()?;
         let text_renderer = TextRenderer::new()?;
-        let theme = Theme::glass();
+        let hc = crate::window::detect_high_contrast();
+        let mut theme = Theme::glass();
+        // 高对比度模式下禁用玻璃效果，使用不透明系统颜色
+        if hc {
+            theme.glass_enabled = false;
+        }
         let buffer = PieceTable::from_string(String::new());
         let key_map = KeyMap::new();
         let app_settings = AppSettings::load();
@@ -371,6 +405,7 @@ impl EditorState {
             buffer_version: 0,
             cached_line_numbers: Vec::new(),
             text_utf16_buf: Vec::with_capacity(256),
+            tree_text_utf16_buf: Vec::with_capacity(64),
             language: Language::PlainText,
             tabs: Vec::new(),
             active_tab: 0,
@@ -388,11 +423,13 @@ impl EditorState {
             find_result_version: 0,
             file_tree: None,
             current_folder: None,
+            folder_generation: 0,
             status_message: "就绪".to_string(),
             key_map,
             window_width: 1280,
             window_height: 800,
             dpi_scale: 1.0,
+            high_contrast: crate::window::detect_high_contrast(),
             layout: LayoutManager::new(1280.0, 800.0),
             menu_bar: MenuBar::new(),
             activity_bar: ActivityBar::new(),
@@ -724,55 +761,149 @@ const SKIP_DIRS: &[&str] = &[
     ".nuxt",
 ];
 
-/// 递归构建文件树，跳过常见大目录，限制每层扫描数量
-fn populate_file_tree(
-    tree: &mut FileTree,
-    path: &PathBuf,
-    parent_idx: u32,
-    depth: u8,
-) -> std::io::Result<()> {
+/// 扫描文件树顶层条目（在后台线程执行，避免阻塞 UI）
+fn scan_file_tree_entries(path: &PathBuf) -> Vec<ScannedEntry> {
     const MAX_ENTRIES_PER_DIR: usize = 1000;
-    const MAX_DEPTH: u8 = 3;
 
-    let mut entries: Vec<_> = std::fs::read_dir(path)?.filter_map(|e| e.ok()).collect();
+    let mut entries: Vec<ScannedEntry> = Vec::new();
+    let mut raw: Vec<_> = match std::fs::read_dir(path) {
+        Ok(dir) => dir.filter_map(|e| e.ok()).collect(),
+        Err(_) => return entries,
+    };
 
-    // 限制每层目录扫描数量，避免超大目录卡死
-    if entries.len() > MAX_ENTRIES_PER_DIR {
-        entries.truncate(MAX_ENTRIES_PER_DIR);
+    if raw.len() > MAX_ENTRIES_PER_DIR {
+        raw.truncate(MAX_ENTRIES_PER_DIR);
     }
 
-    entries.sort_by(|a, b| {
-        let a_is_dir = a.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        let b_is_dir = b.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        match (a_is_dir, b_is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.file_name().cmp(&b.file_name()),
-        }
-    });
-
-    for entry in entries {
+    entries.reserve(raw.len());
+    for entry in raw {
         let name = entry.file_name().to_string_lossy().to_string();
-
-        // 跳过常见大目录
         if SKIP_DIRS.contains(&name.as_str()) {
             continue;
         }
-
-        let is_dir = entry.file_type()?.is_dir();
-        let kind = if is_dir {
-            FileKind::Directory
-        } else {
-            FileKind::File
+        let kind = match entry.file_type() {
+            Ok(ft) if ft.is_dir() => FileKind::Directory,
+            Ok(ft) if ft.is_symlink() => FileKind::Symlink,
+            _ => FileKind::File,
         };
-        let idx = tree.add_node(&name, kind, parent_idx, depth);
-
-        if is_dir && depth < MAX_DEPTH {
-            let _ = populate_file_tree(tree, &entry.path(), idx, depth + 1);
-        }
+        entries.push(ScannedEntry {
+            name,
+            kind,
+            path: entry.path(),
+            depth: 0,
+        });
     }
 
-    Ok(())
+    entries.sort_by(|a, b| {
+        let a_is_dir = a.kind == FileKind::Directory;
+        let b_is_dir = b.kind == FileKind::Directory;
+        match (a_is_dir, b_is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
+        }
+    });
+
+    entries
+}
+
+impl EditorState {
+    /// 同步打开文件夹（兼容旧调用；新 UI 入口应使用 open_folder_async）
+    pub fn open_folder(&mut self, path: PathBuf) {
+        let mut tree = FileTree::new();
+        let entries = scan_file_tree_entries(&path);
+        for entry in entries {
+            tree.add_node(&entry.name, entry.kind, u32::MAX, entry.depth);
+        }
+        self.file_tree = Some(tree);
+        self.current_folder = Some(path.clone());
+        self.git.detect(&path);
+        if let Some(branch) = self.git.current_branch_name() {
+            self.status_bar.update_git_branch(Some(&branch));
+        } else {
+            self.status_bar.update_git_branch(None);
+        }
+        self.status_message = format!("已打开文件夹: {}", path.display());
+        self.recent_projects.add(&path);
+    }
+
+    /// 异步打开文件夹：在后台线程扫描顶层目录，分批通过 WM_APP+3 合并到 FileTree
+    pub fn open_folder_async(&mut self, hwnd: HWND, path: PathBuf) {
+        self.folder_generation = self.folder_generation.wrapping_add(1);
+        let generation = self.folder_generation;
+        self.current_folder = Some(path.clone());
+        self.status_message = "正在加载...".to_string();
+        self.file_tree = Some(FileTree::new());
+        self.git.detect(&path);
+        if let Some(branch) = self.git.current_branch_name() {
+            self.status_bar.update_git_branch(Some(&branch));
+        } else {
+            self.status_bar.update_git_branch(None);
+        }
+        self.recent_projects.add(&path);
+
+        // HWND 未实现 Send，因此在线程外转换为原始整数并在内部重建
+        let hwnd_value = hwnd.0 as isize;
+        thread::spawn(move || {
+            let hwnd = HWND(hwnd_value as *mut std::ffi::c_void);
+            let entries = scan_file_tree_entries(&path);
+            const BATCH_SIZE: usize = 50;
+            for chunk in entries.chunks(BATCH_SIZE) {
+                let batch = ScannedBatch {
+                    generation,
+                    entries: chunk.to_vec(),
+                    complete: false,
+                };
+                let ptr = Box::into_raw(Box::new(batch));
+                unsafe {
+                    let _ = PostMessageW(
+                        hwnd,
+                        WM_APP + 3,
+                        windows::Win32::Foundation::WPARAM(0),
+                        windows::Win32::Foundation::LPARAM(ptr as isize),
+                    );
+                }
+            }
+            let complete = ScannedBatch {
+                generation,
+                entries: Vec::new(),
+                complete: true,
+            };
+            let ptr = Box::into_raw(Box::new(complete));
+            unsafe {
+                let _ = PostMessageW(
+                    hwnd,
+                    WM_APP + 3,
+                    windows::Win32::Foundation::WPARAM(0),
+                    windows::Win32::Foundation::LPARAM(ptr as isize),
+                );
+            }
+        });
+    }
+
+    /// 将一批扫描到的条目合并到当前文件树
+    pub(crate) fn apply_scanned_batch(&mut self, batch: ScannedBatch) -> bool {
+        if batch.generation != self.folder_generation {
+            return false;
+        }
+
+        if batch.complete {
+            if let Some(ref folder) = self.current_folder {
+                self.status_message = format!("已打开文件夹: {}", folder.display());
+            } else {
+                self.status_message = "已打开文件夹".to_string();
+            }
+            return true;
+        }
+
+        if let Some(ref mut tree) = self.file_tree {
+            for entry in batch.entries {
+                tree.add_node(&entry.name, entry.kind, u32::MAX, entry.depth);
+            }
+        }
+
+        false
+    }
 }
 
 impl EditorState {
@@ -1061,7 +1192,7 @@ impl EditorState {
             }
             crate::menu_bar::CommandId::FileOpenFolder => {
                 if let Some(path) = Dialogs::open_folder_dialog(hwnd, "打开文件夹") {
-                    self.open_folder(path);
+                    self.open_folder_async(hwnd, path);
                 }
             }
             crate::menu_bar::CommandId::FileSave => {
@@ -1143,26 +1274,6 @@ impl EditorState {
             }
             crate::menu_bar::CommandId::None => {}
         }
-    }
-
-    pub fn open_folder(&mut self, path: PathBuf) {
-        let mut tree = FileTree::new();
-        if let Err(e) = populate_file_tree(&mut tree, &path, u32::MAX, 0) {
-            self.status_message = format!("打开文件夹失败: {}", e);
-            return;
-        }
-        self.file_tree = Some(tree);
-        self.current_folder = Some(path.clone());
-        // 检测 Git 仓库
-        self.git.detect(&path);
-        if let Some(branch) = self.git.current_branch_name() {
-            self.status_bar.update_git_branch(Some(&branch));
-        } else {
-            self.status_bar.update_git_branch(None);
-        }
-        self.status_message = format!("已打开文件夹: {}", path.display());
-        // 记录到最近项目列表
-        self.recent_projects.add(&path);
     }
 
     pub fn handle_sidebar_click(&mut self, mouse_x: f32, mouse_y: f32) -> bool {

@@ -124,6 +124,22 @@ impl MenuBarItem {
             expanded: false,
         }
     }
+
+    /// 从标签中提取助记符字母，如 "文件(F)" -> Some('F')，"帮助(H)" -> Some('H')
+    pub fn mnemonic(&self) -> Option<char> {
+        // 查找最后一对括号内的单个字符
+        let bytes = self.label.as_bytes();
+        if bytes.len() >= 3 {
+            let n = bytes.len();
+            if bytes[n - 1] == b')' && bytes[n - 3] == b'(' {
+                let ch = bytes[n - 2] as char;
+                if ch.is_ascii_alphabetic() {
+                    return Some(ch.to_ascii_uppercase());
+                }
+            }
+        }
+        None
+    }
 }
 
 /// 菜单栏
@@ -132,6 +148,12 @@ pub struct MenuBar {
     pub items: Vec<MenuBarItem>,
     pub active_index: Option<usize>,
     pub hover_index: Option<usize>,
+    /// 键盘焦点索引（F10/Alt 激活后用于导航）
+    pub focus_index: Option<usize>,
+    /// 子菜单内键盘焦点索引
+    pub submenu_focus_index: Option<usize>,
+    /// 是否处于键盘导航模式（用于显示焦点指示器）
+    pub keyboard_active: bool,
     pub item_widths: Vec<f32>,
     /// 每个菜单项的 x 位置（用于子菜单定位）
     pub item_x_positions: Vec<f32>,
@@ -215,6 +237,9 @@ impl MenuBar {
             ],
             active_index: None,
             hover_index: None,
+            focus_index: None,
+            submenu_focus_index: None,
+            keyboard_active: false,
             item_widths: Vec::new(),
             item_x_positions: Vec::new(),
             layout_dirty: true,
@@ -248,6 +273,9 @@ impl MenuBar {
     /// 关闭所有展开的菜单
     pub fn close_all(&mut self) {
         self.active_index = None;
+        self.focus_index = None;
+        self.submenu_focus_index = None;
+        self.keyboard_active = false;
         for item in &mut self.items {
             item.expanded = false;
         }
@@ -299,5 +327,212 @@ impl MenuBar {
             }
         }
         None
+    }
+
+    // ===== 键盘导航方法 =====
+
+    /// 获取菜单项下首个可选中（非分隔符、非禁用）子项索引
+    fn first_enabled_submenu(items: &[MenuItem]) -> Option<usize> {
+        items
+            .iter()
+            .enumerate()
+            .find(|(_, it)| it.enabled && it.label != "-" && it.command_id != CommandId::None)
+            .map(|(i, _)| i)
+    }
+
+    /// 获取菜单项下最后一个可选中子项索引
+    fn last_enabled_submenu(items: &[MenuItem]) -> Option<usize> {
+        items
+            .iter()
+            .enumerate()
+            .rfind(|(_, it)| it.enabled && it.label != "-" && it.command_id != CommandId::None)
+            .map(|(i, _)| i)
+    }
+
+    /// 通过助记符激活菜单，返回是否命中
+    /// 若菜单已激活，则匹配子菜单项的助记符（首个非分隔符字符）
+    pub fn activate_by_mnemonic(&mut self, key: char) -> bool {
+        let key = key.to_ascii_uppercase();
+        // 顶层菜单未激活：匹配顶层助记符
+        if self.active_index.is_none() {
+            // 先查找匹配索引，再执行可变操作，避免借用冲突
+            let found = self
+                .items
+                .iter()
+                .enumerate()
+                .find(|(_, it)| it.mnemonic() == Some(key))
+                .map(|(i, it)| (i, Self::first_enabled_submenu(&it.items)));
+            if let Some((i, first_sub)) = found {
+                self.expand(i);
+                self.focus_index = Some(i);
+                self.submenu_focus_index = first_sub;
+                self.keyboard_active = true;
+                return true;
+            }
+            return false;
+        }
+        // 顶层菜单已激活：尝试匹配子菜单项首字符（非助记符，是 label 首字符快速跳转）
+        if let Some(ai) = self.active_index {
+            let found = self.items.get(ai).and_then(|item| {
+                item.items.iter().enumerate().find(|(_, sub)| {
+                    sub.enabled
+                        && sub.label != "-"
+                        && sub
+                            .label
+                            .chars()
+                            .next()
+                            .map(|c| c.to_ascii_uppercase() == key)
+                            .unwrap_or(false)
+                })
+            });
+            if let Some((i, _)) = found {
+                self.submenu_focus_index = Some(i);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 激活菜单栏（F10 或 Alt 单独按下）：选中第一个菜单项但不展开
+    pub fn activate_first(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        self.keyboard_active = true;
+        if self.active_index.is_some() {
+            return;
+        }
+        self.focus_index = Some(0);
+    }
+
+    /// 展开当前焦点菜单并定位首个可选中子项（向下键首次展开时调用）
+    pub fn expand_focused(&mut self) {
+        let fi = match self.focus_index {
+            Some(i) => i,
+            None => return,
+        };
+        if self.active_index.is_some() {
+            return;
+        }
+        self.expand(fi);
+        if let Some(item) = self.items.get(fi) {
+            self.submenu_focus_index = Self::first_enabled_submenu(&item.items);
+        }
+    }
+
+    /// 关闭菜单并退出键盘模式
+    pub fn close_menu(&mut self) {
+        self.close_all();
+    }
+
+    /// 顶层菜单向左导航
+    pub fn navigate_left(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        let cur = self.focus_index.unwrap_or(0);
+        let new_idx = if cur == 0 {
+            self.items.len() - 1
+        } else {
+            cur - 1
+        };
+        self.focus_index = Some(new_idx);
+        self.expand(new_idx);
+        if let Some(item) = self.items.get(new_idx) {
+            self.submenu_focus_index = Self::first_enabled_submenu(&item.items);
+        }
+    }
+
+    /// 顶层菜单向右导航
+    pub fn navigate_right(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        let cur = self.focus_index.unwrap_or(0);
+        let new_idx = if cur + 1 >= self.items.len() {
+            0
+        } else {
+            cur + 1
+        };
+        self.focus_index = Some(new_idx);
+        self.expand(new_idx);
+        if let Some(item) = self.items.get(new_idx) {
+            self.submenu_focus_index = Self::first_enabled_submenu(&item.items);
+        }
+    }
+
+    /// 子菜单向上导航
+    pub fn navigate_up(&mut self) {
+        let ai = match self.active_index {
+            Some(i) => i,
+            None => return,
+        };
+        let items = match self.items.get(ai) {
+            Some(it) => &it.items,
+            None => return,
+        };
+        let cur = self.submenu_focus_index.unwrap_or(0);
+        // 从当前向前找上一个可选项
+        let mut idx = if cur == 0 { items.len() } else { cur };
+        loop {
+            idx = idx.saturating_sub(1);
+            if idx >= items.len() {
+                break;
+            }
+            let it = &items[idx];
+            if it.enabled && it.label != "-" && it.command_id != CommandId::None {
+                self.submenu_focus_index = Some(idx);
+                return;
+            }
+            if idx == 0 {
+                break;
+            }
+        }
+        // 未找到上一个，跳到最后一个
+        if let Some(last) = Self::last_enabled_submenu(items) {
+            self.submenu_focus_index = Some(last);
+        }
+    }
+
+    /// 子菜单向下导航
+    pub fn navigate_down(&mut self) {
+        let ai = match self.active_index {
+            Some(i) => i,
+            None => return,
+        };
+        let items = match self.items.get(ai) {
+            Some(it) => &it.items,
+            None => return,
+        };
+        let cur = self.submenu_focus_index.unwrap_or(0);
+        let mut idx = cur;
+        loop {
+            idx += 1;
+            if idx >= items.len() {
+                break;
+            }
+            let it = &items[idx];
+            if it.enabled && it.label != "-" && it.command_id != CommandId::None {
+                self.submenu_focus_index = Some(idx);
+                return;
+            }
+        }
+        // 到底部，跳回第一个
+        if let Some(first) = Self::first_enabled_submenu(items) {
+            self.submenu_focus_index = Some(first);
+        }
+    }
+
+    /// 获取当前键盘焦点选中的命令（Enter 触发）
+    pub fn focused_command(&self) -> Option<CommandId> {
+        let ai = self.active_index?;
+        let si = self.submenu_focus_index?;
+        let item = self.items.get(ai)?;
+        let sub = item.items.get(si)?;
+        if sub.enabled && sub.label != "-" && sub.command_id != CommandId::None {
+            Some(sub.command_id)
+        } else {
+            None
+        }
     }
 }
