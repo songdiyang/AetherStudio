@@ -890,6 +890,26 @@ impl EditorState {
                 .brush_cache
                 .get_brush(target, &dir_color)
                 .unwrap();
+            let sel_color = if self.theme.glass_enabled {
+                self.theme.glow_selection
+            } else {
+                color_f(0.0, 0.47, 0.83, 1.0)
+            };
+            let sel_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &sel_color)
+                .unwrap();
+            let hover_color = if self.theme.glass_enabled {
+                color_f(0.25, 0.25, 0.27, 0.70)
+            } else {
+                color_f(0.2, 0.2, 0.2, 1.0)
+            };
+            let hover_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &hover_color)
+                .unwrap();
             // 章节分隔线颜色
             let sep_color = color_f(0.2, 0.2, 0.2, 1.0);
             let sep_brush = self
@@ -926,26 +946,7 @@ impl EditorState {
 
             if let Some(tree) = &self.file_tree {
                 let mut current_y = y + header_h + 6.0 - self.sidebar_scroll_y;
-                let sel_color = if self.theme.glass_enabled {
-                    self.theme.glow_selection
-                } else {
-                    color_f(0.0, 0.47, 0.83, 1.0)
-                };
-                let sel_brush = self
-                    .render_ctx
-                    .brush_cache
-                    .get_brush(target, &sel_color)
-                    .unwrap();
-                let hover_color = if self.theme.glass_enabled {
-                    color_f(0.25, 0.25, 0.27, 0.70)
-                } else {
-                    color_f(0.2, 0.2, 0.2, 1.0)
-                };
-                let hover_brush = self
-                    .render_ctx
-                    .brush_cache
-                    .get_brush(target, &hover_color)
-                    .unwrap();
+                let mut tree_text_buf = std::mem::take(&mut self.tree_text_utf16_buf);
                 self.render_tree_nodes(
                     target,
                     tree,
@@ -960,7 +961,9 @@ impl EditorState {
                     &dir_brush,
                     &sel_brush,
                     &hover_brush,
+                    &mut tree_text_buf,
                 );
+                self.tree_text_utf16_buf = tree_text_buf;
             } else {
                 let text: Vec<u16> = "按 Ctrl+K 打开文件夹"
                     .encode_utf16()
@@ -6009,7 +6012,9 @@ impl EditorState {
         dir_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
         sel_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
         hover_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+        tree_text_buf: &mut Vec<u16>,
     ) {
+        let mut display_buf = String::with_capacity(64);
         let mut child_idx = if parent_idx == u32::MAX {
             tree.first_root_node()
         } else {
@@ -6067,7 +6072,11 @@ impl EditorState {
                     ""
                 };
 
-                let display = format!("{}{} {}", arrow, icon, name);
+                display_buf.clear();
+                display_buf.push_str(arrow);
+                display_buf.push_str(icon);
+                display_buf.push(' ');
+                display_buf.push_str(name);
 
                 let item_left = base_x + indent;
                 let item_right = base_x + sidebar_width - 10.0;
@@ -6108,7 +6117,9 @@ impl EditorState {
                 };
 
                 unsafe {
-                    let wide: Vec<u16> = display.encode_utf16().chain(Some(0)).collect();
+                    tree_text_buf.clear();
+                    tree_text_buf.extend(display_buf.encode_utf16());
+                    tree_text_buf.push(0);
                     let text_rect = D2D_RECT_F {
                         left: item_left,
                         top: *current_y,
@@ -6116,7 +6127,7 @@ impl EditorState {
                         bottom: *current_y + 20.0,
                     };
                     target.DrawText(
-                        &wide,
+                        tree_text_buf,
                         format,
                         &text_rect,
                         brush,
@@ -6142,6 +6153,7 @@ impl EditorState {
                         dir_brush,
                         sel_brush,
                         hover_brush,
+                        tree_text_buf,
                     );
                 }
 

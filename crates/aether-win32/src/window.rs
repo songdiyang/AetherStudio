@@ -260,6 +260,19 @@ unsafe fn get_window_state(hwnd: HWND) -> Option<Rc<RefCell<EditorState>>> {
     Some(cloned)
 }
 
+/// 从窗口获取状态并设为当前活跃状态（用于消息处理函数）
+fn get_and_set_state(hwnd: HWND) -> Option<Rc<RefCell<EditorState>>> {
+    unsafe {
+        let state = get_window_state(hwnd);
+        // 同步 thread_local 到当前窗口状态
+        if let Some(ref s) = state {
+            set_active_state(s.clone());
+        }
+        state
+    }
+}
+
+
 pub fn run() {
     unsafe {
         // 设置 DPI 感知模式（Per-Monitor V2）
@@ -362,20 +375,12 @@ unsafe fn create_editor_window(
     let state = EditorState::new(hwnd, is_main_window).unwrap();
     let state_rc = Rc::new(RefCell::new(state));
 
-    // 将状态存储到窗口的用户数据区，以便窗口过程可以访问
-    // 使用 GWL_USERDATA 来存储 Rc<RefCell<EditorState>> 的指针
-    let state_ptr = Rc::into_raw(state_rc) as *mut RefCell<EditorState> as isize;
-    let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr);
-
     // 获取窗口实际 DPI 并计算缩放因子
     {
         use windows::Win32::UI::HiDpi::GetDpiForWindow;
         let dpi = GetDpiForWindow(hwnd);
         let scale = dpi as f32 / 96.0;
-        // UI-H01: 使用 ManuallyDrop 保护，防止 borrow_mut panic 时 Rc 被释放导致 Use-after-free
-        let state_ref = ManuallyDrop::new(Rc::from_raw(state_ptr as *mut RefCell<EditorState>));
-        state_ref.borrow_mut().dpi_scale = scale;
-        let _ = Rc::into_raw(ManuallyDrop::into_inner(state_ref));
+        state_rc.borrow_mut().dpi_scale = scale;
     }
 
     // 获取实际客户区物理像素尺寸
@@ -384,23 +389,22 @@ unsafe fn create_editor_window(
         let w = (client_rect.right - client_rect.left) as u32;
         let h = (client_rect.bottom - client_rect.top) as u32;
         if w > 0 && h > 0 {
-            // UI-H01: 使用 ManuallyDrop 保护
-            let state_ref = ManuallyDrop::new(Rc::from_raw(state_ptr as *mut RefCell<EditorState>));
-            state_ref.borrow_mut().resize(w, h);
-            let _ = Rc::into_raw(ManuallyDrop::into_inner(state_ref));
+            state_rc.borrow_mut().resize(w, h);
         }
     }
 
     // 初始化渲染目标并首次渲染
     {
-        let state_ref = ManuallyDrop::new(Rc::from_raw(state_ptr as *mut RefCell<EditorState>));
-        let _ = state_ref.borrow_mut().init_render_target();
-        state_ref.borrow_mut().render();
+        let _ = state_rc.borrow_mut().init_render_target();
+        state_rc.borrow_mut().render();
         // 设为当前活跃状态
-        let state_ref = ManuallyDrop::new(Rc::from_raw(state_ptr as *mut RefCell<EditorState>));
-        set_active_state((*state_ref).clone());
-        // 不调用 ManuallyDrop::into_inner，保持原始引用计数不变
+        set_active_state(state_rc.clone());
     }
+
+    // 将状态存储到窗口的用户数据区，以便窗口过程可以访问
+    // 使用 GWLP_USERDATA 来存储 Rc<RefCell<EditorState>> 的指针
+    let state_ptr = Rc::into_raw(state_rc) as *mut RefCell<EditorState> as isize;
+    let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr);
 
     // UI-C02: 窗口成功创建，递增全局计数器
     WINDOW_COUNT.fetch_add(1, Ordering::SeqCst);
@@ -408,24 +412,11 @@ unsafe fn create_editor_window(
     hwnd
 }
 
-extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    unsafe {
-        // UI-M06: 从窗口 GWLP_USERDATA 获取状态，同步到 thread_local，
-        // 防止多窗口消息交错时键盘输入路由到错误窗口
-        let get_state = || -> Option<Rc<RefCell<EditorState>>> {
-            let state = get_window_state(hwnd);
-            // 同步 thread_local 到当前窗口状态
-            if let Some(ref s) = state {
-                set_active_state(s.clone());
-            }
-            state
-        };
-
-        match msg {
-            WM_LBUTTONDOWN => {
+/// WM_LBUTTONDOWN
+unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
                 let raw_x = (lparam.0 & 0xFFFF) as i16 as f32;
                 let raw_y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
-                if let Some(state) = get_state() {
+                if let Some(state) = get_and_set_state(hwnd) {
                     let mut st = state.borrow_mut();
                     // 默认取消终端焦点，只有点击底部面板时才聚焦
                     st.terminal_panel.focused = false;
@@ -1187,12 +1178,14 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 }
                 LRESULT(0)
             }
-            WM_MOUSEMOVE => {
+
+/// WM_MOUSEMOVE
+unsafe fn on_m_o_u_s_e_m_o_v_e(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
                 let raw_x = (lparam.0 & 0xFFFF) as i16 as f32;
                 let raw_y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
                 let is_dragging = wparam.0 & 0x0001 != 0; // MK_LBUTTON
 
-                if let Some(state) = get_state() {
+                if let Some(state) = get_and_set_state(hwnd) {
                     let mut st = state.borrow_mut();
                     // 将物理像素转换为逻辑像素(DIP)
                     let mouse_x = raw_x / st.dpi_scale;
@@ -1549,7 +1542,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 }
                 LRESULT(0)
             }
-            WM_LBUTTONUP => {
+
+/// WM_LBUTTONUP
+unsafe fn on_l_b_u_t_t_o_n_u_p(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 let _ = KillTimer(hwnd, LP_TIMER_ID);
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
@@ -1589,11 +1584,13 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 });
                 LRESULT(0)
             }
-            WM_LBUTTONDBLCLK => {
+
+/// WM_LBUTTONDBLCLK
+unsafe fn on_l_b_u_t_t_o_n_d_b_l_c_l_k(hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
                 // P2-5: 双击选词
                 let raw_x = (lparam.0 & 0xFFFF) as i16 as f32;
                 let raw_y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
-                if let Some(state) = get_state() {
+                if let Some(state) = get_and_set_state(hwnd) {
                     let mut st = state.borrow_mut();
                     // 仅在非对话框、非命令面板、非欢迎页时处理编辑器区域双击
                     // （settings_panel 在侧边栏，editor_region.contains 已排除）
@@ -1628,7 +1625,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 }
                 LRESULT(0)
             }
-            WM_TIMER => {
+
+/// WM_TIMER
+unsafe fn on_t_i_m_e_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 if wparam.0 == TERM_TIMER_ID {
                     // 终端刷新：周期性重绘以显示异步到达的 shell 输出。
                     // render() 内部会调用 flush_output 拉取子进程输出。
@@ -1641,14 +1640,14 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     });
                     if !still_visible {
                         let _ = KillTimer(hwnd, TERM_TIMER_ID);
-                    } else if let Some(state) = get_state() {
+                    } else if let Some(state) = get_and_set_state(hwnd) {
                         state.borrow_mut().render();
                     }
                     return LRESULT(0);
                 }
                 if wparam.0 == LP_TIMER_ID {
                     let _ = KillTimer(hwnd, LP_TIMER_ID);
-                    if let Some(state) = get_state() {
+                    if let Some(state) = get_and_set_state(hwnd) {
                         let mut st = state.borrow_mut();
                         if st.lbutton_down {
                             if let Some(target) = st.lpress_target {
@@ -1684,13 +1683,25 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 }
                 LRESULT(0)
             }
-            WM_DESTROY => {
+
+/// WM_DESTROY
+unsafe fn on_d_e_s_t_r_o_y(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 // 释放窗口关联的编辑器状态
                 let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RefCell<EditorState>;
                 if !ptr.is_null() {
                     // P0.2c: 主窗口退出前持久化窗口状态(矩形/最大化/工作区)。
                     // 用 Rc::from_raw 取回所有权,在 drop 之前完成持久化。
                     let rc = Rc::from_raw(ptr);
+                    // 清理当前线程的活跃状态引用，避免已释放 Rc 残留在 thread_local
+                    let clear_active = EDITOR_STATE.with(|s| {
+                        s.borrow()
+                            .as_ref()
+                            .map(|active| Rc::ptr_eq(active, &rc))
+                            .unwrap_or(false)
+                    });
+                    if clear_active {
+                        EDITOR_STATE.with(|s| *s.borrow_mut() = None);
+                    }
                     {
                         let state = rc.borrow();
                         if state.is_main_window {
@@ -1707,25 +1718,31 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 }
                 LRESULT(0)
             }
-            msg if msg == WM_APP + 2 => {
+
+/// msg if msg == WM_APP + 2
+unsafe fn on_wm_app_2(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 // 新建窗口请求
                 let instance =
                     windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap();
                 create_editor_window(instance.into(), Some(hwnd));
                 LRESULT(0)
             }
-            msg if msg == WM_APP + 3 => {
-                // 文件夹异步扫描完成
-                let raw = wparam.0;
+
+/// msg if msg == WM_APP + 7
+unsafe fn on_wm_app_7(_hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+                // 文件夹异步扫描批次完成
+                let raw = lparam.0 as usize;
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
-                        state.borrow_mut().on_folder_scan_complete(raw);
+                        state.borrow_mut().on_folder_scan_batch(raw);
                         state.borrow_mut().render();
                     }
                 });
                 LRESULT(0)
             }
-            msg if msg == WM_APP + 4 => {
+
+/// msg if msg == WM_APP + 4
+unsafe fn on_wm_app_4(_hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 // C-09: SSH 异步连接完成
                 let raw = wparam.0;
                 EDITOR_STATE.with(|s| {
@@ -1736,7 +1753,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 });
                 LRESULT(0)
             }
-            msg if msg == WM_APP + 5 => {
+
+/// msg if msg == WM_APP + 5
+unsafe fn on_wm_app_5(_hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 // C-09: Git 异步克隆完成
                 let raw = wparam.0;
                 EDITOR_STATE.with(|s| {
@@ -1747,7 +1766,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 });
                 LRESULT(0)
             }
-            msg if msg == WM_APP + 6 => {
+
+/// msg if msg == WM_APP + 6
+unsafe fn on_wm_app_6(_hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 // P0-1: 远程子目录异步列目录完成
                 let raw = wparam.0;
                 EDITOR_STATE.with(|s| {
@@ -1758,7 +1779,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 });
                 LRESULT(0)
             }
-            WM_DROPFILES => {
+
+/// WM_DROPFILES
+unsafe fn on_d_r_o_p_f_i_l_e_s(_hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
                 let hdrop = HDROP(wparam.0 as *mut std::ffi::c_void);
 
@@ -1793,7 +1816,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 DragFinish(hdrop);
                 LRESULT(0)
             }
-            WM_SIZE => {
+
+/// WM_SIZE
+unsafe fn on_s_i_z_e(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 let mut client_rect = RECT::default();
                 if GetClientRect(hwnd, &mut client_rect).is_ok() {
                     let width = (client_rect.right - client_rect.left) as u32;
@@ -1816,7 +1841,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 }
                 LRESULT(0)
             }
-            WM_DPICHANGED => {
+
+/// WM_DPICHANGED
+unsafe fn on_d_p_i_c_h_a_n_g_e_d(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
                 let new_dpi = (wparam.0 & 0xFFFF) as f32;
                 let new_scale = new_dpi / 96.0;
 
@@ -1856,17 +1883,23 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 });
                 LRESULT(0)
             }
-            WM_NCACTIVATE => {
+
+/// WM_NCACTIVATE
+unsafe fn on_n_c_a_c_t_i_v_a_t_e(_hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 // 阻止系统绘制非激活状态的边框（白色边框）
                 // 返回 TRUE 表示已处理，不绘制系统默认的 NC 激活指示器
                 LRESULT(1)
             }
-            WM_NCCALCSIZE => {
+
+/// WM_NCCALCSIZE
+unsafe fn on_n_c_c_a_l_c_s_i_z_e(_hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 // 移除系统非客户区边框，避免白色边框线
                 // 返回 0 表示客户区覆盖整个窗口，不绘制系统边框
                 LRESULT(0)
             }
-            WM_NCHITTEST => {
+
+/// WM_NCHITTEST
+unsafe fn on_n_c_h_i_t_t_e_s_t(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
                 // 自定义命中测试，实现无边框窗口的调整大小和拖动
                 let x = ((lparam.0 & 0xFFFF) as i16) as i32;
                 let y = (((lparam.0 >> 16) & 0xFFFF) as i16) as i32;
@@ -1911,11 +1944,15 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
-            WM_ERASEBKGND => {
+
+/// WM_ERASEBKGND
+unsafe fn on_e_r_a_s_e_b_k_g_n_d(_hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 // 阻止系统擦除背景，避免白色闪烁
                 LRESULT(1)
             }
-            WM_PAINT => {
+
+/// WM_PAINT
+unsafe fn on_p_a_i_n_t(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 let mut ps = PAINTSTRUCT::default();
                 let _hdc = BeginPaint(hwnd, &mut ps);
                 EDITOR_STATE.with(|s| {
@@ -1926,14 +1963,18 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)
             }
-            WM_IME_STARTCOMPOSITION => {
+
+/// WM_IME_STARTCOMPOSITION
+unsafe fn on_ime_startcomposition(_hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 // P0-2: IME 开始合成。仅做位置初始化，IME 候选/合成窗口位置由
                 // 渲染时 set_candidate_window_position 同步。返回 0 表示已处理。
                 LRESULT(0)
             }
-            WM_IME_COMPOSITION => {
+
+/// WM_IME_COMPOSITION
+unsafe fn on_ime_composition(hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
                 // C-12: 键盘消息进入时先同步 thread_local 到当前窗口状态
-                get_state();
+                get_and_set_state(hwnd);
                 let lparam_flags = lparam.0 as u32;
                 const GCS_COMPSTR: u32 = 0x0008;
                 const GCS_RESULTSTR: u32 = 0x0800;
@@ -1992,7 +2033,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 });
                 LRESULT(0)
             }
-            WM_IME_ENDCOMPOSITION => {
+
+/// WM_IME_ENDCOMPOSITION
+unsafe fn on_ime_endcomposition(_hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 // P0-2: IME 结束合成。清除合成串显示。
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
@@ -2002,16 +2045,20 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 });
                 LRESULT(0)
             }
-            WM_IME_CHAR => {
+
+/// WM_IME_CHAR
+unsafe fn on_ime_char(_hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 // P0-2: 阻止 TranslateMessage 从 WM_IME_CHAR 产生 WM_CHAR，
                 // 避免中文输入字符被 WM_CHAR 重复插入。
                 // 提交文本已通过 WM_IME_COMPOSITION + GCS_RESULTSTR 处理。
                 LRESULT(0)
             }
-            WM_CHAR => {
+
+/// WM_CHAR
+unsafe fn on_c_h_a_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 // C-12: 键盘消息进入时先同步 thread_local 到当前窗口状态，
                 // 防止 Alt+Tab / 任务栏切换焦点后键盘输入路由到错误窗口的 EditorState
-                get_state();
+                get_and_set_state(hwnd);
                 let ch = (wparam.0 & 0xFFFF) as u16;
 
                 // P2-9: 处理 UTF-16 代理对以支持 BMP 外字符（emoji、CJK 扩展 B 等）
@@ -2200,9 +2247,11 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 }
                 LRESULT(0)
             }
-            WM_KEYDOWN => {
+
+/// WM_KEYDOWN
+unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
                 // C-12: 键盘消息进入时先同步 thread_local 到当前窗口状态
-                get_state();
+                get_and_set_state(hwnd);
                 let vk = VIRTUAL_KEY(wparam.0 as u16);
                 let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
                 let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
@@ -3526,7 +3575,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 }
                 LRESULT(0)
             }
-            WM_MOUSEWHEEL => {
+
+/// WM_MOUSEWHEEL
+unsafe fn on_m_o_u_s_e_w_h_e_e_l(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
                 let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as f32;
                 // H-18: 提取光标屏幕坐标并转换为客户端坐标
                 let screen_x = (lparam.0 & 0xFFFF) as i16 as i32;
@@ -3594,7 +3645,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 });
                 LRESULT(0)
             }
-            WM_MOUSEHWHEEL => {
+
+/// WM_MOUSEHWHEEL
+unsafe fn on_m_o_u_s_e_h_w_h_e_e_l(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
                 // P0-3: 横向滚轮（触控板水平滚动 / 鼠标侧键）
                 let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as f32;
                 let screen_x = (lparam.0 & 0xFFFF) as i16 as i32;
@@ -3626,7 +3679,48 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 });
                 LRESULT(0)
             }
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+
+/// _
+unsafe fn on_default(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+
+extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe {
+        // UI-M06: 从窗口 GWLP_USERDATA 获取状态，同步到 thread_local，
+        // 防止多窗口消息交错时键盘输入路由到错误窗口
+        match msg {
+            WM_LBUTTONDOWN => on_l_b_u_t_t_o_n_d_o_w_n(hwnd, msg, wparam, lparam),
+            WM_MOUSEMOVE => on_m_o_u_s_e_m_o_v_e(hwnd, msg, wparam, lparam),
+            WM_LBUTTONUP => on_l_b_u_t_t_o_n_u_p(hwnd, msg, wparam, lparam),
+            WM_LBUTTONDBLCLK => on_l_b_u_t_t_o_n_d_b_l_c_l_k(hwnd, msg, wparam, lparam),
+            WM_TIMER => on_t_i_m_e_r(hwnd, msg, wparam, lparam),
+            WM_DESTROY => on_d_e_s_t_r_o_y(hwnd, msg, wparam, lparam),
+            msg if msg == WM_APP + 2 => on_wm_app_2(hwnd, msg, wparam, lparam),
+            msg if msg == WM_APP + 3 => LRESULT(0),
+            msg if msg == WM_APP + 4 => on_wm_app_4(hwnd, msg, wparam, lparam),
+            msg if msg == WM_APP + 5 => on_wm_app_5(hwnd, msg, wparam, lparam),
+            msg if msg == WM_APP + 6 => on_wm_app_6(hwnd, msg, wparam, lparam),
+            msg if msg == WM_APP + 7 => on_wm_app_7(hwnd, msg, wparam, lparam),
+            WM_DROPFILES => on_d_r_o_p_f_i_l_e_s(hwnd, msg, wparam, lparam),
+            WM_SIZE => on_s_i_z_e(hwnd, msg, wparam, lparam),
+            WM_DPICHANGED => on_d_p_i_c_h_a_n_g_e_d(hwnd, msg, wparam, lparam),
+            WM_NCACTIVATE => on_n_c_a_c_t_i_v_a_t_e(hwnd, msg, wparam, lparam),
+            WM_NCCALCSIZE => on_n_c_c_a_l_c_s_i_z_e(hwnd, msg, wparam, lparam),
+            WM_NCHITTEST => on_n_c_h_i_t_t_e_s_t(hwnd, msg, wparam, lparam),
+            WM_ERASEBKGND => on_e_r_a_s_e_b_k_g_n_d(hwnd, msg, wparam, lparam),
+            WM_PAINT => on_p_a_i_n_t(hwnd, msg, wparam, lparam),
+            WM_IME_STARTCOMPOSITION => on_ime_startcomposition(hwnd, msg, wparam, lparam),
+            WM_IME_COMPOSITION => on_ime_composition(hwnd, msg, wparam, lparam),
+            WM_IME_ENDCOMPOSITION => on_ime_endcomposition(hwnd, msg, wparam, lparam),
+            WM_IME_CHAR => on_ime_char(hwnd, msg, wparam, lparam),
+            WM_CHAR => on_c_h_a_r(hwnd, msg, wparam, lparam),
+            WM_KEYDOWN => on_k_e_y_d_o_w_n(hwnd, msg, wparam, lparam),
+            WM_MOUSEWHEEL => on_m_o_u_s_e_w_h_e_e_l(hwnd, msg, wparam, lparam),
+            WM_MOUSEHWHEEL => on_m_o_u_s_e_h_w_h_e_e_l(hwnd, msg, wparam, lparam),
+            _ => on_default(hwnd, msg, wparam, lparam),
         }
     }
 }
+

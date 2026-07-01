@@ -39,11 +39,22 @@ pub enum FindReplaceFocus {
     ReplaceText,
 }
 
-/// 文件夹异步扫描结果（由后台线程通过 PostMessage 发送回 UI 线程）
-struct FolderScanResult {
+/// 文件夹异步扫描条目（由后台线程生成，分批通过 PostMessage 发送回 UI 线程）
+#[derive(Clone, Debug)]
+struct ScannedEntry {
+    name: String,
+    kind: FileKind,
+    #[allow(dead_code)]
     path: PathBuf,
-    tree: Option<FileTree>,
-    error: Option<String>,
+    depth: u8,
+}
+
+/// 文件夹异步扫描批次（由后台线程通过 PostMessage WM_APP+7 发送回 UI 线程）
+#[derive(Clone, Debug)]
+struct ScannedBatch {
+    generation: u64,
+    entries: Vec<ScannedEntry>,
+    complete: bool,
 }
 
 /// C-09: SSH 异步连接结果（由后台线程通过 PostMessage 发送回 UI 线程）
@@ -105,6 +116,8 @@ pub struct EditorState {
     pub(crate) cached_line_numbers: Vec<Vec<u16>>,
     /// 可复用的 UTF-16 文本缓冲区（避免 render_editor 中每 token 分配 Vec<u16>）
     pub(crate) text_utf16_buf: Vec<u16>,
+    /// 文件树渲染用的可复用 UTF-16 缓冲区（避免 render_tree_nodes 中每次分配 Vec<u16>）
+    pub(crate) tree_text_utf16_buf: Vec<u16>,
     // 当前语言
     pub(crate) language: Language,
     /// 标签页系统（后台存储，切换时同步）
@@ -131,6 +144,8 @@ pub struct EditorState {
     // 全局 UI 状态
     pub file_tree: Option<FileTree>,
     pub current_folder: Option<PathBuf>,
+    /// 当前文件夹加载世代，用于丢弃过期批次消息
+    pub(crate) folder_generation: u64,
     pub status_message: String,
     pub key_map: KeyMap,
     pub window_width: u32,
@@ -530,6 +545,7 @@ impl EditorState {
             buffer_version: 0,
             cached_line_numbers: Vec::new(),
             text_utf16_buf: Vec::with_capacity(256),
+            tree_text_utf16_buf: Vec::with_capacity(64),
             language: Language::PlainText,
             tabs: Vec::new(),
             active_tab: 0,
@@ -547,6 +563,7 @@ impl EditorState {
             find_result_version: 0,
             file_tree: None,
             current_folder: None,
+            folder_generation: 0,
             status_message: "就绪".to_string(),
             key_map,
             window_width: 1280,
@@ -630,7 +647,7 @@ impl EditorState {
 
         // P0.2c: 主窗口启动时自动恢复上次打开的工作区。
         // 仅在路径仍然存在时打开,避免引用已删除/移动的目录。
-        // 异步扫描结果通过 WM_APP+3 回调到达,此处调用仅触发扫描。
+        // 异步扫描结果通过 WM_APP+7 批次回调到达,此处调用仅触发扫描。
         if is_main_window {
             if let Some(workspace) = state.app_settings.ui.last_workspace.clone() {
                 if workspace.exists() {
@@ -966,6 +983,52 @@ const SKIP_DIRS: &[&str] = &[
     ".next",
     ".nuxt",
 ];
+
+/// 扫描文件树顶层条目（在后台线程执行，避免阻塞 UI）
+fn scan_file_tree_entries(path: &PathBuf) -> Vec<ScannedEntry> {
+    const MAX_ENTRIES_PER_DIR: usize = 1000;
+
+    let mut entries: Vec<ScannedEntry> = Vec::new();
+    let mut raw: Vec<_> = match std::fs::read_dir(path) {
+        Ok(dir) => dir.filter_map(|e| e.ok()).collect(),
+        Err(_) => return entries,
+    };
+
+    if raw.len() > MAX_ENTRIES_PER_DIR {
+        raw.truncate(MAX_ENTRIES_PER_DIR);
+    }
+
+    entries.reserve(raw.len());
+    for entry in raw {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if SKIP_DIRS.contains(&name.as_str()) {
+            continue;
+        }
+        let kind = match entry.file_type() {
+            Ok(ft) if ft.is_dir() => FileKind::Directory,
+            Ok(ft) if ft.is_symlink() => FileKind::Symlink,
+            _ => FileKind::File,
+        };
+        entries.push(ScannedEntry {
+            name,
+            kind,
+            path: entry.path(),
+            depth: 0,
+        });
+    }
+
+    entries.sort_by(|a, b| {
+        let a_is_dir = a.kind == FileKind::Directory;
+        let b_is_dir = b.kind == FileKind::Directory;
+        match (a_is_dir, b_is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
+        }
+    });
+
+    entries
+}
 
 /// 扫描单个目录的一层子项并加入文件树（懒加载基础）
 /// 不会递归进入子目录。返回扫描到的子项数量。
@@ -1539,9 +1602,12 @@ impl EditorState {
 
         // 设置 loading 状态，立即重绘显示 spinner
         self.is_loading_folder = true;
+        self.folder_generation = self.folder_generation.wrapping_add(1);
+        let generation = self.folder_generation;
         self.current_folder = Some(path.clone());
         self.status_message = format!("正在扫描: {}...", path.display());
         self.recent_projects.add(&path);
+        self.file_tree = Some(FileTree::new());
 
         let hwnd = self.hwnd;
         let path_clone = path.clone();
@@ -1549,58 +1615,69 @@ impl EditorState {
         // 用 SendHwnd 包装以通过类型检查
         let send_hwnd = SendHwnd(hwnd.0 as usize);
         std::thread::spawn(move || {
-            let mut tree = FileTree::new();
-            let result = populate_children_one_level(&mut tree, &path_clone, u32::MAX, 0);
-            let (tree_opt, error_opt) = match result {
-                Ok(_) => (Some(tree), None),
-                Err(e) => (None, Some(e.to_string())),
+            let entries = scan_file_tree_entries(&path_clone);
+            const BATCH_SIZE: usize = 50;
+            for chunk in entries.chunks(BATCH_SIZE) {
+                let batch = ScannedBatch {
+                    generation,
+                    entries: chunk.to_vec(),
+                    complete: false,
+                };
+                let ptr = Box::into_raw(Box::new(batch));
+                let hwnd = windows::Win32::Foundation::HWND(send_hwnd.0 as *mut std::ffi::c_void);
+                unsafe {
+                    let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                        hwnd,
+                        windows::Win32::UI::WindowsAndMessaging::WM_APP + 7,
+                        windows::Win32::Foundation::WPARAM(0),
+                        windows::Win32::Foundation::LPARAM(ptr as isize),
+                    );
+                }
+            }
+            let complete = ScannedBatch {
+                generation,
+                entries: Vec::new(),
+                complete: true,
             };
-            // 通过 PostMessage 把结果发回 UI 线程：WPARAM 持有 Box raw pointer
-            let payload = Box::new(FolderScanResult {
-                path: path_clone,
-                tree: tree_opt,
-                error: error_opt,
-            });
-            let raw = Box::into_raw(payload) as usize;
+            let ptr = Box::into_raw(Box::new(complete));
             let hwnd = windows::Win32::Foundation::HWND(send_hwnd.0 as *mut std::ffi::c_void);
             unsafe {
                 let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
                     hwnd,
-                    windows::Win32::UI::WindowsAndMessaging::WM_APP + 3,
-                    windows::Win32::Foundation::WPARAM(raw),
-                    windows::Win32::Foundation::LPARAM(0),
+                    windows::Win32::UI::WindowsAndMessaging::WM_APP + 7,
+                    windows::Win32::Foundation::WPARAM(0),
+                    windows::Win32::Foundation::LPARAM(ptr as isize),
                 );
             }
         });
     }
 
-    /// 异步文件夹扫描完成回调（在 UI 线程由 WM_APP+3 调用）
-    pub fn on_folder_scan_complete(&mut self, raw: usize) {
-        self.is_loading_folder = false;
+    /// 异步文件夹扫描批次回调（在 UI 线程由 WM_APP+7 调用）
+    pub fn on_folder_scan_batch(&mut self, raw: usize) {
         // 安全重建 Box
-        let payload = unsafe { Box::from_raw(raw as *mut FolderScanResult) };
-        match payload.tree {
-            Some(tree) => {
-                self.file_tree = Some(tree);
-                self.git.detect(&payload.path);
+        let batch = unsafe { Box::from_raw(raw as *mut ScannedBatch) };
+        if batch.generation != self.folder_generation {
+            return;
+        }
+        if batch.complete {
+            self.is_loading_folder = false;
+            if let Some(folder) = self.current_folder.clone() {
+                self.git.detect(&folder);
                 if let Some(branch) = self.git.current_branch_name() {
                     self.status_bar.update_git_branch(Some(&branch));
                 } else {
                     self.status_bar.update_git_branch(None);
                 }
-                self.status_message = format!("已打开文件夹: {}", payload.path.display());
+                self.status_message = format!("已打开文件夹: {}", folder.display());
                 self.welcome_focus_action = None;
                 // 自动打开 README（若存在）
-                self.try_open_readme(&payload.path);
+                self.try_open_readme(&folder);
             }
-            None => {
-                let msg = format!(
-                    "打开文件夹失败: {}",
-                    payload.error.as_deref().unwrap_or("未知错误")
-                );
-                self.status_message = msg.clone();
-                self.current_folder = None;
-                Dialogs::show_error(self.hwnd, "打开文件夹", &msg);
+            return;
+        }
+        if let Some(ref mut tree) = self.file_tree {
+            for entry in batch.entries {
+                tree.add_node(&entry.name, entry.kind, u32::MAX, entry.depth);
             }
         }
     }
