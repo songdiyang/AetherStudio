@@ -161,6 +161,11 @@ impl EditorState {
         if sidebar_visible_changed || activity_bar_visible_changed {
             self.dirty_tracker.mark_full_window();
         }
+        // UI-L11: 侧边栏/右侧面板内容切换时，玻璃主题下半透明背景会导致
+        // 上一帧内容残留形成重影。强制全量重绘以清除旧内容。
+        if sidebar_changed || right_panel_changed {
+            self.dirty_tracker.mark_full_window();
+        }
 
         // 根据状态变化推断最优渲染命令
         let render_cmd = crate::dirty_rect::RenderCommand::infer_from_state(
