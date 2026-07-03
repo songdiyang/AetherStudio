@@ -88,7 +88,6 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
-            message_type: "request".to_string(),
             command: "initialize".to_string(),
             arguments: Some(args),
         });
@@ -145,7 +144,6 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
-            message_type: "request".to_string(),
             command: "launch".to_string(),
             arguments: Some(launch_args),
         });
@@ -203,7 +201,6 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
-            message_type: "request".to_string(),
             command: "setBreakpoints".to_string(),
             arguments: Some(args),
         });
@@ -283,7 +280,6 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
-            message_type: "request".to_string(),
             command: "stackTrace".to_string(),
             arguments: Some(args),
         });
@@ -330,7 +326,6 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
-            message_type: "request".to_string(),
             command: "scopes".to_string(),
             arguments: Some(args),
         });
@@ -377,7 +372,6 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
-            message_type: "request".to_string(),
             command: "variables".to_string(),
             arguments: Some(args),
         });
@@ -435,7 +429,6 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
-            message_type: "request".to_string(),
             command: "evaluate".to_string(),
             arguments: Some(args),
         });
@@ -541,7 +534,6 @@ impl DebugSession {
         let seq = self.seq_generator.next();
         let request = DapMessage::Request(DapRequest {
             seq,
-            message_type: "request".to_string(),
             command: command.to_string(),
             arguments: Some(arguments),
         });

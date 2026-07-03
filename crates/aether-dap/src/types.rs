@@ -2,8 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// DAP 消息枚举（JSON-RPC 2.0 风格）
+///
+/// C-02: 使用 `tag = "type"` 内部标签替代 `untagged`，确保 serde 根据
+/// `type` 字段（"request"/"response"/"event"）正确分派变体，
+/// 避免 Response 因字段兼容被误判为 Request。
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum DapMessage {
     Request(DapRequest),
     Response(DapResponse),
@@ -14,8 +18,6 @@ pub enum DapMessage {
 pub struct DapRequest {
     #[serde(rename = "seq")]
     pub seq: i64,
-    #[serde(rename = "type")]
-    pub message_type: String,
     pub command: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<serde_json::Value>,
@@ -25,8 +27,6 @@ pub struct DapRequest {
 pub struct DapResponse {
     #[serde(rename = "seq")]
     pub seq: i64,
-    #[serde(rename = "type")]
-    pub message_type: String,
     pub request_seq: i64,
     pub success: bool,
     pub command: String,
@@ -40,8 +40,6 @@ pub struct DapResponse {
 pub struct DapEvent {
     #[serde(rename = "seq")]
     pub seq: i64,
-    #[serde(rename = "type")]
-    pub message_type: String,
     pub event: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<serde_json::Value>,

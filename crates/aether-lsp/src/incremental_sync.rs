@@ -147,7 +147,14 @@ impl LineIndexProvider for FastLineIndex {
             .get(line)
             .copied()
             .unwrap_or(self.total_bytes);
-        let character = position.character as usize;
+        // H-18: 限制 character 不超出本行末尾，避免跨行偏移导致文档模型损坏
+        let line_end = self
+            .line_starts
+            .get(line + 1)
+            .copied()
+            .unwrap_or(self.total_bytes);
+        let max_char = line_end.saturating_sub(line_start);
+        let character = (position.character as usize).min(max_char);
         line_start + character
     }
 }
