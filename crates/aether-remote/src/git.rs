@@ -300,6 +300,13 @@ impl GitRepository {
 
     /// 创建并切换分支(create=true)或切换已有分支(create=false)
     pub fn checkout_branch(&self, branch_name: &str, create: bool) -> Result<()> {
+        // H-24: 防止分支名以 '-' 开头被 git 解析为 flag（如 --upload-pack=malicious）
+        if branch_name.starts_with('-') {
+            return Err(format!(
+                "Invalid branch name: '{}' (must not start with '-')",
+                branch_name
+            ));
+        }
         let args: Vec<&str> = if create {
             vec!["checkout", "-b", branch_name]
         } else {

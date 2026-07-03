@@ -1170,13 +1170,15 @@ unsafe fn on_m_o_u_s_e_m_o_v_e(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: LP
 
         // 对话框悬停处理
         if st.ssh_dialog.visible {
-            let _ = st.handle_ssh_dialog_click(mouse_x, mouse_y);
+            // H-22: 使用专门的 hover 方法，避免 click 方法的副作用（返回动作可能触发逻辑）
+            st.handle_ssh_dialog_hover(mouse_x, mouse_y);
             drop(st);
             state.borrow_mut().render();
             return LRESULT(0);
         }
         if st.clone_dialog.visible {
-            let _ = st.handle_clone_dialog_click(mouse_x, mouse_y);
+            // H-22: 同理，clone 对话框也使用 hover 而非 click
+            st.handle_clone_dialog_hover(mouse_x, mouse_y);
             drop(st);
             state.borrow_mut().render();
             return LRESULT(0);
@@ -1668,8 +1670,23 @@ unsafe fn on_d_e_s_t_r_o_y(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPAR
         let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
     }
     // UI-C02: 仅当所有窗口都关闭时才退出应用程序
-    if WINDOW_COUNT.fetch_sub(1, Ordering::SeqCst) == 1 {
-        PostQuitMessage(0);
+    // L-01: 使用 compare_exchange 防止 fetch_sub 下溢回绕到 usize::MAX，导致 PostQuitMessage 永不触发
+    loop {
+        let current = WINDOW_COUNT.load(Ordering::SeqCst);
+        if current == 0 {
+            // 计数器已为 0，异常状态，不再减避免下溢
+            break;
+        }
+        if WINDOW_COUNT
+            .compare_exchange(current, current - 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            if current == 1 {
+                PostQuitMessage(0);
+            }
+            break;
+        }
+        // CAS 失败，重试
     }
     LRESULT(0)
 }
@@ -1686,9 +1703,14 @@ unsafe fn on_wm_app_2(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -
 unsafe fn on_wm_app_7(_hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // 文件夹异步扫描批次完成
     let raw = lparam.0 as usize;
+    // H-09: 立即重建 Box 确保 Rust drop 语义保证清理，即使 EDITOR_STATE 为 None
+    // 或 on_folder_scan_batch panic 也不会内存泄漏
+    let _batch_guard = unsafe { Box::from_raw(raw as *mut crate::editor::ScannedBatch) };
     EDITOR_STATE.with(|s| {
         if let Some(state) = s.borrow().as_ref() {
-            state.borrow_mut().on_folder_scan_batch(raw);
+            // on_folder_scan_batch 接收 raw 是为了内部重建，但我们已在上方重建。
+            // 传 raw 会让函数再次 from_raw 导致 double-free。改为传 &batch。
+            state.borrow_mut().on_folder_scan_batch_ref(&*_batch_guard);
             state.borrow_mut().render();
         }
     });
@@ -1924,11 +1946,24 @@ unsafe fn on_e_r_a_s_e_b_k_g_n_d(
 unsafe fn on_p_a_i_n_t(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
     let mut ps = PAINTSTRUCT::default();
     let _hdc = BeginPaint(hwnd, &mut ps);
-    EDITOR_STATE.with(|s| {
-        if let Some(state) = s.borrow().as_ref() {
-            state.borrow_mut().render();
-        }
-    });
+    // C-04: 渲染路径中存在 40+ 处 D2D 资源创建 .unwrap()，设备丢失（GPU 驱动崩溃、
+    // 显示模式切换）时会 panic。此处统一 catch_unwind 记录诊断并优雅跳过本次绘制，
+    // 避免逐个替换 unwrap 的同时也保证 panic 不传播。
+    let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        EDITOR_STATE.with(|s| {
+            if let Some(state) = s.borrow().as_ref() {
+                state.borrow_mut().render();
+            }
+        });
+    }));
+    if let Err(payload) = render_result {
+        let msg = payload
+            .downcast_ref::<&'static str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+            .unwrap_or("<non-string panic>");
+        eprintln!("[C-04] render panic recovered (D2D device loss?): {}", msg);
+    }
     let _ = EndPaint(hwnd, &ps);
     LRESULT(0)
 }
@@ -3648,7 +3683,9 @@ unsafe fn on_default(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LR
 }
 
 extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    unsafe {
+    // C-01: WndProc 是 FFI 边界（extern "system"），任何 panic 穿越此边界均为未定义行为。
+    // 使用 catch_unwind 包裹整个函数体，panic 时回退到 DefWindowProcW 以保证进程稳定。
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
         // UI-M06: 从窗口 GWLP_USERDATA 获取状态，同步到 thread_local，
         // 防止多窗口消息交错时键盘输入路由到错误窗口
         match msg {
@@ -3681,6 +3718,22 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             WM_MOUSEWHEEL => on_m_o_u_s_e_w_h_e_e_l(hwnd, msg, wparam, lparam),
             WM_MOUSEHWHEEL => on_m_o_u_s_e_h_w_h_e_e_l(hwnd, msg, wparam, lparam),
             _ => on_default(hwnd, msg, wparam, lparam),
+        }
+    }));
+    match result {
+        Ok(lr) => lr,
+        Err(panic_payload) => {
+            // 记录诊断信息后回退到默认处理，避免 panic 穿越 FFI 边界
+            let msg_str = panic_payload
+                .downcast_ref::<&'static str>()
+                .copied()
+                .or_else(|| panic_payload.downcast_ref::<String>().map(|s| s.as_str()))
+                .unwrap_or("<non-string panic>");
+            eprintln!(
+                "[C-01] window_proc panic recovered (msg={}): {}",
+                msg, msg_str
+            );
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
     }
 }

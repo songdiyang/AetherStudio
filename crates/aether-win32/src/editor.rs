@@ -51,7 +51,7 @@ struct ScannedEntry {
 
 /// 文件夹异步扫描批次（由后台线程通过 PostMessage WM_APP+7 发送回 UI 线程）
 #[derive(Clone, Debug)]
-struct ScannedBatch {
+pub(crate) struct ScannedBatch {
     generation: u64,
     entries: Vec<ScannedEntry>,
     complete: bool,
@@ -1656,6 +1656,11 @@ impl EditorState {
     pub fn on_folder_scan_batch(&mut self, raw: usize) {
         // 安全重建 Box
         let batch = unsafe { Box::from_raw(raw as *mut ScannedBatch) };
+        self.on_folder_scan_batch_ref(&batch);
+    }
+
+    /// H-09: 接收 &ScannedBatch 引用，由调用方负责 Box 的 drop
+    pub(crate) fn on_folder_scan_batch_ref(&mut self, batch: &ScannedBatch) {
         if batch.generation != self.folder_generation {
             return;
         }
@@ -1676,7 +1681,7 @@ impl EditorState {
             return;
         }
         if let Some(ref mut tree) = self.file_tree {
-            for entry in batch.entries {
+            for entry in &batch.entries {
                 tree.add_node(&entry.name, entry.kind, u32::MAX, entry.depth);
             }
         }
@@ -2451,6 +2456,23 @@ impl EditorState {
         Some(crate::ssh::DialogAction::None)
     }
 
+    /// H-22: 仅更新悬停视觉状态，不触发点击动作的副作用
+    pub fn handle_ssh_dialog_hover(&mut self, mouse_x: f32, mouse_y: f32) {
+        if let Some(rect) = &self.ssh_dialog.connect_btn_rect {
+            if rect.contains(mouse_x, mouse_y) {
+                self.ssh_dialog.hover_button = Some(0);
+                return;
+            }
+        }
+        if let Some(rect) = &self.ssh_dialog.cancel_btn_rect {
+            if rect.contains(mouse_x, mouse_y) {
+                self.ssh_dialog.hover_button = Some(1);
+                return;
+            }
+        }
+        self.ssh_dialog.hover_button = None;
+    }
+
     /// 处理克隆对话框点击
     pub fn handle_clone_dialog_click(
         &mut self,
@@ -2471,6 +2493,23 @@ impl EditorState {
         }
         self.clone_dialog.hover_button = None;
         Some(crate::ssh::DialogAction::None)
+    }
+
+    /// H-22: 仅更新克隆对话框悬停视觉状态，不触发点击动作
+    pub fn handle_clone_dialog_hover(&mut self, mouse_x: f32, mouse_y: f32) {
+        if let Some(rect) = &self.clone_dialog.clone_btn_rect {
+            if rect.contains(mouse_x, mouse_y) {
+                self.clone_dialog.hover_button = Some(0);
+                return;
+            }
+        }
+        if let Some(rect) = &self.clone_dialog.cancel_btn_rect {
+            if rect.contains(mouse_x, mouse_y) {
+                self.clone_dialog.hover_button = Some(1);
+                return;
+            }
+        }
+        self.clone_dialog.hover_button = None;
     }
 
     /// 处理 SSH 对话框键盘输入
@@ -2843,8 +2882,12 @@ impl EditorState {
 
         if has_selection {
             // 包裹选区：在选区开始处插入开括号，在选区结束处插入闭括号
-            let (sel_start_line, sel_start_col) = self.selection_start.unwrap();
-            let (sel_end_line, sel_end_col) = self.selection_end.unwrap();
+            // C-02: 使用 zip 一次性解构，避免独立 unwrap 在状态变更后 panic
+            let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) =
+                self.selection_start.zip(self.selection_end)
+            else {
+                return false;
+            };
             // 确保 start < end
             let (start_line, start_col, end_line, end_col) =
                 if (sel_start_line, sel_start_col) <= (sel_end_line, sel_end_col) {
@@ -3850,7 +3893,12 @@ impl EditorState {
                     lexer = Some(self.language.create_lexer());
                 }
                 let line = self.buffer.get_line(i).unwrap_or_default();
-                let tokens = lexer.as_ref().unwrap().lex_full(&line);
+                // C-03: lexer 创建可能返回 None（不支持的语言），unwrap 会 panic 并穿越 WndProc
+                let tokens = if let Some(lex) = lexer.as_ref() {
+                    lex.lex_full(&line)
+                } else {
+                    Vec::new()
+                };
                 self.cached_lines[i] = line;
                 self.cached_tokens[i] = tokens;
                 self.line_cache_versions[i] = self.buffer_version;
@@ -4132,9 +4180,10 @@ impl EditorState {
             return false;
         }
         // 如果有选区，替换选区内容；否则在当前光标位置插入
-        if self.selection_start.is_some() && self.selection_end.is_some() {
-            let (start_line, start_col) = self.selection_start.unwrap();
-            let (end_line, end_col) = self.selection_end.unwrap();
+        // C-02/H-21: 使用 zip 一次性解构，避免独立 unwrap 在中间状态变更后 panic
+        if let Some(((start_line, start_col), (end_line, end_col))) =
+            self.selection_start.zip(self.selection_end)
+        {
             let (first_line, first_col) = if start_line <= end_line {
                 (start_line, start_col)
             } else {
