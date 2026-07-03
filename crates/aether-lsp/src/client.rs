@@ -11,8 +11,8 @@ use crate::types::*;
 /// LSP 客户端管理器
 /// 管理多个语言服务器实例，按语言ID路由请求
 pub struct LspClient {
-    /// 语言ID -> 语言服务器实例
-    servers: Arc<RwLock<HashMap<String, LanguageServer>>>,
+    /// H-08: 语言ID -> 语言服务器实例（per-server 锁，避免全局写锁跨 await）
+    servers: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<LanguageServer>>>>>,
     /// 文档同步管理器
     document_sync: Arc<RwLock<DocumentSync>>,
     /// 诊断集合
@@ -101,8 +101,13 @@ impl LspClient {
         };
         let _ = self.event_tx.send(event);
 
+        // H-08: 每个服务器用独立的 tokio::sync::Mutex 包装，
+        // 避免全局 RwLock 写锁跨 await 持有
         let mut servers = self.servers.write().await;
-        servers.insert(language_id.to_string(), server);
+        servers.insert(
+            language_id.to_string(),
+            Arc::new(tokio::sync::Mutex::new(server)),
+        );
 
         Ok(())
     }
@@ -122,9 +127,13 @@ impl LspClient {
             sync.open_document(uri.clone(), language_id.clone(), version, text.clone());
         }
 
-        // 发送到对应语言服务器
-        let mut servers = self.servers.write().await;
-        if let Some(server) = servers.get_mut(&language_id) {
+        // H-08: 读锁获取 Arc，释放后再 lock 服务器，避免全局写锁跨 await
+        let server_arc = {
+            let servers = self.servers.read().await;
+            servers.get(&language_id).cloned()
+        };
+        if let Some(server) = server_arc {
+            let mut server = server.lock().await;
             server
                 .open_document(uri, language_id, version, text)
                 .await?;
@@ -141,8 +150,13 @@ impl LspClient {
         };
 
         if let Some(lang_id) = language_id {
-            let mut servers = self.servers.write().await;
-            if let Some(server) = servers.get_mut(&lang_id) {
+            // H-08: 读锁获取 Arc，释放后再 lock 服务器
+            let server_arc = {
+                let servers = self.servers.read().await;
+                servers.get(&lang_id).cloned()
+            };
+            if let Some(server) = server_arc {
+                let mut server = server.lock().await;
                 server.close_document(uri).await?;
             }
 
@@ -159,18 +173,28 @@ impl LspClient {
         uri: &Url,
         changes: Vec<TextDocumentContentChangeEvent>,
     ) -> std::io::Result<()> {
-        let (language_id, new_version) = {
-            let mut sync = self.document_sync.write().await;
+        let (language_id, next_version) = {
+            let sync = self.document_sync.read().await;
             let lang_id = sync.get_language_id(uri).cloned();
-            let version = sync.increment_version(uri);
-            (lang_id, version)
+            // H-09: 不在此处递增版本号，仅计算下一个版本号。
+            // 发送成功后再递增，避免失败后版本失步导致后续通知被服务器拒绝。
+            let next_ver = sync.get_version(uri).map(|v| v + 1);
+            (lang_id, next_ver)
         };
 
         if let Some(lang_id) = language_id {
-            if let Some(version) = new_version {
-                let mut servers = self.servers.write().await;
-                if let Some(server) = servers.get_mut(&lang_id) {
+            if let Some(version) = next_version {
+                // H-08: 读锁获取 Arc，释放后再 lock 服务器
+                let server_arc = {
+                    let servers = self.servers.read().await;
+                    servers.get(&lang_id).cloned()
+                };
+                if let Some(server) = server_arc {
+                    let mut server = server.lock().await;
                     server.change_document(uri, version, changes).await?;
+                    // H-09: 发送成功后才递增版本号
+                    let mut sync = self.document_sync.write().await;
+                    sync.increment_version(uri);
                 }
             }
         }
@@ -190,8 +214,12 @@ impl LspClient {
         };
 
         if let Some(lang_id) = language_id {
-            let mut servers = self.servers.write().await;
-            if let Some(server) = servers.get_mut(&lang_id) {
+            let server_arc = {
+                let servers = self.servers.read().await;
+                servers.get(&lang_id).cloned()
+            };
+            if let Some(server) = server_arc {
+                let mut server = server.lock().await;
                 return server.request_completion(uri, position).await;
             }
         }
@@ -211,8 +239,12 @@ impl LspClient {
         };
 
         if let Some(lang_id) = language_id {
-            let mut servers = self.servers.write().await;
-            if let Some(server) = servers.get_mut(&lang_id) {
+            let server_arc = {
+                let servers = self.servers.read().await;
+                servers.get(&lang_id).cloned()
+            };
+            if let Some(server) = server_arc {
+                let mut server = server.lock().await;
                 return server.request_hover(uri, position).await;
             }
         }
@@ -232,8 +264,12 @@ impl LspClient {
         };
 
         if let Some(lang_id) = language_id {
-            let mut servers = self.servers.write().await;
-            if let Some(server) = servers.get_mut(&lang_id) {
+            let server_arc = {
+                let servers = self.servers.read().await;
+                servers.get(&lang_id).cloned()
+            };
+            if let Some(server) = server_arc {
+                let mut server = server.lock().await;
                 return server.request_definition(uri, position).await;
             }
         }
@@ -254,8 +290,12 @@ impl LspClient {
         };
 
         if let Some(lang_id) = language_id {
-            let mut servers = self.servers.write().await;
-            if let Some(server) = servers.get_mut(&lang_id) {
+            let server_arc = {
+                let servers = self.servers.read().await;
+                servers.get(&lang_id).cloned()
+            };
+            if let Some(server) = server_arc {
+                let mut server = server.lock().await;
                 return server
                     .request_references(uri, position, include_declaration)
                     .await;
@@ -278,8 +318,12 @@ impl LspClient {
         };
 
         if let Some(lang_id) = language_id {
-            let mut servers = self.servers.write().await;
-            if let Some(server) = servers.get_mut(&lang_id) {
+            let server_arc = {
+                let servers = self.servers.read().await;
+                servers.get(&lang_id).cloned()
+            };
+            if let Some(server) = server_arc {
+                let mut server = server.lock().await;
                 return server.request_rename(uri, position, new_name).await;
             }
         }
@@ -300,8 +344,12 @@ impl LspClient {
         };
 
         if let Some(lang_id) = language_id {
-            let mut servers = self.servers.write().await;
-            if let Some(server) = servers.get_mut(&lang_id) {
+            let server_arc = {
+                let servers = self.servers.read().await;
+                servers.get(&lang_id).cloned()
+            };
+            if let Some(server) = server_arc {
+                let mut server = server.lock().await;
                 return server.request_code_actions(uri, range, diagnostics).await;
             }
         }
@@ -321,8 +369,12 @@ impl LspClient {
         };
 
         if let Some(lang_id) = language_id {
-            let mut servers = self.servers.write().await;
-            if let Some(server) = servers.get_mut(&lang_id) {
+            let server_arc = {
+                let servers = self.servers.read().await;
+                servers.get(&lang_id).cloned()
+            };
+            if let Some(server) = server_arc {
+                let mut server = server.lock().await;
                 return server.request_formatting(uri, options).await;
             }
         }
@@ -341,8 +393,12 @@ impl LspClient {
         };
 
         if let Some(lang_id) = language_id {
-            let mut servers = self.servers.write().await;
-            if let Some(server) = servers.get_mut(&lang_id) {
+            let server_arc = {
+                let servers = self.servers.read().await;
+                servers.get(&lang_id).cloned()
+            };
+            if let Some(server) = server_arc {
+                let mut server = server.lock().await;
                 return server.request_semantic_tokens_full(uri).await;
             }
         }
@@ -362,8 +418,12 @@ impl LspClient {
         };
 
         if let Some(lang_id) = language_id {
-            let mut servers = self.servers.write().await;
-            if let Some(server) = servers.get_mut(&lang_id) {
+            let server_arc = {
+                let servers = self.servers.read().await;
+                servers.get(&lang_id).cloned()
+            };
+            if let Some(server) = server_arc {
+                let mut server = server.lock().await;
                 return server
                     .request_semantic_tokens_delta(uri, previous_result_id)
                     .await;
@@ -385,8 +445,12 @@ impl LspClient {
         };
 
         if let Some(lang_id) = language_id {
-            let mut servers = self.servers.write().await;
-            if let Some(server) = servers.get_mut(&lang_id) {
+            let server_arc = {
+                let servers = self.servers.read().await;
+                servers.get(&lang_id).cloned()
+            };
+            if let Some(server) = server_arc {
+                let mut server = server.lock().await;
                 return server.request_semantic_tokens_range(uri, range).await;
             }
         }
@@ -406,8 +470,12 @@ impl LspClient {
         };
 
         if let Some(lang_id) = language_id {
-            let mut servers = self.servers.write().await;
-            if let Some(server) = servers.get_mut(&lang_id) {
+            let server_arc = {
+                let servers = self.servers.read().await;
+                servers.get(&lang_id).cloned()
+            };
+            if let Some(server) = server_arc {
+                let mut server = server.lock().await;
                 return server.request_inlay_hints(uri, range).await;
             }
         }
@@ -417,11 +485,16 @@ impl LspClient {
 
     /// 关闭所有服务器
     pub async fn shutdown_all(&self) -> std::io::Result<()> {
-        let mut servers = self.servers.write().await;
-        for (_, server) in servers.iter_mut() {
+        let server_arcs: Vec<Arc<tokio::sync::Mutex<LanguageServer>>> = {
+            let mut servers = self.servers.write().await;
+            let arcs: Vec<_> = servers.values().cloned().collect();
+            servers.clear();
+            arcs
+        };
+        for server_arc in server_arcs {
+            let mut server = server_arc.lock().await;
             let _ = server.shutdown().await;
         }
-        servers.clear();
         Ok(())
     }
 
@@ -433,8 +506,16 @@ impl LspClient {
 
     /// 获取某语言服务器的能力
     pub async fn get_capabilities(&self, language_id: &str) -> Option<ServerCapabilitiesCache> {
-        let servers = self.servers.read().await;
-        servers.get(language_id).map(|s| s.capabilities().clone())
+        let server_arc = {
+            let servers = self.servers.read().await;
+            servers.get(language_id).cloned()
+        };
+        if let Some(server) = server_arc {
+            let server = server.lock().await;
+            Some(server.capabilities().clone())
+        } else {
+            None
+        }
     }
 }
 

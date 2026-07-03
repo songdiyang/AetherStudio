@@ -17,6 +17,20 @@ use crate::editor::EditorState;
 use crate::layout::Region;
 
 impl EditorState {
+    /// 渲染整个编辑器界面。
+    ///
+    /// H-20: 本函数及所有 render_* 子函数中存在大量 D2D/DWrite 资源创建 `.unwrap()`
+    /// （画笔、文本格式、几何体等）。这些调用在 GPU 设备丢失（驱动崩溃、显示模式切换、
+    /// 远程桌面断开）时会 panic。
+    ///
+    /// 已采纳的策略：不在每个 unwrap 处逐一替换为 match/Result（会引入数百行噪音且
+    /// 容易掩盖真实的资源初始化 bug），而是在 WM_PAINT 入口 `on_p_a_i_n_t`
+    /// （window.rs）用 `std::panic::catch_unwind` 包裹整个 `render()` 调用，
+    /// panic 时记录诊断日志并跳过本次绘制，下一帧自动重试。
+    /// 见 C-04 修复（window.rs on_p_a_i_n_t）。
+    ///
+    /// 这样做的代价是单帧渲染失败（视觉上一帧闪烁），但保证进程不会崩溃，
+    /// 且 D2D 资源会在下次 `init_render_target` 时重建。
     pub fn render(&mut self) {
         // 避免0尺寸渲染
         if self.window_width == 0 || self.window_height == 0 {

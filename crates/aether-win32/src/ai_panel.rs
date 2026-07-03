@@ -5,46 +5,84 @@ use aether_ai::{AiClient, ChatMessage};
 /// 脱敏错误消息，避免泄漏 API 密钥等敏感信息
 /// SEC-C04: 用于 test_connection 路径等所有 UI 错误展示
 /// AI-M04: 扩展覆盖 x-api-key、URL 参数、响应体中的密钥
+/// H-02: 循环移除所有 Bearer/x-api-key/authorization 出现，而非仅首个
+///
+/// 注意：当前代码路径已改用 `AiError::safe_display()`，此函数保留供
+/// 需要对原始字符串（如日志）做脱敏的场景使用。
+#[allow(dead_code)]
 pub fn sanitize_error(err: &str) -> String {
     let mut result = err.to_string();
-    // 移除 Bearer token 模式
-    if result.contains("Bearer ") {
-        if let Some(pos) = result.find("Bearer ") {
-            let start = pos + 7;
-            let end = result[start..]
-                .find(|c: char| c.is_whitespace() || c == '\n' || c == '\r')
-                .map(|p| start + p)
-                .unwrap_or(result.len());
-            if end > start {
-                result.replace_range(start..end, "[REDACTED]");
-            }
-        }
-    }
-    // 移除 x-api-key 头（Claude 格式）
-    if let Some(pos) = result.to_lowercase().find("x-api-key:") {
-        let start = pos + 10;
+
+    // H-02: 循环移除所有 "Bearer xxx" 出现（之前仅处理首个，多 Token 时第二个泄露）
+    while let Some(pos) = result.find("Bearer ") {
+        let start = pos + 7;
         let end = result[start..]
-            .find(|c: char| c == '\n' || c == '\r')
+            .find(|c: char| c.is_whitespace() || c == '\n' || c == '\r')
             .map(|p| start + p)
             .unwrap_or(result.len());
         if end > start {
-            result.replace_range(start..end, " [REDACTED]");
+            result.replace_range(start..end, "[REDACTED]");
+        } else {
+            break;
         }
     }
-    // 移除 Authorization 头中的密钥
-    if let Some(pos) = result.to_lowercase().find("authorization:") {
-        let start = pos + 14;
-        let end = result[start..]
+
+    // H-02: 循环移除所有 x-api-key 头（支持冒号和等号分隔，大小写不敏感）
+    let lower = result.to_lowercase();
+    let mut search_from = 0;
+    while let Some(rel_pos) = lower[search_from..].find("x-api-key") {
+        let pos = search_from + rel_pos;
+        // 跳过 "x-api-key" 本身（9 字符）
+        let mut value_start = pos + 9;
+        // 跳过分隔符（: 或 =）和可选空格
+        let rest = &result[value_start..];
+        let trimmed_start = rest
+            .find(|c: char| c != ':' && c != '=' && c != ' ' && c != '\t')
+            .map(|p| value_start + p)
+            .unwrap_or(value_start);
+        value_start = trimmed_start;
+        let end = result[value_start..]
             .find(|c: char| c == '\n' || c == '\r')
-            .map(|p| start + p)
+            .map(|p| value_start + p)
             .unwrap_or(result.len());
-        if end > start {
-            result.replace_range(start..end, " [REDACTED]");
+        if end > value_start {
+            result.replace_range(value_start..end, "[REDACTED]");
+        }
+        search_from = pos + 9;
+        if search_from >= result.len() {
+            break;
         }
     }
-    // 限制长度
+
+    // H-02: 循环移除所有 authorization 头（大小写不敏感）
+    let lower = result.to_lowercase();
+    let mut search_from = 0;
+    while let Some(rel_pos) = lower[search_from..].find("authorization") {
+        let pos = search_from + rel_pos;
+        let mut value_start = pos + 13; // "authorization" = 13 字符
+        let rest = &result[value_start..];
+        let trimmed_start = rest
+            .find(|c: char| c != ':' && c != '=' && c != ' ' && c != '\t')
+            .map(|p| value_start + p)
+            .unwrap_or(value_start);
+        value_start = trimmed_start;
+        let end = result[value_start..]
+            .find(|c: char| c == '\n' || c == '\r')
+            .map(|p| value_start + p)
+            .unwrap_or(result.len());
+        if end > value_start {
+            result.replace_range(value_start..end, "[REDACTED]");
+        }
+        search_from = pos + 13;
+        if search_from >= result.len() {
+            break;
+        }
+    }
+
+    // 限制长度（H-02: 在 UTF-8 字符边界截断，避免半截 Token 可见）
     if result.len() > 500 {
-        result.truncate(500);
+        let safe_len = result.floor_char_boundary(500);
+        result.truncate(safe_len);
         result.push_str("...");
     }
     result
@@ -208,6 +246,11 @@ impl AiPanel {
             return Err("输入为空".to_string());
         }
 
+        // H-17: 限制并发线程数 — 正在生成时拒绝新请求，防止无限制 spawn 线程
+        if self.is_generating {
+            return Err("正在等待上一次回复，请稍后再试".to_string());
+        }
+
         // 限制输入长度（M-03）
         const MAX_INPUT_LEN: usize = 10000;
         let user_input = if self.input.len() > MAX_INPUT_LEN {
@@ -261,7 +304,9 @@ impl AiPanel {
             let client = AiClient::new(&settings);
             let response = match client.chat_completion(&messages) {
                 Ok(resp) => Ok(resp),
-                Err(e) => Err(format!("请求失败: {}", sanitize_error(&e.to_string()))),
+                // H-21: 使用 safe_display() 替代 sanitize_error(&Display)，
+                // 不包含已截断但仍可能有敏感信息的 API 响应体
+                Err(e) => Err(format!("请求失败: {}", e.safe_display())),
             };
             if let Ok(mut guard) = result_arc.lock() {
                 *guard = Some(response);
@@ -283,6 +328,11 @@ impl AiPanel {
             let msg = "请先打开文件或输入代码，再使用 AI 快捷操作。".to_string();
             self.add_assistant_message(msg.clone());
             return Ok(msg);
+        }
+
+        // H-17: 限制并发线程数 — 正在生成时拒绝新请求，防止无限制 spawn 线程
+        if self.is_generating {
+            return Err("正在等待上一次回复，请稍后再试".to_string());
         }
 
         // 限制代码长度（M-03）
@@ -307,7 +357,9 @@ impl AiPanel {
             let client = AiClient::new(&settings);
             let response = match client.chat_completion(&messages) {
                 Ok(resp) => Ok(resp),
-                Err(e) => Err(format!("请求失败: {}", sanitize_error(&e.to_string()))),
+                // H-21: 使用 safe_display() 替代 sanitize_error(&Display)，
+                // 不包含已截断但仍可能有敏感信息的 API 响应体
+                Err(e) => Err(format!("请求失败: {}", e.safe_display())),
             };
             if let Ok(mut guard) = result_arc.lock() {
                 *guard = Some(response);

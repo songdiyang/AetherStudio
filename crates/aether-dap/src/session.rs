@@ -132,6 +132,14 @@ impl DebugSession {
         args: Vec<String>,
         cwd: Option<&str>,
     ) -> std::io::Result<()> {
+        // H-11: 状态机校验 — 已终止的会话不能重新 launch
+        if self.state == DebugSessionState::Terminated {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Cannot launch: session already terminated",
+            ));
+        }
+
         let seq = self.seq_generator.next();
         let mut launch_args = serde_json::json!({
             "program": program,
@@ -575,6 +583,15 @@ impl DebugSession {
 
     /// 处理 DAP 事件
     async fn handle_event(&mut self, event: DapEvent) -> std::io::Result<()> {
+        // H-11: 状态机校验 — 已终止的会话忽略所有延迟事件，防止"复活"
+        // 仅允许 "terminated" 和 "exited" 事件通过（它们确认终止，不会改变状态）
+        if self.state == DebugSessionState::Terminated
+            && event.event != "terminated"
+            && event.event != "exited"
+        {
+            return Ok(());
+        }
+
         match event.event.as_str() {
             "stopped" => {
                 self.state = DebugSessionState::Paused;
