@@ -1149,6 +1149,7 @@ impl EditorState {
                 cursor_after,
                 OpType::Insert,
                 pos,
+                text.len(),
             );
             self.clear_selection();
             self.status_message = "已粘贴".to_string();
@@ -1166,12 +1167,12 @@ impl EditorState {
             None => return,
         };
 
-        let (first_line, first_col) = if start_line <= end_line {
+        let (first_line, first_col) = if (start_line, start_col) <= (end_line, end_col) {
             (start_line, start_col)
         } else {
             (end_line, end_col)
         };
-        let (last_line, last_col) = if start_line <= end_line {
+        let (last_line, last_col) = if (start_line, start_col) <= (end_line, end_col) {
             (end_line, end_col)
         } else {
             (start_line, start_col)
@@ -1200,6 +1201,7 @@ impl EditorState {
                 cursor_after,
                 OpType::Delete,
                 start_byte,
+                0,
             );
         }
         self.clear_selection();
@@ -2825,6 +2827,7 @@ impl EditorState {
             cursor_after,
             OpType::Insert,
             pos,
+            ch.len_utf8(),
         );
         self.status_message = "已修改".to_string();
     }
@@ -2923,6 +2926,7 @@ impl EditorState {
                 cursor_after,
                 OpType::Insert,
                 pos,
+                close_str.len() + open_str.len(),
             );
             self.status_message = "已修改".to_string();
             return true;
@@ -2948,6 +2952,7 @@ impl EditorState {
             cursor_after,
             OpType::Insert,
             pos,
+            pair_text.len(),
         );
         self.status_message = "已修改".to_string();
         true
@@ -3002,6 +3007,7 @@ impl EditorState {
             cursor_after,
             OpType::Insert,
             pos,
+            tab_text.len(),
         );
         self.status_message = "已修改".to_string();
     }
@@ -3059,6 +3065,7 @@ impl EditorState {
             cursor_after,
             OpType::Insert,
             pos,
+            insert_text.len(),
         );
         self.status_message = "已修改".to_string();
     }
@@ -3088,6 +3095,7 @@ impl EditorState {
                     cursor_after,
                     OpType::Delete,
                     prev_pos,
+                    0,
                 );
                 self.status_message = "已修改".to_string();
             }
@@ -3121,6 +3129,7 @@ impl EditorState {
                         cursor_after,
                         OpType::Delete,
                         start,
+                        0,
                     );
                     self.status_message = "已修改".to_string();
                 }
@@ -3151,6 +3160,7 @@ impl EditorState {
                 cursor_after,
                 OpType::Delete,
                 pos,
+                0,
             );
             self.status_message = "已修改".to_string();
         }
@@ -3503,6 +3513,7 @@ impl EditorState {
             cursor_after,
             OpType::Insert,
             pos,
+            comment_prefix.len(),
         );
         self.status_message = "已切换注释".to_string();
     }
@@ -3768,12 +3779,12 @@ impl EditorState {
 
         // Multi-line selection (simplified)
         let mut result = String::new();
-        let (first_line, first_col) = if start_line <= end_line {
+        let (first_line, first_col) = if (start_line, start_col) <= (end_line, end_col) {
             (start_line, start_col)
         } else {
             (end_line, end_col)
         };
-        let (last_line, last_col) = if start_line <= end_line {
+        let (last_line, last_col) = if (start_line, start_col) <= (end_line, end_col) {
             (end_line, end_col)
         } else {
             (start_line, start_col)
@@ -4097,6 +4108,7 @@ impl EditorState {
             cursor_after,
             OpType::Insert,
             pos,
+            self.replace_text.len(),
         );
 
         // 重新查找
@@ -4184,12 +4196,12 @@ impl EditorState {
         if let Some(((start_line, start_col), (end_line, end_col))) =
             self.selection_start.zip(self.selection_end)
         {
-            let (first_line, first_col) = if start_line <= end_line {
+            let (first_line, first_col) = if (start_line, start_col) <= (end_line, end_col) {
                 (start_line, start_col)
             } else {
                 (end_line, end_col)
             };
-            let (last_line, last_col) = if start_line <= end_line {
+            let (last_line, last_col) = if (start_line, start_col) <= (end_line, end_col) {
                 (end_line, end_col)
             } else {
                 (start_line, start_col)
@@ -4222,6 +4234,7 @@ impl EditorState {
                 cursor_after,
                 OpType::Insert,
                 start_byte,
+                code.len(),
             );
 
             self.clear_selection();
@@ -4257,6 +4270,7 @@ impl EditorState {
             cursor_after,
             OpType::Insert,
             pos,
+            code.len(),
         );
 
         self.is_dirty = true;

@@ -193,14 +193,25 @@ impl TerminalPanel {
             let stdout = Arc::clone(stdout);
             thread::spawn(move || {
                 let mut buffer = [0u8; 1024];
+                // H-13: 保留跨缓冲区边界的 incomplete UTF-8 字节，避免中文乱码
+                let mut leftover: Vec<u8> = Vec::new();
                 loop {
                     if let Ok(mut stdout) = stdout.lock() {
                         match stdout.read(&mut buffer) {
                             Ok(0) => break, // EOF
                             Ok(n) => {
-                                let text = String::from_utf8_lossy(&buffer[..n]).to_string();
-                                if tx.send(text).is_err() {
-                                    break; // 接收端已关闭
+                                leftover.extend_from_slice(&buffer[..n]);
+                                // 找到最后一个完整 UTF-8 字符的边界
+                                let valid_len = match std::str::from_utf8(&leftover) {
+                                    Ok(s) => s.len(),
+                                    Err(e) => e.valid_up_to(),
+                                };
+                                if valid_len > 0 {
+                                    let text = String::from_utf8_lossy(&leftover[..valid_len]).to_string();
+                                    if tx.send(text).is_err() {
+                                        break; // 接收端已关闭
+                                    }
+                                    leftover.drain(..valid_len);
                                 }
                             }
                             Err(_) => break,
@@ -208,6 +219,10 @@ impl TerminalPanel {
                     }
                     // 增加轮询间隔，从 10ms 改为 50ms，减少 CPU 占用
                     thread::sleep(std::time::Duration::from_millis(50));
+                }
+                // 刷新剩余字节（可能是不完整的 UTF-8）
+                if !leftover.is_empty() {
+                    let _ = tx.send(String::from_utf8_lossy(&leftover).to_string());
                 }
             });
         }
@@ -219,20 +234,33 @@ impl TerminalPanel {
             let stderr = Arc::clone(stderr);
             thread::spawn(move || {
                 let mut buffer = [0u8; 1024];
+                // H-13: 保留跨缓冲区边界的 incomplete UTF-8 字节
+                let mut leftover: Vec<u8> = Vec::new();
                 loop {
                     if let Ok(mut stderr) = stderr.lock() {
                         match stderr.read(&mut buffer) {
                             Ok(0) => break, // EOF
                             Ok(n) => {
-                                let text = String::from_utf8_lossy(&buffer[..n]).to_string();
-                                if tx.send(text).is_err() {
-                                    break; // 接收端已关闭
+                                leftover.extend_from_slice(&buffer[..n]);
+                                let valid_len = match std::str::from_utf8(&leftover) {
+                                    Ok(s) => s.len(),
+                                    Err(e) => e.valid_up_to(),
+                                };
+                                if valid_len > 0 {
+                                    let text = String::from_utf8_lossy(&leftover[..valid_len]).to_string();
+                                    if tx.send(text).is_err() {
+                                        break; // 接收端已关闭
+                                    }
+                                    leftover.drain(..valid_len);
                                 }
                             }
                             Err(_) => break,
                         }
                     }
                     thread::sleep(std::time::Duration::from_millis(50));
+                }
+                if !leftover.is_empty() {
+                    let _ = tx.send(String::from_utf8_lossy(&leftover).to_string());
                 }
             });
         }

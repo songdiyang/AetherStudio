@@ -83,6 +83,15 @@ impl LspTransport {
     fn parse_header(&self) -> io::Result<Option<(usize, usize)>> {
         let buf = &self.read_buffer;
 
+        // H-07: 限制 Header 大小为 8KB，防止恶意 LSP 服务器发送无限 Header 导致 OOM
+        const MAX_HEADER_LEN: usize = 8 * 1024;
+        if buf.len() > MAX_HEADER_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "LSP header exceeds 8KB limit",
+            ));
+        }
+
         // H-31: 先在原始字节中搜索 \r\n\r\n，避免 body 中部分 UTF-8 序列导致失败
         let header_end_bytes = match buf.windows(4).position(|window| window == b"\r\n\r\n") {
             Some(pos) => pos,

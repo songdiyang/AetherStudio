@@ -184,6 +184,14 @@ impl SshRemoteFs {
         }
 
         // user@host
+        // H-03: 验证用户名和主机名不以 '-' 开头，防止被 SSH 解释为配置选项
+        // （如 -oProxyCommand=calc.exe 会在本地执行任意命令）
+        if self.config.username.starts_with('-') {
+            return Vec::new();
+        }
+        if self.config.host.starts_with('-') {
+            return Vec::new();
+        }
         let target = if self.config.username.is_empty() {
             self.config.host.clone()
         } else {

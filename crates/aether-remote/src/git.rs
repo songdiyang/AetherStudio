@@ -402,6 +402,17 @@ impl GitRepository {
     ///
     /// 非 fast-forward 时返回错误,符合"normal merge should return error for manual handling"。
     pub fn pull(&self, remote_name: Option<&str>, branch_name: Option<&str>) -> Result<()> {
+        // H-04: 防止 remote_name/branch_name 以 '-' 开头被 git 解析为 flag
+        if let Some(r) = remote_name {
+            if r.starts_with('-') {
+                return Err(format!("Invalid remote name: '{}' (must not start with '-')", r));
+            }
+        }
+        if let Some(b) = branch_name {
+            if b.starts_with('-') {
+                return Err(format!("Invalid branch name: '{}' (must not start with '-')", b));
+            }
+        }
         let mut args = vec!["pull", "--ff-only"];
         if let Some(r) = remote_name {
             args.push(r);
@@ -428,6 +439,17 @@ impl GitRepository {
         branch_name: Option<&str>,
         force: bool,
     ) -> Result<()> {
+        // H-04: 防止 remote_name/branch_name 以 '-' 开头被 git 解析为 flag
+        if let Some(r) = remote_name {
+            if r.starts_with('-') {
+                return Err(format!("Invalid remote name: '{}' (must not start with '-')", r));
+            }
+        }
+        if let Some(b) = branch_name {
+            if b.starts_with('-') {
+                return Err(format!("Invalid branch name: '{}' (must not start with '-')", b));
+            }
+        }
         let mut args = vec!["push"];
         if force {
             args.push("--force");

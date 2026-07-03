@@ -68,6 +68,7 @@ impl History {
 
     /// 记录一次编辑操作
     /// 调用时机：在编辑完成后，传入编辑前的状态
+    /// `edit_len`: 插入的字节长度（用于 Insert 合并判断；Delete 传 0）
     pub fn record(
         &mut self,
         before_pieces: Vec<Piece>,
@@ -76,6 +77,7 @@ impl History {
         cursor_after: CursorPosition,
         op_type: OpType,
         edit_pos: usize,
+        edit_len: usize,
     ) {
         let now = Instant::now();
 
@@ -131,7 +133,8 @@ impl History {
         self.merge_state = match op_type {
             OpType::Insert => MergeState::Inserting {
                 last_time: now,
-                last_pos: edit_pos + 1,
+                // H-15: 使用实际字节长度而非 +1，正确处理多字节 UTF-8 字符的连续合并
+                last_pos: edit_pos + edit_len,
             },
             OpType::Delete => MergeState::Deleting {
                 last_time: now,
@@ -237,6 +240,7 @@ mod tests {
             CursorPosition::new(0, 5),
             OpType::Insert,
             0,
+            1,
         );
 
         let result = history.undo(pieces2.clone(), 10, CursorPosition::new(0, 10));
@@ -268,6 +272,7 @@ mod tests {
             CursorPosition::new(0, 1),
             OpType::Insert,
             0,
+            1,
         );
         history.record(
             pieces.clone(),
@@ -275,6 +280,7 @@ mod tests {
             CursorPosition::new(0, 1),
             CursorPosition::new(0, 2),
             OpType::Insert,
+            1,
             1,
         );
 
