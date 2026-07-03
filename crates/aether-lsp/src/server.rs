@@ -6,6 +6,7 @@ use tokio::time::timeout;
 
 use crate::client::LspEvent;
 use crate::transport::{spawn_server, spawn_stderr_drain, LspTransport};
+use tokio::process::Child;
 use crate::types::*;
 
 /// 默认请求超时（秒）。
@@ -37,6 +38,8 @@ pub struct LanguageServer {
     /// 事件发送器（向UI层推送诊断等推送通知）
     /// None 时不转发，但不会丢弃导致循环卡死
     event_tx: Option<mpsc::UnboundedSender<LspEvent>>,
+    /// 子进程句柄，用于 shutdown 时超时 kill
+    child: Option<Child>,
 }
 
 impl LanguageServer {
@@ -56,10 +59,13 @@ impl LanguageServer {
         let stdout = process.stdout.take().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::Other, "Failed to capture stdout")
         })?;
+        let stderr = process.stderr.take().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Other, "Failed to capture stderr")
+        })?;
         let transport = LspTransport::new(stdin, stdout);
 
         // 启动后台 stderr 读取任务，避免子进程 stderr 缓冲区满后阻塞
-        spawn_stderr_drain(process);
+        spawn_stderr_drain(stderr);
 
         let mut server = Self {
             transport,
@@ -71,6 +77,7 @@ impl LanguageServer {
             initialized: false,
             language_id,
             event_tx,
+            child: Some(process),
         };
 
         // 发送 initialize 请求
@@ -614,6 +621,17 @@ impl LanguageServer {
         self.transport.send(&notification).await?;
         self.initialized = false;
 
+        // H-04: 发送 exit 通知后等待 5 秒，超时则强制 kill 子进程
+        if let Some(mut child) = self.child.take() {
+            match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+                Ok(_) => {}
+                Err(_) => {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -902,6 +920,18 @@ impl LanguageServer {
             .insert(id.clone(), "textDocument/inlayHint".to_string());
 
         self.receive_response(&id, DEFAULT_REQUEST_TIMEOUT).await
+    }
+}
+
+/// H-04: 防止 LanguageServer 异常路径下未调用 shutdown 导致僵尸进程。
+///
+/// tokio::process::Child 默认不会在 drop 时 kill 子进程，
+/// 必须显式处理，否则语言服务器进程会一直驻留。
+impl Drop for LanguageServer {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.start_kill();
+        }
     }
 }
 

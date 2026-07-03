@@ -50,7 +50,9 @@ impl RemoteWorkspace {
                 local_path.display()
             ));
         }
-        Ok(local_path.to_path_buf())
+        // M-04: 返回已解析符号链接的规范路径，而非原始非规范路径，
+        // 避免后续操作通过未检测到的符号链接发生 TOCTOU 遍历
+        Ok(canonical_local)
     }
 
     /// 打开远程文件（按需下载到本地缓存）

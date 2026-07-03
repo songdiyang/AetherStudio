@@ -25,8 +25,6 @@ pub struct EditRecord {
     /// 编辑位置
     pub cursor_before: CursorPosition,
     pub cursor_after: CursorPosition,
-    /// 时间戳（用于合并判断）
-    timestamp: Instant,
     /// 操作类型（影响合并策略）
     op_type: OpType,
 }
@@ -118,7 +116,6 @@ impl History {
                 prev_add_len: before_add_len,
                 cursor_before,
                 cursor_after,
-                timestamp: now,
                 op_type,
             };
             self.undos.push_back(record);
@@ -161,7 +158,6 @@ impl History {
             prev_add_len: current_add_len,
             cursor_before: cursor.clone(),
             cursor_after: current_cursor,
-            timestamp: record.timestamp,
             op_type: record.op_type,
         });
 
@@ -185,7 +181,6 @@ impl History {
             prev_add_len: current_add_len,
             cursor_before: current_cursor,
             cursor_after: cursor.clone(),
-            timestamp: record.timestamp,
             op_type: record.op_type,
         });
 

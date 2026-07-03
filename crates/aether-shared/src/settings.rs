@@ -120,30 +120,43 @@ impl AppSettings {
     pub fn load() -> Self {
         let path = Self::settings_path();
         if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(mut settings) = serde_json::from_str::<AppSettings>(&content) {
-                // P1-2: 密码认证禁用——加载时扫描并中和遗留的 password 配置。
-                // 将 auth_type == "password" 的服务器迁移为 "agent"，确保旧版本
-                // 保存的配置在加载后不会生成 Password 认证（纵深防御 + 实时同步）。
-                let migrated = settings
-                    .remote
-                    .ssh_servers
-                    .iter_mut()
-                    .filter(|s| s.auth_type == "password")
-                    .map(|s| {
-                        s.auth_type = "agent".to_string();
-                        s.name.clone()
-                    })
-                    .collect::<Vec<_>>();
-                if !migrated.is_empty() {
-                    eprintln!(
-                        "[P1-2] 已禁用 {} 个服务器的密码认证并迁移为 Agent: {:?}",
-                        migrated.len(),
-                        migrated
-                    );
-                    // 持久化迁移结果（best-effort，失败不影响加载）
-                    let _ = settings.save();
+            match serde_json::from_str::<AppSettings>(&content) {
+                Ok(mut settings) => {
+                    // P1-2: 密码认证禁用——加载时扫描并中和遗留的 password 配置。
+                    // 将 auth_type == "password" 的服务器迁移为 "agent"，确保旧版本
+                    // 保存的配置在加载后不会生成 Password 认证（纵深防御 + 实时同步）。
+                    let migrated = settings
+                        .remote
+                        .ssh_servers
+                        .iter_mut()
+                        .filter(|s| s.auth_type == "password")
+                        .map(|s| {
+                            s.auth_type = "agent".to_string();
+                            s.name.clone()
+                        })
+                        .collect::<Vec<_>>();
+                    if !migrated.is_empty() {
+                        eprintln!(
+                            "[P1-2] 已禁用 {} 个服务器的密码认证并迁移为 Agent: {:?}",
+                            migrated.len(),
+                            migrated
+                        );
+                        // 持久化迁移结果（best-effort，失败不影响加载）
+                        let _ = settings.save();
+                    }
+                    return settings;
                 }
-                return settings;
+                Err(e) => {
+                    // M-13: JSON 损坏时记录警告并备份原文件，避免用户在不知情下丢失设置
+                    eprintln!(
+                        "[M-13] 警告: settings.json 解析失败，回退到默认设置: {}",
+                        e
+                    );
+                    let backup = path.with_extension("json.corrupt");
+                    if std::fs::rename(&path, &backup).is_ok() {
+                        eprintln!("[M-13] 已将损坏的配置备份到 {}", backup.display());
+                    }
+                }
             }
         }
         Self::default()

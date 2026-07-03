@@ -11,12 +11,16 @@
 
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 
 use crate::remote_fs::{FsEvent, RemoteDirEntry, RemoteFs, Result};
 
 /// OpenSSH 下载页(用户缺失 ssh 时引导跳转)
 pub const SSH_DOWNLOAD_URL: &str = "https://learn.microsoft.com/openssh";
+
+/// M-07: 进程内原子计数器，确保同纳秒内的多次 write_file 临时文件名不碰撞
+static TMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// P1-3: 单引号包裹路径用于 shell 命令，转义内部单引号避免注入
 fn shell_quote(s: &str) -> String {
@@ -258,7 +262,8 @@ impl RemoteFs for SshRemoteFs {
         if !self.connected {
             return Err("SSH 未连接,请先调用 connect()".to_string());
         }
-        let (stdout, stderr, ok) = self.ssh(&["cat", "--", path]);
+        let path_q = shell_quote(path);
+        let (stdout, stderr, ok) = self.ssh(&["cat", "--", &path_q]);
         if !ok {
             return Err(format!(
                 "读取文件失败:\n{}\n{}",
@@ -278,14 +283,16 @@ impl RemoteFs for SshRemoteFs {
         if !self.connected {
             return Err("SSH 未连接,请先调用 connect()".to_string());
         }
-        // 构造同目录临时文件名：用 PID + 纳秒时间戳避免并发冲突
+        // 构造同目录临时文件名：PID + 纳秒时间戳 + 原子计数器
+        // M-07: 同纳秒内的两次快速写入会产生相同临时文件名，添加原子计数器避免碰撞
         let tmp_suffix = format!(
-            ".tmp.{}.{}",
+            ".tmp.{}.{}.{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            TMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
         let tmp_full = format!("{}{}", path, tmp_suffix);
         let tmp_q = shell_quote(&tmp_full);
@@ -371,7 +378,14 @@ impl RemoteFs for SshRemoteFs {
             return Err("SSH 未连接,请先调用 connect()".to_string());
         }
         eprintln!("[AUDIT] ssh exec: {}", command);
-        let (stdout, stderr, _ok) = self.ssh(&[command]);
+        let (stdout, stderr, ok) = self.ssh(&[command]);
+        if !ok {
+            return Err(format!(
+                "远程命令执行失败:\n{}\n{}",
+                String::from_utf8_lossy(&stderr),
+                String::from_utf8_lossy(&stdout)
+            ));
+        }
         Ok((
             String::from_utf8_lossy(&stdout).into_owned(),
             String::from_utf8_lossy(&stderr).into_owned(),

@@ -353,31 +353,43 @@ fn skip_char(bytes: &[u8], pos: usize) -> usize {
 
 fn skip_number(bytes: &[u8], pos: usize) -> usize {
     let mut i = pos;
-    while i < bytes.len()
-        && (bytes[i].is_ascii_digit()
-            || bytes[i] == b'.'
-            || bytes[i] == b'e'
-            || bytes[i] == b'E'
-            || bytes[i] == b'+'
-            || bytes[i] == b'-'
-            || bytes[i] == b'x'
-            || bytes[i] == b'X'
-            || bytes[i] == b'a'
-            || bytes[i] == b'A'
-            || bytes[i] == b'b'
-            || bytes[i] == b'B'
-            || bytes[i] == b'c'
-            || bytes[i] == b'C'
-            || bytes[i] == b'd'
-            || bytes[i] == b'D'
-            || bytes[i] == b'f'
-            || bytes[i] == b'F'
-            || bytes[i] == b'l'
-            || bytes[i] == b'L'
-            || bytes[i] == b'u'
-            || bytes[i] == b'U')
-    {
-        i += 1;
+
+    // H-07: 检测进制前缀。十六进制字符 a-f/A-F 仅在 0x 前缀后有效，
+    // 避免 `123abc` 被整体识别为数字（abc 应为独立标识符）。
+    let mut is_hex = false;
+    if i < bytes.len() && bytes[i] == b'0' && i + 1 < bytes.len() {
+        match bytes[i + 1] {
+            b'x' | b'X' => {
+                is_hex = true;
+                i += 2;
+            }
+            b'b' | b'B' => {
+                // 二进制前缀
+                i += 2;
+            }
+            _ => {}
+        }
+    }
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b.is_ascii_digit()
+            || b == b'.'
+            || b == b'e'
+            || b == b'E'
+            || b == b'+'
+            || b == b'-'
+            || b == b'l'
+            || b == b'L'
+            || b == b'u'
+            || b == b'U'
+        {
+            i += 1;
+        } else if is_hex && ((b >= b'a' && b <= b'f') || (b >= b'A' && b <= b'F')) {
+            i += 1;
+        } else {
+            break;
+        }
     }
     i
 }
