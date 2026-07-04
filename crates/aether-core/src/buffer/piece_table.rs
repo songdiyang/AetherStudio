@@ -434,20 +434,26 @@ impl PieceTable {
     /// 获取指定字节范围的文本字节切片（零拷贝）
     /// C-03: 返回 Option 区分"单 piece 命中（含空切片=空行）"与"跨 piece 无法零拷贝"。
     /// 跨 piece 时返回 None，调用方应回退到 get_text 拼接，避免静默返回空数据。
+    ///
+    /// 性能：使用 piece_offset_cache 做二分查找定位起始 piece，O(log n)。
+    /// 早期实现线性扫描 pieces，编辑后 pieces 增多时（coalesce_threshold=32
+    /// 才合并一次），get_line 渲染 1000 行会累积 30000+ 次扫描。
     fn get_text_bytes(&self, start: usize, end: usize) -> Option<&[u8]> {
-        // 尝试找到单个piece覆盖整个范围的情况（常见场景）
-        let mut current = 0;
-        for piece in &self.pieces {
-            let piece_end = current + piece.len;
-            if current <= start && piece_end >= end {
-                let buf = self.buffer_for(piece.source);
-                let piece_start = piece.start + (start - current);
-                let piece_end_local = piece.start + (end - current);
-                return Some(&buf[piece_start..piece_end_local]);
-            }
-            current = piece_end;
+        if start >= end {
+            return Some(&[]);
         }
-        // 跨piece情况：无法零拷贝，返回 None（调用方应使用 get_text）
+        // 找到覆盖 start 的 piece（使用二分查找）
+        let piece_idx = self.find_piece_at_byte(start);
+        let piece = self.pieces.get(piece_idx)?;
+        let piece_offset = self.byte_offset_of_piece(piece_idx);
+        // 单 piece 覆盖整个 [start, end)？
+        if piece_offset + piece.len >= end {
+            let buf = self.buffer_for(piece.source);
+            let byte_start_in_buf = piece.start + (start - piece_offset);
+            let byte_end_in_buf = piece.start + (end - piece_offset);
+            return Some(&buf[byte_start_in_buf..byte_end_in_buf]);
+        }
+        // 跨 piece：无法零拷贝，返回 None（调用方回退到 get_text）
         None
     }
 
@@ -482,6 +488,33 @@ impl PieceTable {
     /// 获取所有文本
     pub fn get_all_text(&self) -> String {
         self.get_text(0, self.len_bytes())
+    }
+
+    /// 将缓冲区全部内容直接写入 writer，避免 get_all_text 的中间 String 分配。
+    /// 性能：对未编辑的大文件（original 是 mmap），每个 piece 直接写出 &[u8] 切片，
+    /// 无堆分配；编辑后的文件也只是多次 write_all，仍避免了一次全量 String 拼接。
+    pub fn write_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        for piece in &self.pieces {
+            let buf = self.buffer_for(piece.source);
+            let end = piece
+                .start
+                .checked_add(piece.len)
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "piece start+len 溢出"))?;
+            if end > buf.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "piece 引用超出 buffer 边界",
+                ));
+            }
+            writer.write_all(&buf[piece.start..end])?;
+        }
+        Ok(())
+    }
+
+    /// 判断缓冲区是否未经过编辑（pieces 仅引用 original buffer）。
+    /// 用于保存文件时判断是否可以直接从 mmap 零拷贝写入磁盘。
+    pub fn is_pristine(&self) -> bool {
+        self.pieces.iter().all(|p| p.source == Source::Original)
     }
 
     /// 获取 pieces 的克隆副本（用于撤销/重做快照）

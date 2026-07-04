@@ -5,21 +5,17 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 
 use crate::types::LspMessage;
 
-/// LSP 传输层：处理 JSON-RPC over stdio 的编码/解码
-/// 遵循 LSP 规范：Header + Content-Length + Content-Type + \r\n + JSON body
-pub struct LspTransport {
+/// LSP 写入器：仅持有 stdin，负责发送消息到子进程
+///
+/// 拆分自原 LspTransport，让 reader task 独占 stdout，
+/// 避免 send/receive 互锁。
+pub struct LspWriter {
     stdin: ChildStdin,
-    stdout: ChildStdout,
-    read_buffer: BytesMut,
 }
 
-impl LspTransport {
-    pub fn new(stdin: ChildStdin, stdout: ChildStdout) -> Self {
-        Self {
-            stdin,
-            stdout,
-            read_buffer: BytesMut::with_capacity(8192),
-        }
+impl LspWriter {
+    pub fn new(stdin: ChildStdin) -> Self {
+        Self { stdin }
     }
 
     /// 发送一条 LSP 消息
@@ -41,6 +37,24 @@ impl LspTransport {
         self.stdin.flush().await?;
 
         Ok(())
+    }
+}
+
+/// LSP 读取器：仅持有 stdout，负责接收子进程消息
+///
+/// 拆分自原 LspTransport，让 reader task 独占访问，
+/// server 端只持 LspWriter，无共享锁竞争。
+pub struct LspReader {
+    stdout: ChildStdout,
+    read_buffer: BytesMut,
+}
+
+impl LspReader {
+    pub fn new(stdout: ChildStdout) -> Self {
+        Self {
+            stdout,
+            read_buffer: BytesMut::with_capacity(8192),
+        }
     }
 
     /// 接收一条 LSP 消息（阻塞直到完整消息到达）

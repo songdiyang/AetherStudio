@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use windows::core::Result;
 use windows::Win32::Foundation::HWND;
@@ -8,9 +9,14 @@ use aether_core::buffer::piece_table::PieceTable;
 use aether_core::buffer::text_buffer::{Cursor, MultiCursorState};
 use aether_core::lexer::{Language, LexemeSpan};
 use aether_core::workspace::file_tree::{FileKind, FileTree};
+use aether_lsp::client::{default_server_config, LspEvent};
+use aether_lsp::LspClient;
 use aether_render::d2d::factory::D2DFactory;
 use aether_render::d2d::text::TextRenderer;
 use aether_render::theme::Theme;
+use aether_tree_sitter::TreeSitterHighlighter;
+use lsp_types::{Diagnostic, TextDocumentContentChangeEvent};
+use url::Url;
 
 use crate::activity_bar::ActivityBar;
 use crate::ai_panel::AiPanel;
@@ -263,6 +269,14 @@ pub struct EditorState {
     pub lbutton_down: bool,
     /// P0-2: IME 合成串（pre-edit text），中文/日文输入过程中显示在光标处
     pub composition: Option<String>,
+    /// tree-sitter 高亮器（主线程持有，非 Send，不能进 rayon 并行）
+    pub(crate) ts_highlighter: TreeSitterHighlighter,
+    /// tokio runtime（驱动 LSP 异步操作）
+    pub(crate) tokio_runtime: tokio::runtime::Runtime,
+    /// LSP 客户端（Arc 共享给 tokio task）
+    pub(crate) lsp_client: Arc<LspClient>,
+    /// LSP 诊断表（uri -> diagnostics），由 WM_APP+3 处理更新
+    pub(crate) lsp_diagnostics: std::collections::HashMap<Url, Vec<Diagnostic>>,
 }
 
 impl EditorState {
@@ -522,6 +536,42 @@ impl EditorState {
         let key_map = KeyMap::new();
         let app_settings = AppSettings::load();
 
+        // 创建 tokio runtime 驱动 LSP 异步操作
+        let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| {
+                windows::core::Error::new(
+                    windows::Win32::Foundation::E_FAIL,
+                    format!("Failed to create tokio runtime: {}", e),
+                )
+            })?;
+
+        // 创建 LSP 客户端（root_uri 暂为 None，open_folder 时可后续扩展）
+        let (lsp_client, event_rx) = LspClient::new(None);
+        let lsp_client = Arc::new(lsp_client);
+
+        // spawn 事件 forwarder task：把 LspEvent 通过 PostMessageW(WM_APP+3) 投递到 UI 线程
+        // 与现有 WM_APP+4/5/6/7 模式一致；WM_APP+3 在 window.rs 当前是空实现，可占用
+        let hwnd_send = SendHwnd(hwnd.0 as usize);
+        tokio_runtime.spawn(async move {
+            let mut rx = event_rx;
+            while let Some(event) = rx.recv().await {
+                let ptr = Box::into_raw(Box::new(event)) as *mut LspEvent;
+                unsafe {
+                    let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                        windows::Win32::Foundation::HWND(hwnd_send.0 as *mut std::ffi::c_void),
+                        windows::Win32::UI::WindowsAndMessaging::WM_APP + 3,
+                        windows::Win32::Foundation::WPARAM(0),
+                        windows::Win32::Foundation::LPARAM(ptr as isize),
+                    );
+                }
+            }
+        });
+
+        let ts_highlighter = TreeSitterHighlighter::new();
+        let lsp_diagnostics = std::collections::HashMap::new();
+
         let mut state = Self {
             hwnd,
             d2d_factory,
@@ -628,6 +678,10 @@ impl EditorState {
             lpress_index: 0,
             lbutton_down: false,
             composition: None,
+            ts_highlighter,
+            tokio_runtime,
+            lsp_client,
+            lsp_diagnostics,
         };
         // 应用持久化的活动栏/菜单栏顺序（空配置使用默认顺序）
         let activity_order = state.app_settings.ui.activity_bar_order.clone();
@@ -769,11 +823,156 @@ impl EditorState {
                     self.open_in_new_tab(tab);
                     self.status_message = format!("已打开: {}", path.display());
                 }
+                // 接线 LSP：通知服务器文档已打开（按需启动 server），激活补全/悬停/诊断
+                self.lsp_notify_open();
             }
             Err(e) => {
                 let msg = format!("打开文件失败: {}", e);
                 self.status_message = msg.clone();
                 Dialogs::show_error(self.hwnd, "打开文件", &msg);
+            }
+        }
+    }
+
+    /// 通知 LSP 服务器文档已打开（按需启动 server）。
+    /// 在 load_file 后调用，激活智能补全/悬停/诊断。
+    /// 异步执行：克隆所需数据后 spawn tokio task，不阻塞 UI 线程。
+    fn lsp_notify_open(&self) {
+        // 1. 映射语言到 LSP language_id（无配置则跳过）
+        let language_id = match language_to_lsp_id(self.language) {
+            Some(id) => id.to_string(),
+            None => return,
+        };
+
+        // 2. 转换文件路径到 Url（LSP 要求 file:// URI）
+        let path = match &self.file_path {
+            Some(p) => p.as_path(),
+            None => return,
+        };
+        let uri = match Url::from_file_path(path) {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+
+        // 3. 获取全文文本（did_open 需要完整文档内容）
+        let text = self.buffer.get_all_text();
+
+        // 4. 克隆 Arc<LspClient> 并 spawn 异步任务
+        let client = self.lsp_client.clone();
+        let lang_id = language_id;
+        self.tokio_runtime.spawn(async move {
+            // 按需启动 server：如果未就绪且有默认配置，启动它
+            if !client.is_server_ready(&lang_id).await {
+                let config = match default_server_config(&lang_id) {
+                    Some(c) => c,
+                    None => return, // 该语言没有默认 server 配置，跳过
+                };
+                if let Err(e) = client.start_server(&lang_id, config).await {
+                    eprintln!("LSP start_server({}) failed: {}", lang_id, e);
+                    return;
+                }
+            }
+            // 发送 did_open
+            if let Err(e) = client.open_document(uri, lang_id, text).await {
+                eprintln!("LSP open_document failed: {}", e);
+            }
+        });
+    }
+
+    /// 通知 LSP 服务器文档内容已变更。
+    /// 第一版使用全文档同步（range=None），简单且兼容所有编辑操作。
+    /// 在 insert_char/delete_char/insert_newline/delete_forward 后调用。
+    fn lsp_notify_change(&self) {
+        // 1. 映射语言到 LSP language_id（无配置则跳过）
+        let language_id = match language_to_lsp_id(self.language) {
+            Some(id) => id.to_string(),
+            None => return,
+        };
+
+        // 2. 转换文件路径到 Url
+        let path = match &self.file_path {
+            Some(p) => p.as_path(),
+            None => return,
+        };
+        let uri = match Url::from_file_path(path) {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+
+        // 3. 全文档同步（range=None 表示整个文档被替换）
+        // 第一版不追踪精确的变更范围，直接发送全文。虽然效率略低，
+        // 但对所有编辑操作（插入/删除/粘贴/撤销）都正确，且实现简单。
+        let text = self.buffer.get_all_text();
+        let change = TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text,
+        };
+
+        // 4. Spawn 异步任务发送 did_change
+        let client = self.lsp_client.clone();
+        let lang_id = language_id;
+        self.tokio_runtime.spawn(async move {
+            // 注意：notify_change 内部会检查 document_sync 是否有该文档，
+            // 如果 did_open 尚未完成，change 会被静默丢弃。这在实践中可接受：
+            // 用户在 server 启动后的第一次编辑会正常同步。
+            if let Err(e) = client.notify_change(&uri, vec![change]).await {
+                eprintln!("LSP notify_change({}) failed: {}", lang_id, e);
+            }
+        });
+    }
+
+    /// 处理从 LSP 服务器收到的异步事件（由 WM_APP+3 调用）。
+    /// 第一版重点处理 Diagnostics（诊断更新）和 ServerReady（状态提示）。
+    /// 其他事件（Completion/Hover/References 等）留待 Phase H 接线 UI 组件。
+    pub(crate) fn handle_lsp_event(&mut self, event: LspEvent) {
+        match event {
+            LspEvent::Diagnostics { uri, diagnostics } => {
+                // 更新诊断表：按 uri 存储，UI 渲染时查询当前文件
+                let count = diagnostics.len();
+                if diagnostics.is_empty() {
+                    self.lsp_diagnostics.remove(&uri);
+                } else {
+                    self.lsp_diagnostics.insert(uri, diagnostics);
+                }
+                // 状态栏提示诊断数量（仅当前文件）
+                if let Some(path) = &self.file_path {
+                    if let Ok(current_uri) = Url::from_file_path(path) {
+                        let current_count = self
+                            .lsp_diagnostics
+                            .get(&current_uri)
+                            .map(|v| v.len())
+                            .unwrap_or(0);
+                        if current_count > 0 {
+                            self.status_message = format!("诊断: {} 个问题", current_count);
+                        } else {
+                            self.status_message = "无诊断问题".to_string();
+                        }
+                    }
+                }
+                let _ = count; // 避免 unused 警告
+            }
+            LspEvent::ServerReady { language_id } => {
+                self.status_message = format!("LSP 服务器就绪: {}", language_id);
+            }
+            LspEvent::Log {
+                language_id,
+                message,
+            } => {
+                // 服务器日志输出到 stderr，不显示在状态栏（避免刷屏）
+                eprintln!("[LSP/{}] {}", language_id, message);
+            }
+            // Phase H 将接线补全/悬停 UI；当前静默忽略
+            LspEvent::Completion { .. }
+            | LspEvent::Hover { .. }
+            | LspEvent::References { .. }
+            | LspEvent::Rename { .. }
+            | LspEvent::CodeActions { .. }
+            | LspEvent::Formatting { .. }
+            | LspEvent::SemanticTokens { .. }
+            | LspEvent::SemanticTokensDelta { .. }
+            | LspEvent::InlayHints { .. } => {
+                // TODO: Phase H 接线补全/悬停/引用等 UI 组件
             }
         }
     }
@@ -864,6 +1063,7 @@ impl EditorState {
 
     /// P4-2: 原子写入文件，避免写入中途崩溃导致文件损坏
     /// 先写入同目录的临时文件并 fsync，再原子 rename 替换目标文件
+    #[allow(dead_code)]
     fn atomic_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
         use std::io::Write;
         use std::path::Path;
@@ -894,14 +1094,53 @@ impl EditorState {
         result
     }
 
+    /// 流式原子写入：通过回调函数写入数据，避免在内存中构造完整的 &[u8]。
+    /// 用于保存大文件时避免 get_all_text 的中间 String/Vec 分配。
+    /// 语义与 atomic_write 一致：临时文件 + fsync + rename。
+    fn atomic_write_stream<F>(path: &std::path::Path, writer_fn: F) -> std::io::Result<()>
+    where
+        F: FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+    {
+        use std::path::Path;
+
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let temp_path = dir.join(format!(
+            ".aether-save-{}-{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+
+        let result = (|| -> std::io::Result<()> {
+            let mut file = std::fs::File::create(&temp_path)?;
+            writer_fn(&mut file)?;
+            file.sync_all()?;
+            drop(file); // 关闭句柄后再 rename
+            std::fs::rename(&temp_path, path)?;
+            Ok(())
+        })();
+
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp_path);
+        }
+        result
+    }
+
     /// 保存文件，返回是否成功
     pub fn save_file(&mut self) -> bool {
         if let Some(path) = &self.file_path.clone() {
-            let text = self.buffer.get_all_text();
             // 处理远程文件保存
             if let Some(remote_path) = path.to_str().and_then(|s| s.strip_prefix("remote:")) {
+                // 远程路径仍需 &[u8]，这里不得不做一次全量拷贝
+                let mut buf: Vec<u8> = Vec::with_capacity(self.buffer.len_bytes());
+                if let Err(e) = self.buffer.write_to(&mut buf) {
+                    self.status_message = format!("保存失败: {}", e);
+                    return false;
+                }
                 if let Some(session) = &self.remote_session {
-                    match session.write_remote_file(remote_path, text.as_bytes()) {
+                    match session.write_remote_file(remote_path, &buf) {
                         Ok(()) => {
                             self.is_dirty = false;
                             self.sync_to_tab();
@@ -918,8 +1157,10 @@ impl EditorState {
                     return false;
                 }
             }
-            // P4-2: 使用原子写入，避免写入中途崩溃导致文件损坏
-            match Self::atomic_write(path, text.as_bytes()) {
+            // 本地文件保存：直接将 buffer 流式写入临时文件，避免 get_all_text 的
+            // 全量 String 分配和 UTF-8 lossy 转换。对未编辑的 mmap 大文件尤其显著。
+            // P4-2: 仍保持原子写入语义（临时文件 + fsync + rename）。
+            match Self::atomic_write_stream(path, |w| self.buffer.write_to(w)) {
                 Ok(()) => {
                     self.is_dirty = false;
                     self.sync_to_tab();
@@ -939,8 +1180,7 @@ impl EditorState {
 
     /// 另存为
     pub fn save_as(&mut self, path: PathBuf) -> bool {
-        let text = self.buffer.get_all_text();
-        match Self::atomic_write(&path, text.as_bytes()) {
+        match Self::atomic_write_stream(&path, |w| self.buffer.write_to(w)) {
             Ok(()) => {
                 self.file_path = Some(path.clone());
                 self.is_dirty = false;
@@ -2830,6 +3070,7 @@ impl EditorState {
             ch.len_utf8(),
         );
         self.status_message = "已修改".to_string();
+        self.lsp_notify_change();
     }
 
     /// P1-4: 尝试自动配对括号。
@@ -3068,6 +3309,7 @@ impl EditorState {
             insert_text.len(),
         );
         self.status_message = "已修改".to_string();
+        self.lsp_notify_change();
     }
 
     pub fn delete_char(&mut self) {
@@ -3135,6 +3377,7 @@ impl EditorState {
                 }
             }
         }
+        self.lsp_notify_change();
     }
 
     pub fn delete_forward(&mut self) {
@@ -3164,6 +3407,7 @@ impl EditorState {
             );
             self.status_message = "已修改".to_string();
         }
+        self.lsp_notify_change();
     }
 
     /// 多光标编辑操作广播
@@ -3875,6 +4119,9 @@ impl EditorState {
 
     /// 增量重建缓存：只重建可见行范围内的缓存，大幅减少大文件的词法分析开销
     pub(crate) fn rebuild_cache(&mut self, visible_start: usize, visible_end: usize) {
+        // tree-sitter 优先高亮：返回支持的语言的字符串标识
+        // 不支持的语言返回 None，由调用方 fallback 到手写 lexer
+        let ts_lang = language_to_ts_str(self.language);
         let total_lines = self.buffer.len_lines().max(1);
 
         // 如果行数变化，重新调整缓存向量大小
@@ -3894,21 +4141,26 @@ impl EditorState {
         let cache_start = visible_start.saturating_sub(2);
         let cache_end = (visible_end + 2).min(total_lines);
 
-        // 延迟创建 lexer：只在发现至少一行需要重建时才创建
-        // 避免每帧都创建 lexer（Box 分配 + 初始化开销）
+        // 延迟创建 fallback lexer：仅在 tree-sitter 不支持且至少一行需要重建时才创建
         let mut lexer: Option<Box<dyn aether_core::lexer::Lexer>> = None;
 
         for i in cache_start..cache_end {
             if self.line_cache_versions[i] != self.buffer_version {
-                if lexer.is_none() {
-                    lexer = Some(self.language.create_lexer());
-                }
                 let line = self.buffer.get_line(i).unwrap_or_default();
-                // C-03: lexer 创建可能返回 None（不支持的语言），unwrap 会 panic 并穿越 WndProc
-                let tokens = if let Some(lex) = lexer.as_ref() {
-                    lex.lex_full(&line)
+                let tokens = if let Some(lang) = ts_lang {
+                    // tree-sitter 高亮：返回 Vec<LexemeSpan>，类型与手写 lexer 完全一致
+                    self.ts_highlighter.highlight_line(&line, lang)
                 } else {
-                    Vec::new()
+                    // fallback：手写 lexer（Markdown/Html/Css/PlainText/Image 等）
+                    if lexer.is_none() {
+                        lexer = Some(self.language.create_lexer());
+                    }
+                    // C-03: lexer 创建可能返回 None（不支持的语言），unwrap 会 panic 并穿越 WndProc
+                    if let Some(lex) = lexer.as_ref() {
+                        lex.lex_full(&line)
+                    } else {
+                        Vec::new()
+                    }
                 };
                 self.cached_lines[i] = line;
                 self.cached_tokens[i] = tokens;
@@ -3926,7 +4178,6 @@ impl EditorState {
     #[allow(dead_code)]
     pub(crate) fn rebuild_cache_full(&mut self) {
         let total_lines = self.buffer.len_lines().max(1);
-        let lexer = self.language.create_lexer();
 
         if self.cached_lines.len() != total_lines {
             self.cached_lines.resize_with(total_lines, || String::new());
@@ -3934,10 +4185,24 @@ impl EditorState {
             self.line_cache_versions.resize(total_lines, 0);
         }
 
+        let ts_lang = language_to_ts_str(self.language);
+        let mut lexer: Option<Box<dyn aether_core::lexer::Lexer>> = None;
+
         for i in 0..total_lines {
             if self.line_cache_versions[i] != self.buffer_version {
                 let line = self.buffer.get_line(i).unwrap_or_default();
-                let tokens = lexer.lex_full(&line);
+                let tokens = if let Some(lang) = ts_lang {
+                    self.ts_highlighter.highlight_line(&line, lang)
+                } else {
+                    if lexer.is_none() {
+                        lexer = Some(self.language.create_lexer());
+                    }
+                    if let Some(lex) = lexer.as_ref() {
+                        lex.lex_full(&line)
+                    } else {
+                        Vec::new()
+                    }
+                };
                 self.cached_lines[i] = line;
                 self.cached_tokens[i] = tokens;
                 self.line_cache_versions[i] = self.buffer_version;
@@ -4277,6 +4542,37 @@ impl EditorState {
         self.buffer_version += 1;
         self.status_message = "已插入 AI 代码".to_string();
         true
+    }
+}
+
+/// 将 aether-core 的 Language 枚举映射到 tree-sitter highlighter 接受的语言字符串。
+/// 返回 None 的语言（Markdown/Html/Css/PlainText/Image）由调用方 fallback 到手写 lexer。
+/// 注意：aether-core::Language 没有 Cpp 变体，因此 cpp 暂不在此映射中。
+fn language_to_ts_str(lang: Language) -> Option<&'static str> {
+    match lang {
+        Language::Rust => Some("rust"),
+        Language::JavaScript => Some("javascript"),
+        Language::TypeScript => Some("typescript"),
+        Language::Python => Some("python"),
+        Language::C => Some("c"),
+        Language::Json => Some("json"),
+        Language::Toml => Some("toml"),
+        // Markdown/Html/Css/PlainText/Image → None，fallback 到手写 lexer
+        _ => None,
+    }
+}
+
+/// 将 Language 枚举映射到 LSP language_id 字符串。
+/// 仅返回有默认 server 配置的语言（rust/python/typescript/javascript/c）。
+/// 其他语言（Json/Toml/Markdown/Html/Css/PlainText/Image）返回 None，不启动 LSP。
+fn language_to_lsp_id(lang: Language) -> Option<&'static str> {
+    match lang {
+        Language::Rust => Some("rust"),
+        Language::Python => Some("python"),
+        Language::JavaScript => Some("javascript"),
+        Language::TypeScript => Some("typescript"),
+        Language::C => Some("c"),
+        _ => None,
     }
 }
 

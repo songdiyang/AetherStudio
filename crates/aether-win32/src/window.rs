@@ -11,6 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dialogs::Dialogs;
 use crate::editor::EditorState;
+use aether_lsp::client::LspEvent;
 
 const CLASS_NAME: &str = "AetherEditor";
 const WINDOW_TITLE: &str = "Aether";
@@ -1696,6 +1697,24 @@ unsafe fn on_wm_app_2(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -
     // 新建窗口请求
     let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap();
     create_editor_window(instance.into(), Some(hwnd));
+    LRESULT(0)
+}
+
+/// msg if msg == WM_APP + 3
+/// LSP 事件转发：tokio task 通过 PostMessageW 将 LspEvent 投递到 UI 线程。
+/// 由 EditorState::new() 中 spawn 的事件 forwarder task 发送。
+/// 处理诊断更新、补全结果、悬停结果等 LSP 事件。
+unsafe fn on_wm_app_3(_hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let raw = lparam.0 as usize;
+    // H-09: 立即重建 Box 确保 Rust drop 语义保证清理，即使后续处理 panic 也不会内存泄漏
+    let _event_guard = unsafe { Box::from_raw(raw as *mut LspEvent) };
+    let event: &LspEvent = &*_event_guard;
+    EDITOR_STATE.with(|s| {
+        if let Some(state) = s.borrow().as_ref() {
+            state.borrow_mut().handle_lsp_event(event.clone());
+            state.borrow_mut().render();
+        }
+    });
     LRESULT(0)
 }
 
@@ -3696,7 +3715,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             WM_TIMER => on_t_i_m_e_r(hwnd, msg, wparam, lparam),
             WM_DESTROY => on_d_e_s_t_r_o_y(hwnd, msg, wparam, lparam),
             msg if msg == WM_APP + 2 => on_wm_app_2(hwnd, msg, wparam, lparam),
-            msg if msg == WM_APP + 3 => LRESULT(0),
+            msg if msg == WM_APP + 3 => on_wm_app_3(hwnd, msg, wparam, lparam),
             msg if msg == WM_APP + 4 => on_wm_app_4(hwnd, msg, wparam, lparam),
             msg if msg == WM_APP + 5 => on_wm_app_5(hwnd, msg, wparam, lparam),
             msg if msg == WM_APP + 6 => on_wm_app_6(hwnd, msg, wparam, lparam),

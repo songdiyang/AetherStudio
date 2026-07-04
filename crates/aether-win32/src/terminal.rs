@@ -71,14 +71,25 @@ impl TerminalPanel {
 
     /// 启动终端会话
     pub fn start(&mut self) -> Result<(), String> {
-        let shell = detect_default_shell();
+        let (shell, args) = detect_default_shell();
 
-        let mut child = Command::new(&shell)
-            .stdin(Stdio::piped())
+        let mut cmd = Command::new(&shell);
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .current_dir(&self.cwd)
-            .creation_flags(0x00000200) // CREATE_NEW_PROCESS_GROUP
+            // CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+            // 避免在 Windows 上为 shell 弹出独立的控制台窗口，保持嵌入在编辑器底部面板
+            .creation_flags(0x00000200 | 0x08000000);
+
+        // 根据 shell 类型附加参数，确保进入持续交互模式：
+        // - cmd.exe /K：执行完命令后保留窗口（对管道 stdin 也持续读取）
+        // - powershell/pwsh -NoExit：启动后保持交互式 shell
+        for arg in &args {
+            cmd.arg(arg);
+        }
+
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("启动终端失败: {}", e))?;
 
@@ -98,7 +109,7 @@ impl TerminalPanel {
         self.spawn_stdout_reader(tx.clone());
         self.spawn_stderr_reader(tx);
 
-        self.push_output(&format!("终端已启动: {}\n", shell));
+        self.push_output(&format!("终端已启动: {} {}\n", shell, args.join(" ")));
         Ok(())
     }
 
@@ -113,8 +124,11 @@ impl TerminalPanel {
     }
 
     /// 发送回车键
+    /// 将当前输入行的内容连同换行符一起写入 shell stdin，
+    /// 使命令真正被 shell 接收并执行
     pub fn send_enter(&mut self) {
-        self.write_input("\r\n");
+        let command = format!("{}\r\n", self.input_line);
+        self.write_input(&command);
         self.input_line.clear();
         self.cursor_pos = 0;
     }
@@ -309,18 +323,28 @@ impl TerminalPanel {
     }
 }
 
-/// 检测默认 shell
-fn detect_default_shell() -> String {
-    // 优先使用 PowerShell 7
+/// 检测默认 shell 及其启动参数
+/// 返回 (shell_path, args) 元组，args 用于确保 shell 在管道 stdin/stdout 下
+/// 仍保持持续交互模式，而不是读取完输入后立即退出。
+///
+/// 默认优先使用 cmd.exe /K：在 Windows 管道重定向 stdin/stdout 的场景下，
+/// cmd.exe /K 会稳定地显示提示符并逐行读取命令，最适合嵌入编辑器内部。
+/// PowerShell 系列在管道非控制台环境下难以保证交互式提示符，因此作为备选。
+fn detect_default_shell() -> (String, Vec<String>) {
+    // 优先使用 cmd.exe /K，在嵌入式管道终端中最稳定
+    if which_exists("cmd.exe") {
+        return ("cmd.exe".to_string(), vec!["/K".to_string()]);
+    }
+    // 回退到 PowerShell 7
     if which_exists("pwsh.exe") {
-        return "pwsh.exe".to_string();
+        return ("pwsh.exe".to_string(), vec!["-NoExit".to_string()]);
     }
     // 回退到 PowerShell 5
     if which_exists("powershell.exe") {
-        return "powershell.exe".to_string();
+        return ("powershell.exe".to_string(), vec!["-NoExit".to_string()]);
     }
-    // 最后回退到 cmd
-    "cmd.exe".to_string()
+    // 最后回退：仍尝试 cmd.exe（即使 PATH 中未找到）
+    ("cmd.exe".to_string(), vec!["/K".to_string()])
 }
 
 fn which_exists(name: &str) -> bool {

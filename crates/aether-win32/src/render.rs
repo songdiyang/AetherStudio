@@ -7527,12 +7527,20 @@ impl EditorState {
             let bottom_panel_btn_x = right_panel_btn_x - panel_btn_width;
             let left_sidebar_btn_x = bottom_panel_btn_x - panel_btn_width;
 
-            // 在标题栏中间显示当前文件名
-            let file_name = self.current_tab().file_name();
-            let title_text = if self.is_dirty {
-                format!("{} ● - Aether", file_name)
+            // 在标题栏中间显示当前工作区/文件名
+            // 若已打开文件夹，优先显示文件夹名作为工作区标识
+            let title_name = if let Some(ref folder) = self.current_folder {
+                folder
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| folder.to_string_lossy().to_string())
             } else {
-                format!("{} - Aether", file_name)
+                self.current_tab().file_name()
+            };
+            let title_text = if self.is_dirty {
+                format!("{} ● - Aether", title_name)
+            } else {
+                format!("{} - Aether", title_name)
             };
             let title_wide: Vec<u16> = title_text.encode_utf16().chain(Some(0)).collect();
             let title_format = self

@@ -122,14 +122,19 @@ version = "0.1.0"
 dependencies = [
  "aether-ai",
  "aether-core",
+ "aether-lsp",
  "aether-remote",
  "aether-render",
  "aether-shared",
+ "aether-tree-sitter",
  "dirs",
+ "lsp-types",
  "time",
+ "tokio",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "url",
  "windows",
 ]
 
