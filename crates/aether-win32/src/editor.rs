@@ -114,6 +114,10 @@ pub struct EditorState {
     pub(crate) buffer_version: u64,
     /// 行号 UTF-16 预缓存（避免每帧 format! + encode_utf16 分配）
     pub(crate) cached_line_numbers: Vec<Vec<u16>>,
+    /// P2.3: 大文件标记（超过阈值后关闭语法高亮等重操作）
+    pub(crate) is_large_file: bool,
+    /// P2.3: 行 Y 偏移前缀和缓存（固定行高模式下 trivial，预留可变行高扩展）
+    pub(crate) line_y_offsets: Vec<f32>,
     /// 可复用的 UTF-16 文本缓冲区（避免 render_editor 中每 token 分配 Vec<u16>）
     pub(crate) text_utf16_buf: Vec<u16>,
     /// 文件树渲染用的可复用 UTF-16 缓冲区（避免 render_tree_nodes 中每次分配 Vec<u16>）
@@ -285,6 +289,8 @@ impl EditorState {
             tab.cached_lines = std::mem::take(&mut self.cached_lines);
             tab.cached_tokens = std::mem::take(&mut self.cached_tokens);
             tab.line_cache_versions = std::mem::take(&mut self.line_cache_versions);
+            tab.is_large_file = self.is_large_file;
+            tab.line_y_offsets = std::mem::take(&mut self.line_y_offsets);
             tab.buffer_version = self.buffer_version;
             tab.language = self.language;
         }
@@ -307,6 +313,8 @@ impl EditorState {
             self.cached_lines = std::mem::take(&mut tab.cached_lines);
             self.cached_tokens = std::mem::take(&mut tab.cached_tokens);
             self.line_cache_versions = std::mem::take(&mut tab.line_cache_versions);
+            self.is_large_file = tab.is_large_file;
+            self.line_y_offsets = std::mem::take(&mut tab.line_y_offsets);
             self.buffer_version = tab.buffer_version;
             self.language = tab.language;
         }
@@ -547,6 +555,8 @@ impl EditorState {
             line_cache_versions: Vec::new(),
             buffer_version: 0,
             cached_line_numbers: Vec::new(),
+            is_large_file: false,
+            line_y_offsets: Vec::new(),
             text_utf16_buf: Vec::with_capacity(256),
             tree_text_utf16_buf: Vec::with_capacity(64),
             language: Language::PlainText,
@@ -870,6 +880,8 @@ impl EditorState {
                         cached_tokens: Vec::new(),
                         line_cache_versions: Vec::new(),
                         buffer_version: 1,
+                        is_large_file: false,
+                        line_y_offsets: Vec::new(),
                         language: lang,
                     };
                     self.open_in_new_tab(tab);
@@ -910,6 +922,8 @@ impl EditorState {
                 cached_tokens: Vec::new(),
                 line_cache_versions: Vec::new(),
                 buffer_version: 1,
+                is_large_file: false,
+                line_y_offsets: Vec::new(),
                 language: Language::Image,
             };
             self.open_in_new_tab(tab);
@@ -947,6 +961,8 @@ impl EditorState {
                 cached_tokens: Vec::new(),
                 line_cache_versions: Vec::new(),
                 buffer_version: 1,
+                is_large_file: false,
+                line_y_offsets: Vec::new(),
                 language: Language::PlainText,
             };
             self.open_in_new_tab(tab);
@@ -1336,6 +1352,51 @@ impl EditorState {
         let max_scroll = (total_height - editor_height).max(0.0);
         self.scroll_y = (self.scroll_y + delta_y).clamp(0.0, max_scroll);
         self.emit_event(crate::events::EditorEvent::Scrolled);
+    }
+
+    /// P2.3: 大文件阈值（行数）
+    const LARGE_FILE_LINE_THRESHOLD: usize = 100_000;
+    /// P2.3: 大文件阈值（字节数）
+    const LARGE_FILE_BYTE_THRESHOLD: usize = 5 * 1024 * 1024;
+
+    /// P2.3: 根据当前 buffer 大小更新大文件标记
+    pub fn update_large_file_flag(&mut self) {
+        let line_count = self.buffer.len_lines();
+        let byte_count = self.buffer.len_bytes();
+        self.is_large_file = line_count > Self::LARGE_FILE_LINE_THRESHOLD
+            || byte_count > Self::LARGE_FILE_BYTE_THRESHOLD;
+    }
+
+    /// P2.3: 重建行 Y 偏移前缀和缓存
+    pub fn rebuild_line_y_offsets(&mut self) {
+        let total_lines = self.buffer.len_lines().max(1);
+        if self.line_y_offsets.len() != total_lines {
+            self.line_y_offsets.resize(total_lines, 0.0);
+        }
+        let line_height = self.text_renderer.line_height();
+        let mut y = 0.0;
+        for (i, offset) in self.line_y_offsets.iter_mut().enumerate() {
+            *offset = y;
+            y += line_height;
+            // 大文件时避免浮点误差累积：每 1000 行重新基线
+            if i % 1000 == 0 {
+                y = (i + 1) as f32 * line_height;
+            }
+        }
+    }
+
+    /// P2.1: 计算当前可见行范围 [start_line, end_line)
+    ///
+    /// 返回的行号已限制在 [0, total_lines) 内，end_line 为开区间。
+    pub fn visible_line_range(&self) -> (usize, usize) {
+        let line_height = self.text_renderer.line_height();
+        let editor_region = self.layout.editor_content_region(self.tabs.len() > 1);
+        let height = editor_region.height.max(line_height);
+        let total_lines = self.cached_lines.len().max(1);
+        let start_line = (self.scroll_y / line_height) as usize;
+        let visible_lines = (height / line_height) as usize + 2;
+        let end_line = (start_line + visible_lines).min(total_lines);
+        (start_line.min(total_lines), end_line)
     }
 
     /// P0-3: 水平滚动。
@@ -2405,6 +2466,8 @@ impl EditorState {
                             cached_tokens: Vec::new(),
                             line_cache_versions: Vec::new(),
                             buffer_version: 1,
+                            is_large_file: false,
+                            line_y_offsets: Vec::new(),
                             language: Language::PlainText,
                         };
                         self.open_in_new_tab(tab);
@@ -2475,6 +2538,8 @@ impl EditorState {
                     cached_tokens: Vec::new(),
                     line_cache_versions: Vec::new(),
                     buffer_version: 1,
+                    is_large_file: false,
+                    line_y_offsets: Vec::new(),
                     language: Language::PlainText,
                 };
                 self.open_in_new_tab(tab);
@@ -3951,6 +4016,10 @@ impl EditorState {
     pub(crate) fn rebuild_cache(&mut self, visible_start: usize, visible_end: usize) {
         let total_lines = self.buffer.len_lines().max(1);
 
+        // P2.3: 大文件检测与行偏移缓存
+        self.update_large_file_flag();
+        self.rebuild_line_y_offsets();
+
         // 如果行数变化，重新调整缓存向量大小
         if self.cached_lines.len() != total_lines {
             self.cached_lines.resize_with(total_lines, || String::new());
@@ -3970,15 +4039,20 @@ impl EditorState {
 
         // 延迟创建 lexer：只在发现至少一行需要重建时才创建
         // 避免每帧都创建 lexer（Box 分配 + 初始化开销）
+        // P2.3: 大文件模式下跳过语法高亮，只缓存行文本
         let mut lexer: Option<Box<dyn aether_core::lexer::Lexer>> = None;
 
         for i in cache_start..cache_end {
             if self.line_cache_versions[i] != self.buffer_version {
-                if lexer.is_none() {
+                let line = self.buffer.get_line(i).unwrap_or_default();
+                if !self.is_large_file && lexer.is_none() {
                     lexer = Some(self.language.create_lexer());
                 }
-                let line = self.buffer.get_line(i).unwrap_or_default();
-                let tokens = lexer.as_ref().unwrap().lex_full(&line);
+                let tokens = if self.is_large_file {
+                    Vec::new()
+                } else {
+                    lexer.as_ref().unwrap().lex_full(&line)
+                };
                 self.cached_lines[i] = line;
                 self.cached_tokens[i] = tokens;
                 self.line_cache_versions[i] = self.buffer_version;

@@ -6314,10 +6314,7 @@ impl EditorState {
             };
             target.FillRectangle(&sep_rect, &sep_brush);
 
-            let total_lines = self.cached_lines.len().max(1);
-            let start_line = (self.scroll_y / line_height) as usize;
-            let visible_lines = (height / line_height) as usize + 2;
-            let end_line = (start_line + visible_lines).min(total_lines);
+            let (start_line, end_line) = self.visible_line_range();
 
             for line_idx in start_line..end_line {
                 let line_y = y + (line_idx - start_line) as f32 * line_height

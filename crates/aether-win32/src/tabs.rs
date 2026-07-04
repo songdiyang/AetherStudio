@@ -22,6 +22,10 @@ pub struct Tab {
     pub(crate) cached_tokens: Vec<Vec<LexemeSpan>>,
     pub(crate) line_cache_versions: Vec<u64>,
     pub(crate) buffer_version: u64,
+    /// P2.3: 大文件标记
+    pub(crate) is_large_file: bool,
+    /// P2.3: 行 Y 偏移前缀和缓存
+    pub(crate) line_y_offsets: Vec<f32>,
     // 语言类型
     pub(crate) language: Language,
 }
@@ -53,6 +57,8 @@ impl Tab {
             cached_tokens: Vec::new(),
             line_cache_versions: Vec::new(),
             buffer_version: 0,
+            is_large_file: false,
+            line_y_offsets: Vec::new(),
             language: Language::PlainText,
         }
     }
@@ -75,6 +81,8 @@ impl Tab {
             cached_tokens: Vec::new(),
             line_cache_versions: Vec::new(),
             buffer_version: 1,
+            is_large_file: false,
+            line_y_offsets: Vec::new(),
             language,
         })
     }
