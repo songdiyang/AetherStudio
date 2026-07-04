@@ -2083,13 +2083,6 @@ impl EditorState {
         });
     }
 
-    /// 异步文件夹扫描批次回调（在 UI 线程由 WM_APP+7 调用）
-    pub fn on_folder_scan_batch(&mut self, raw: usize) {
-        // 安全重建 Box
-        let batch = unsafe { Box::from_raw(raw as *mut ScannedBatch) };
-        self.on_folder_scan_batch_ref(&batch);
-    }
-
     /// H-09: 接收 &ScannedBatch 引用，由调用方负责 Box 的 drop
     pub(crate) fn on_folder_scan_batch_ref(&mut self, batch: &ScannedBatch) {
         if batch.generation != self.folder_generation {

@@ -1723,12 +1723,12 @@ unsafe fn on_wm_app_7(_hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPARAM) -
     // 文件夹异步扫描批次完成
     let raw = lparam.0 as usize;
     // H-09: 立即重建 Box 确保 Rust drop 语义保证清理，即使 EDITOR_STATE 为 None
-    // 或 on_folder_scan_batch panic 也不会内存泄漏
+    // 或 on_folder_scan_batch_ref panic 也不会内存泄漏
     let _batch_guard = unsafe { Box::from_raw(raw as *mut crate::editor::ScannedBatch) };
     EDITOR_STATE.with(|s| {
         if let Some(state) = s.borrow().as_ref() {
-            // on_folder_scan_batch 接收 raw 是为了内部重建，但我们已在上方重建。
-            // 传 raw 会让函数再次 from_raw 导致 double-free。改为传 &batch。
+            // 由 window 层负责重建 Box 并持有 _batch_guard；向 editor 传引用，
+            // 避免 editor 内部再次 from_raw 同一块内存造成 double-free。
             state.borrow_mut().on_folder_scan_batch_ref(&*_batch_guard);
             state.borrow_mut().render();
         }
