@@ -779,9 +779,12 @@ impl EditorState {
     /// 在新标签页中打开内容
     fn open_in_new_tab(&mut self, tab: Tab) {
         self.sync_to_tab();
-        let mut placeholder = tab;
-        std::mem::swap(&mut self.tabs[self.active_tab], &mut placeholder);
-        self.tabs.push(placeholder);
+        // 直接将新标签页追加到末尾并切换过去。
+        // 此前使用 swap(tabs[active], placeholder) + push(placeholder) 的写法，
+        // 会让新 tab 留在原 active 位置、旧 tab 被推到末尾，但 active_tab 又被
+        // 设置为 len()-1，结果指向了旧 tab，导致打开第二个文件时仍显示旧内容、
+        // LSP did_open 也发给了旧文件。改为直接 push 新 tab 即可。
+        self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
         self.sync_from_tab();
         self.is_selecting = false;
@@ -4808,8 +4811,12 @@ pub(crate) fn is_text_file(path: &std::path::Path) -> bool {
         "cxx",
         "js",
         "jsx",
+        "mjs",
+        "cjs",
         "ts",
         "tsx",
+        "mts",
+        "cts",
         "json",
         "md",
         "markdown",

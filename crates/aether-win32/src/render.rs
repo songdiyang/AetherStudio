@@ -6760,11 +6760,10 @@ impl EditorState {
                     _ => color_f(0.55, 0.55, 0.55, 1.0),
                 };
 
-                let brush = self
-                    .render_ctx
-                    .brush_cache
-                    .get_brush(target, &color)
-                    .unwrap();
+                let brush = match self.render_ctx.brush_cache.get_brush(target, &color) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
                 Self::draw_squiggly_line(target, x_start, x_end, squiggly_y, &brush);
             }
         }
@@ -6835,11 +6834,10 @@ impl EditorState {
         unsafe {
             // 背景
             let bg_color = color_f(0.15, 0.15, 0.18, 0.96);
-            let bg_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &bg_color)
-                .unwrap();
+            let bg_brush = match self.render_ctx.brush_cache.get_brush(target, &bg_color) {
+                Ok(b) => b,
+                Err(_) => return,
+            };
             let popup_rect = D2D_RECT_F {
                 left: popup_x,
                 top: popup_y,
@@ -6850,11 +6848,10 @@ impl EditorState {
 
             // 选中项高亮
             let sel_color = color_f(0.2, 0.45, 0.8, 1.0);
-            let sel_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &sel_color)
-                .unwrap();
+            let sel_brush = match self.render_ctx.brush_cache.get_brush(target, &sel_color) {
+                Ok(b) => b,
+                Err(_) => return,
+            };
             let sel_rect = D2D_RECT_F {
                 left: popup_x,
                 top: popup_y + self.completion_selected as f32 * item_height,
@@ -6865,32 +6862,32 @@ impl EditorState {
 
             // 边框
             let border_color = color_f(0.4, 0.4, 0.45, 1.0);
-            let border_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &border_color)
-                .unwrap();
+            let border_brush = match self.render_ctx.brush_cache.get_brush(target, &border_color) {
+                Ok(b) => b,
+                Err(_) => return,
+            };
             target.DrawRectangle(&popup_rect, &border_brush, 1.0, None);
 
             // 文本画笔
             let text_color = color_f(0.92, 0.92, 0.92, 1.0);
-            let text_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &text_color)
-                .unwrap();
+            let text_brush = match self.render_ctx.brush_cache.get_brush(target, &text_color) {
+                Ok(b) => b,
+                Err(_) => return,
+            };
             let detail_color = color_f(0.55, 0.55, 0.6, 1.0);
-            let detail_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &detail_color)
-                .unwrap();
+            let detail_brush = match self.render_ctx.brush_cache.get_brush(target, &detail_color) {
+                Ok(b) => b,
+                Err(_) => return,
+            };
 
-            let code_format = self
+            let code_format = match self
                 .render_ctx
                 .text_format_cache
                 .get_code_format(font_size)
-                .unwrap();
+            {
+                Ok(f) => f,
+                Err(_) => return,
+            };
 
             // 绘制每一项
             let mut label_buf: Vec<u16> = Vec::new();
@@ -6969,11 +6966,10 @@ impl EditorState {
         unsafe {
             // 背景
             let bg_color = color_f(0.18, 0.18, 0.22, 0.96);
-            let bg_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &bg_color)
-                .unwrap();
+            let bg_brush = match self.render_ctx.brush_cache.get_brush(target, &bg_color) {
+                Ok(b) => b,
+                Err(_) => return,
+            };
             let tooltip_rect = D2D_RECT_F {
                 left: tooltip_x,
                 top: tooltip_y,
@@ -6984,25 +6980,26 @@ impl EditorState {
 
             // 边框
             let border_color = color_f(0.45, 0.45, 0.5, 1.0);
-            let border_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &border_color)
-                .unwrap();
+            let border_brush = match self.render_ctx.brush_cache.get_brush(target, &border_color) {
+                Ok(b) => b,
+                Err(_) => return,
+            };
             target.DrawRectangle(&tooltip_rect, &border_brush, 1.0, None);
 
             // 文本
             let text_color = color_f(0.9, 0.9, 0.9, 1.0);
-            let text_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &text_color)
-                .unwrap();
-            let code_format = self
+            let text_brush = match self.render_ctx.brush_cache.get_brush(target, &text_color) {
+                Ok(b) => b,
+                Err(_) => return,
+            };
+            let code_format = match self
                 .render_ctx
                 .text_format_cache
                 .get_code_format(font_size)
-                .unwrap();
+            {
+                Ok(f) => f,
+                Err(_) => return,
+            };
 
             let mut text_buf: Vec<u16> = Vec::new();
             for (i, line) in lines.iter().enumerate() {
