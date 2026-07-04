@@ -2039,6 +2039,8 @@ impl EditorState {
         self.status_message = format!("正在扫描: {}...", path.display());
         self.recent_projects.add(&path);
         self.file_tree = Some(FileTree::new());
+        // UI-T01: 工作区切换后标题栏需要立即更新，标记全窗口重绘
+        self.dirty_tracker.mark_full_window();
 
         let hwnd = self.hwnd;
         let path_clone = path.clone();
@@ -2492,6 +2494,8 @@ impl EditorState {
         self.git.detect(&std::path::Path::new("."));
         self.status_bar.update_git_branch(None);
         self.status_message = "已关闭工作区".to_string();
+        // UI-T01: 关闭工作区后标题栏需要立即恢复为应用名
+        self.dirty_tracker.mark_full_window();
     }
 
     pub fn handle_sidebar_click(&mut self, mouse_x: f32, mouse_y: f32) -> bool {
