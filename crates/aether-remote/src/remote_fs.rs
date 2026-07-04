@@ -163,10 +163,21 @@ pub trait RemoteFs: Send + Sync {
     fn git_exec(&self, path: &str, git_args: &[&str]) -> Result<(String, String)> {
         // H-06: 使用 exec_restricted 而非 exec，确保通过命令白名单和元字符过滤
         let safe_path = validate_git_path(path)?;
-        // H-06: 校验 git 参数不以 '-' 开头，防止标志注入
+        // H-06: 校验 git 参数
+        // 1) 不以 '-' 开头，防止标志注入
+        // 2) 不含 '..'、不以 '/' 开头、不含 './'/'~/'，防止路径遍历
         for arg in git_args {
             if arg.starts_with('-') {
                 return Err(format!("非法 git 参数（不应以 '-' 开头）: {}", arg));
+            }
+            if arg.contains("..") {
+                return Err(format!("非法 git 参数（含路径遍历 '..'）: {}", arg));
+            }
+            if arg.starts_with('/') {
+                return Err(format!("非法 git 参数（不应为绝对路径）: {}", arg));
+            }
+            if arg.contains("./") || arg.contains("~/") {
+                return Err(format!("非法 git 参数（含相对路径前缀）: {}", arg));
             }
         }
         let cmd = format!("git -C {} {}", safe_path, git_args.join(" "));
@@ -190,6 +201,16 @@ fn validate_git_path(path: &str) -> Result<&str> {
     }
     if path.starts_with('-') {
         return Err(format!("非法 git 路径（不应以 '-' 开头）: {}", path));
+    }
+    // H-06: 阻止路径遍历与绝对路径
+    if path.contains("..") {
+        return Err(format!("非法 git 路径（含路径遍历 '..'）: {}", path));
+    }
+    if path.starts_with('/') {
+        return Err(format!("非法 git 路径（不应为绝对路径）: {}", path));
+    }
+    if path.contains("./") || path.contains("~/") {
+        return Err(format!("非法 git 路径（含相对路径前缀）: {}", path));
     }
     Ok(path)
 }
