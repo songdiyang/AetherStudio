@@ -285,7 +285,9 @@ pub struct EditorState {
     pub(crate) completion_trigger_col: usize,
     // Phase H: 悬停 tooltip 状态
     pub(crate) hover_content: Option<String>,
+    #[allow(dead_code)]
     pub(crate) hover_x: f32,
+    #[allow(dead_code)]
     pub(crate) hover_y: f32,
 }
 

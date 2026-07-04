@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::process::Child;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use crate::transport::{spawn_adapter, spawn_stderr_drain, DapTransport};
@@ -29,6 +30,8 @@ pub struct DebugSession {
     seq_generator: RequestIdGenerator,
     /// H-04: 子进程句柄，disconnect 后超时未退出则强制 kill
     child: Option<Child>,
+    /// H-04: stderr 读取任务句柄，finalize 时主动 abort 避免任务残留
+    stderr_drain: Option<JoinHandle<()>>,
 }
 
 impl DebugSession {
@@ -54,7 +57,7 @@ impl DebugSession {
         let transport = DapTransport::new(stdin, stdout);
 
         // 启动后台 stderr 读取任务，避免适配器 stderr 缓冲区满后阻塞
-        spawn_stderr_drain(stderr);
+        let stderr_drain = spawn_stderr_drain(stderr);
 
         let mut session = Self {
             transport,
@@ -63,6 +66,7 @@ impl DebugSession {
             event_tx,
             seq_generator: RequestIdGenerator::new(),
             child: Some(process),
+            stderr_drain: Some(stderr_drain),
         };
 
         // 发送 initialize 请求
@@ -511,6 +515,10 @@ impl DebugSession {
     ///
     /// 多次调用安全：第二次取 child 会得到 None，直接返回。
     async fn finalize_child(&mut self) {
+        // 先中止 stderr drain 任务，避免 child 退出/被 kill 后任务仍短暂持有句柄
+        if let Some(drain) = self.stderr_drain.take() {
+            drain.abort();
+        }
         if let Some(mut child) = self.child.take() {
             match timeout(DISCONNECT_KILL_TIMEOUT, child.wait()).await {
                 Ok(_) => {
