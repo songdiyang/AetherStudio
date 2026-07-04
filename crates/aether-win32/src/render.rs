@@ -136,7 +136,10 @@ impl EditorState {
             }
         }
 
-        // 脏矩形检测：对比上一帧状态，标记变化区域
+        // P1.2: 先把事件队列中累积的事件转换为脏矩形
+        self.flush_events_to_dirty_tracker();
+
+        // 脏矩形检测：对比上一帧状态，标记变化区域（兼容层）
         let cursor_moved =
             self.cursor_line != self.last_cursor_line || self.cursor_col != self.last_cursor_col;
         let scroll_changed = (self.scroll_y - self.last_scroll_y).abs() > 0.01;

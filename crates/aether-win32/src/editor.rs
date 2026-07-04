@@ -225,6 +225,8 @@ pub struct EditorState {
     pub git_panel: crate::git::GitIntegration,
     /// 脏矩形追踪器（用于局部重绘优化）
     pub dirty_tracker: crate::dirty_rect::DirtyRectTracker,
+    /// 事件队列（P1.1: 解耦模型改动与渲染）
+    pub event_queue: crate::events::EventQueue,
     /// 上一帧的光标位置（用于检测光标移动）
     pub last_cursor_line: usize,
     /// 上一帧的光标列（用于检测光标移动）
@@ -329,6 +331,7 @@ impl EditorState {
             self.is_selecting = false;
             self.sync_file_tree_selection();
             self.status_message = format!("切换到: {}", self.current_tab().file_name());
+            self.emit_event(crate::events::EditorEvent::TabChanged);
         }
     }
 
@@ -609,6 +612,7 @@ impl EditorState {
             sidebar_scroll_y: 0.0,
             git_panel: crate::git::GitIntegration::new(),
             dirty_tracker: crate::dirty_rect::DirtyRectTracker::new(1280.0, 800.0),
+            event_queue: crate::events::EventQueue::new(),
             last_cursor_line: 0,
             last_cursor_col: 0,
             last_scroll_y: 0.0,
@@ -683,6 +687,108 @@ impl EditorState {
         // 更新脏矩形追踪器窗口尺寸，触发全窗口重绘
         self.dirty_tracker.resize(log_w as f32, log_h as f32);
         self.render_ctx.resize(phys_width, phys_height);
+        self.emit_event(crate::events::EditorEvent::WindowResized);
+    }
+
+    /// 发射一个编辑器事件到事件队列
+    pub fn emit_event(&mut self, event: crate::events::EditorEvent) {
+        self.event_queue.push(event);
+    }
+
+    /// 发射文本编辑相关事件（TextChanged + CursorMoved）
+    fn emit_edit_events(&mut self) {
+        self.emit_event(crate::events::EditorEvent::TextChanged {
+            start_line: self.cursor_line,
+            end_line: self.cursor_line + 1,
+        });
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
+    }
+
+    /// 将事件队列中所有事件转换为脏矩形标记
+    pub fn flush_events_to_dirty_tracker(&mut self) {
+        // 预取布局区域，避免闭包多次借用 self.layout
+        let editor_region = self.layout.editor_region();
+        let status_region = self.layout.status_bar_region();
+        let sidebar_region = self.layout.sidebar_region();
+        let right_panel_region = self.layout.right_panel_region();
+        let bottom_region = self.layout.bottom_panel_region();
+        let _has_multiple_tabs = self.tabs.len() > 1;
+        let line_height = self.text_renderer.line_height();
+        let cursor_x = editor_region.x + 60.0 + 5.0
+            + self.cursor_col as f32 * self.text_renderer.char_width()
+            - self.scroll_x;
+        let cursor_y = editor_region.y + self.cursor_line as f32 * line_height - self.scroll_y;
+
+        self.event_queue.drain_to_dirty_tracker(&mut self.dirty_tracker, |event| {
+            use crate::events::EditorEvent;
+            match event {
+                EditorEvent::TextChanged { .. } => Some((
+                    editor_region.x,
+                    editor_region.y,
+                    editor_region.width,
+                    editor_region.height,
+                )),
+                EditorEvent::CursorMoved => Some((cursor_x, cursor_y, 2.0, line_height)),
+                EditorEvent::SelectionChanged => Some((
+                    editor_region.x,
+                    editor_region.y,
+                    editor_region.width,
+                    editor_region.height,
+                )),
+                EditorEvent::Scrolled => Some((
+                    editor_region.x,
+                    editor_region.y,
+                    editor_region.width,
+                    editor_region.height,
+                )),
+                EditorEvent::TabChanged => None, // 由调用方显式标记全窗口
+                EditorEvent::SidebarChanged => {
+                    if sidebar_region.width > 0.0 {
+                        Some((
+                            sidebar_region.x,
+                            sidebar_region.y,
+                            sidebar_region.width,
+                            sidebar_region.height,
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                EditorEvent::RightPanelChanged => {
+                    if right_panel_region.width > 0.0 {
+                        Some((
+                            right_panel_region.x,
+                            right_panel_region.y,
+                            right_panel_region.width,
+                            right_panel_region.height,
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                EditorEvent::BottomPanelChanged => {
+                    if bottom_region.height > 0.0 {
+                        Some((
+                            bottom_region.x,
+                            bottom_region.y,
+                            bottom_region.width,
+                            bottom_region.height,
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                EditorEvent::StatusBarChanged => Some((
+                    status_region.x,
+                    status_region.y,
+                    status_region.width,
+                    status_region.height,
+                )),
+                EditorEvent::WindowResized => None, // 全窗口事件在内部处理
+                EditorEvent::FindReplaceChanged => None, // 由调用方显式标记
+                EditorEvent::DialogVisibilityChanged => None, // 全窗口事件在内部处理
+            }
+        });
     }
 
     /// 检查当前标签页是否可以重用（空文件且未修改）
@@ -1229,6 +1335,7 @@ impl EditorState {
         let editor_height = editor_region.height.max(1.0);
         let max_scroll = (total_height - editor_height).max(0.0);
         self.scroll_y = (self.scroll_y + delta_y).clamp(0.0, max_scroll);
+        self.emit_event(crate::events::EditorEvent::Scrolled);
     }
 
     /// P0-3: 水平滚动。
@@ -1264,6 +1371,7 @@ impl EditorState {
         let max_scroll_x = (max_content_width - text_visible_width).max(0.0);
 
         self.scroll_x = (self.scroll_x + delta_x).clamp(0.0, max_scroll_x);
+        self.emit_event(crate::events::EditorEvent::Scrolled);
     }
 
     /// P0-3: 重置水平滚动（光标跳转、文件加载时调用）
@@ -1353,6 +1461,7 @@ impl EditorState {
             }
             _ => {}
         }
+        self.emit_event(crate::events::EditorEvent::SidebarChanged);
     }
 
     /// 设置剪贴板文本
@@ -2788,6 +2897,7 @@ impl EditorState {
             pos,
         );
         self.status_message = "已修改".to_string();
+        self.emit_edit_events();
     }
 
     /// P1-4: 尝试自动配对括号。
@@ -2882,6 +2992,7 @@ impl EditorState {
                 pos,
             );
             self.status_message = "已修改".to_string();
+            self.emit_edit_events();
             return true;
         }
 
@@ -2907,6 +3018,7 @@ impl EditorState {
             pos,
         );
         self.status_message = "已修改".to_string();
+        self.emit_edit_events();
         true
     }
 
@@ -2961,6 +3073,7 @@ impl EditorState {
             pos,
         );
         self.status_message = "已修改".to_string();
+        self.emit_edit_events();
     }
 
     pub fn insert_newline(&mut self) {
@@ -3018,6 +3131,7 @@ impl EditorState {
             pos,
         );
         self.status_message = "已修改".to_string();
+        self.emit_edit_events();
     }
 
     pub fn delete_char(&mut self) {
@@ -3080,6 +3194,7 @@ impl EditorState {
                         start,
                     );
                     self.status_message = "已修改".to_string();
+                    self.emit_edit_events();
                 }
             }
         }
@@ -3110,6 +3225,7 @@ impl EditorState {
                 pos,
             );
             self.status_message = "已修改".to_string();
+            self.emit_edit_events();
         }
     }
 
@@ -3256,6 +3372,7 @@ impl EditorState {
                 self.cursor_col = text.len();
             }
         }
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     pub fn move_cursor_right(&mut self) {
@@ -3269,6 +3386,7 @@ impl EditorState {
                 self.cursor_col = 0;
             }
         }
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     pub fn move_cursor_up(&mut self) {
@@ -3278,6 +3396,7 @@ impl EditorState {
                 self.cursor_col = self.cursor_col.min(text.len());
             }
         }
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     pub fn move_cursor_down(&mut self) {
@@ -3287,16 +3406,19 @@ impl EditorState {
                 self.cursor_col = self.cursor_col.min(text.len());
             }
         }
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     pub fn move_cursor_home(&mut self) {
         self.cursor_col = 0;
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     pub fn move_cursor_end(&mut self) {
         if let Some(text) = self.buffer.get_line(self.cursor_line) {
             self.cursor_col = text.len();
         }
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// P1-6: Smart Home - 跳到行首首个非空白字符。
@@ -3305,6 +3427,7 @@ impl EditorState {
     pub fn move_cursor_smart_home(&mut self, already_at_smart_home: bool) {
         if already_at_smart_home {
             self.cursor_col = 0;
+            self.emit_event(crate::events::EditorEvent::CursorMoved);
             return;
         }
         if let Some(text) = self.buffer.get_line(self.cursor_line) {
@@ -3316,12 +3439,14 @@ impl EditorState {
                 .unwrap_or(text.len());
             self.cursor_col = first_non_ws;
         }
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// P1-6: 移动到文件首行
     pub fn move_cursor_file_start(&mut self) {
         self.cursor_line = 0;
         self.cursor_col = 0;
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// P1-6: 移动到文件末行末列
@@ -3331,6 +3456,7 @@ impl EditorState {
         if let Some(text) = self.buffer.get_line(self.cursor_line) {
             self.cursor_col = text.len();
         }
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// P1-6: 向左移动一个单词。
@@ -3370,6 +3496,7 @@ impl EditorState {
             self.cursor_line -= 1;
             self.move_cursor_end();
         }
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// P1-6: 向右移动一个单词。
@@ -3405,6 +3532,7 @@ impl EditorState {
             self.cursor_line += 1;
             self.cursor_col = 0;
         }
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// P1-6: 切换行注释（按语言决定注释符号）。

@@ -1,4 +1,5 @@
 pub mod dirty_rect;
+pub mod events;
 pub mod render_context;
 
 pub mod activity_bar;
