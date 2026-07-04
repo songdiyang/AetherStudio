@@ -8,8 +8,8 @@ use tokio::time::timeout;
 
 use crate::client::LspEvent;
 use crate::transport::{spawn_server, spawn_stderr_drain, LspReader, LspWriter};
-use tokio::process::Child;
 use crate::types::*;
+use tokio::process::Child;
 
 /// 默认请求超时（秒）。
 ///

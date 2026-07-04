@@ -83,7 +83,10 @@ pub enum AiError {
     Config(String),
     /// H-21: message 已截断至 200 字符，但仍可能含敏感信息，
     /// 展示给用户时应使用 `safe_display()` 而非 `Display`。
-    Api { code: u16, message: String },
+    Api {
+        code: u16,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for AiError {

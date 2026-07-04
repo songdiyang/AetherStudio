@@ -1108,8 +1108,7 @@ impl EditorState {
         if !self.completion_visible || self.completion_items.is_empty() {
             return;
         }
-        self.completion_selected =
-            (self.completion_selected + 1) % self.completion_items.len();
+        self.completion_selected = (self.completion_selected + 1) % self.completion_items.len();
     }
 
     /// 补全列表上一项（↑ 键）

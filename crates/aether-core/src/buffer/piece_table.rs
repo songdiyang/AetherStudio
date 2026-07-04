@@ -496,10 +496,9 @@ impl PieceTable {
     pub fn write_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
         for piece in &self.pieces {
             let buf = self.buffer_for(piece.source);
-            let end = piece
-                .start
-                .checked_add(piece.len)
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "piece start+len 溢出"))?;
+            let end = piece.start.checked_add(piece.len).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "piece start+len 溢出")
+            })?;
             if end > buf.len() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,

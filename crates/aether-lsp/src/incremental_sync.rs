@@ -49,9 +49,8 @@ impl IncrementalChangeCalculator {
                 // 避免合并非相邻编辑时丢失两次编辑之间的原始文本。
                 // 原代码使用 next.start.line <= current.end.line + 1 过于宽松，
                 // 会将相邻行但不相邻位置的编辑合并，导致中间文本丢失。
-                let is_adjacent =
-                    next_range.start.line == current_range.end.line
-                        && next_range.start.character == current_range.end.character;
+                let is_adjacent = next_range.start.line == current_range.end.line
+                    && next_range.start.character == current_range.end.character;
                 if is_adjacent {
                     // 相邻编辑可以安全合并：[current.start, current.end) + [next.start, next.end)
                     // → [current.start, next.end)，替换文本为 current.text + next.text

@@ -120,10 +120,7 @@ impl LspReader {
         for line in header_str.lines() {
             if let Some(val) = line.strip_prefix("Content-Length: ") {
                 let content_len: usize = val.parse().map_err(|_| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "Invalid Content-Length value",
-                    )
+                    io::Error::new(io::ErrorKind::InvalidData, "Invalid Content-Length value")
                 })?;
                 // C-07: 超大消息返回显式错误，避免返回 None 导致协议失同步
                 const MAX_CONTENT_LENGTH: usize = 64 * 1024 * 1024;

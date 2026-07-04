@@ -129,9 +129,7 @@ pub async fn spawn_adapter(config: &crate::types::AdapterConfig) -> std::io::Res
 ///
 /// 与 LSP 相同，DAP 适配器也会向 stderr 输出日志，若不读取会导致
 /// 64KB 缓冲区满后适配器进程完全阻塞，进而导致调试请求卡死。
-pub fn spawn_stderr_drain(
-    mut stderr: tokio::process::ChildStderr,
-) -> tokio::task::JoinHandle<()> {
+pub fn spawn_stderr_drain(mut stderr: tokio::process::ChildStderr) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         use tokio::io::AsyncReadExt;
         let mut buf = [0u8; 4096];

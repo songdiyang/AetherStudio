@@ -148,10 +148,7 @@ impl AppSettings {
                 }
                 Err(e) => {
                     // M-13: JSON 损坏时记录警告并备份原文件，避免用户在不知情下丢失设置
-                    eprintln!(
-                        "[M-13] 警告: settings.json 解析失败，回退到默认设置: {}",
-                        e
-                    );
+                    eprintln!("[M-13] 警告: settings.json 解析失败，回退到默认设置: {}", e);
                     let backup = path.with_extension("json.corrupt");
                     if std::fs::rename(&path, &backup).is_ok() {
                         eprintln!("[M-13] 已将损坏的配置备份到 {}", backup.display());

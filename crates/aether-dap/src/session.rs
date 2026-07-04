@@ -52,7 +52,10 @@ impl DebugSession {
         })?;
         // H-04: 单独取出 stderr，保留 Child 句柄以便后续 kill
         let stderr = process.stderr.take().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::Other, "Failed to capture adapter stderr")
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to capture adapter stderr",
+            )
         })?;
         let transport = DapTransport::new(stdin, stdout);
 

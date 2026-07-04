@@ -405,12 +405,18 @@ impl GitRepository {
         // H-04: 防止 remote_name/branch_name 以 '-' 开头被 git 解析为 flag
         if let Some(r) = remote_name {
             if r.starts_with('-') {
-                return Err(format!("Invalid remote name: '{}' (must not start with '-')", r));
+                return Err(format!(
+                    "Invalid remote name: '{}' (must not start with '-')",
+                    r
+                ));
             }
         }
         if let Some(b) = branch_name {
             if b.starts_with('-') {
-                return Err(format!("Invalid branch name: '{}' (must not start with '-')", b));
+                return Err(format!(
+                    "Invalid branch name: '{}' (must not start with '-')",
+                    b
+                ));
             }
         }
         let mut args = vec!["pull", "--ff-only"];
@@ -442,12 +448,18 @@ impl GitRepository {
         // H-04: 防止 remote_name/branch_name 以 '-' 开头被 git 解析为 flag
         if let Some(r) = remote_name {
             if r.starts_with('-') {
-                return Err(format!("Invalid remote name: '{}' (must not start with '-')", r));
+                return Err(format!(
+                    "Invalid remote name: '{}' (must not start with '-')",
+                    r
+                ));
             }
         }
         if let Some(b) = branch_name {
             if b.starts_with('-') {
-                return Err(format!("Invalid branch name: '{}' (must not start with '-')", b));
+                return Err(format!(
+                    "Invalid branch name: '{}' (must not start with '-')",
+                    b
+                ));
             }
         }
         let mut args = vec!["push"];

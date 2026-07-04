@@ -89,9 +89,7 @@ impl TerminalPanel {
             cmd.arg(arg);
         }
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("启动终端失败: {}", e))?;
+        let mut child = cmd.spawn().map_err(|e| format!("启动终端失败: {}", e))?;
 
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
@@ -221,7 +219,8 @@ impl TerminalPanel {
                                     Err(e) => e.valid_up_to(),
                                 };
                                 if valid_len > 0 {
-                                    let text = String::from_utf8_lossy(&leftover[..valid_len]).to_string();
+                                    let text =
+                                        String::from_utf8_lossy(&leftover[..valid_len]).to_string();
                                     if tx.send(text).is_err() {
                                         break; // 接收端已关闭
                                     }
@@ -261,7 +260,8 @@ impl TerminalPanel {
                                     Err(e) => e.valid_up_to(),
                                 };
                                 if valid_len > 0 {
-                                    let text = String::from_utf8_lossy(&leftover[..valid_len]).to_string();
+                                    let text =
+                                        String::from_utf8_lossy(&leftover[..valid_len]).to_string();
                                     if tx.send(text).is_err() {
                                         break; // 接收端已关闭
                                     }
