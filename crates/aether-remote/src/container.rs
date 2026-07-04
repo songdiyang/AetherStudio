@@ -77,10 +77,13 @@ impl RemoteFs for ContainerRemoteFs {
         }
 
         // H-05: 拆分只读和写入白名单，对写入操作额外审计
+        // C-04: 从只读白名单移除 git/tar/gzip/gunzip。这些命令虽常被当作
+        // "只读"使用，但实际上可以修改容器文件系统（tar 可解压/执行 checkpoint
+        // action，git 可修改 hooks/状态，gzip -f 可覆盖原文件），沙箱逃逸风险高。
         const READONLY_COMMANDS: &[&str] = &[
             "ls", "cat", "pwd", "echo", "find", "grep", "head", "tail", "wc", "stat", "file",
             "which", "diff", "sort", "uniq", "tr", "less", "more", "uname", "whoami", "id", "ps",
-            "df", "du", "git", "tar", "gzip", "gunzip",
+            "df", "du",
         ];
         const WRITE_COMMANDS: &[&str] = &["mkdir", "touch", "cp", "mv", "rm", "chmod", "chown"];
         let cmd_name = trimmed.split_whitespace().next().unwrap_or("");
