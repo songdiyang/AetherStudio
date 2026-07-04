@@ -107,7 +107,7 @@ impl TomlLexer {
                     end,
                 )
             }
-            b'0'..=b'9' | b'+' | b'-' => {
+            b'0'..=b'9' => {
                 let end = skip_number_or_date(bytes, pos);
                 (
                     LexemeSpan {
@@ -118,6 +118,32 @@ impl TomlLexer {
                     },
                     end,
                 )
+            }
+            b'+' | b'-' => {
+                // H-11: `+`/`-` 仅在后跟数字时才作为数字起始，
+                // 否则作为标点符号（如数组中的 `-` 表项、或二元运算符）。
+                if pos + 1 < bytes.len() && bytes[pos + 1].is_ascii_digit() {
+                    let end = skip_number_or_date(bytes, pos);
+                    (
+                        LexemeSpan {
+                            start: pos,
+                            len: end - pos,
+                            kind: TokenKind::NumberLiteral,
+                            flags: 0,
+                        },
+                        end,
+                    )
+                } else {
+                    (
+                        LexemeSpan {
+                            start: pos,
+                            len: 1,
+                            kind: TokenKind::Punctuation,
+                            flags: 0,
+                        },
+                        pos + 1,
+                    )
+                }
             }
             b't' | b'f' => {
                 let end = skip_bool(bytes, pos);

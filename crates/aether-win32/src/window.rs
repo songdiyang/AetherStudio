@@ -11,6 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dialogs::Dialogs;
 use crate::editor::EditorState;
+use aether_lsp::client::LspEvent;
 
 const CLASS_NAME: &str = "AetherEditor";
 const WINDOW_TITLE: &str = "Aether";
@@ -1170,13 +1171,15 @@ unsafe fn on_m_o_u_s_e_m_o_v_e(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: LP
 
         // 对话框悬停处理
         if st.ssh_dialog.visible {
-            let _ = st.handle_ssh_dialog_click(mouse_x, mouse_y);
+            // H-22: 使用专门的 hover 方法，避免 click 方法的副作用（返回动作可能触发逻辑）
+            st.handle_ssh_dialog_hover(mouse_x, mouse_y);
             drop(st);
             state.borrow_mut().render();
             return LRESULT(0);
         }
         if st.clone_dialog.visible {
-            let _ = st.handle_clone_dialog_click(mouse_x, mouse_y);
+            // H-22: 同理，clone 对话框也使用 hover 而非 click
+            st.handle_clone_dialog_hover(mouse_x, mouse_y);
             drop(st);
             state.borrow_mut().render();
             return LRESULT(0);
@@ -1668,8 +1671,23 @@ unsafe fn on_d_e_s_t_r_o_y(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPAR
         let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
     }
     // UI-C02: 仅当所有窗口都关闭时才退出应用程序
-    if WINDOW_COUNT.fetch_sub(1, Ordering::SeqCst) == 1 {
-        PostQuitMessage(0);
+    // L-01: 使用 compare_exchange 防止 fetch_sub 下溢回绕到 usize::MAX，导致 PostQuitMessage 永不触发
+    loop {
+        let current = WINDOW_COUNT.load(Ordering::SeqCst);
+        if current == 0 {
+            // 计数器已为 0，异常状态，不再减避免下溢
+            break;
+        }
+        if WINDOW_COUNT
+            .compare_exchange(current, current - 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            if current == 1 {
+                PostQuitMessage(0);
+            }
+            break;
+        }
+        // CAS 失败，重试
     }
     LRESULT(0)
 }
@@ -1682,13 +1700,36 @@ unsafe fn on_wm_app_2(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -
     LRESULT(0)
 }
 
+/// msg if msg == WM_APP + 3
+/// LSP 事件转发：tokio task 通过 PostMessageW 将 LspEvent 投递到 UI 线程。
+/// 由 EditorState::new() 中 spawn 的事件 forwarder task 发送。
+/// 处理诊断更新、补全结果、悬停结果等 LSP 事件。
+unsafe fn on_wm_app_3(_hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let raw = lparam.0 as usize;
+    // H-09: 立即重建 Box 确保 Rust drop 语义保证清理，即使后续处理 panic 也不会内存泄漏
+    let _event_guard = unsafe { Box::from_raw(raw as *mut LspEvent) };
+    let event: &LspEvent = &*_event_guard;
+    EDITOR_STATE.with(|s| {
+        if let Some(state) = s.borrow().as_ref() {
+            state.borrow_mut().handle_lsp_event(event.clone());
+            state.borrow_mut().render();
+        }
+    });
+    LRESULT(0)
+}
+
 /// msg if msg == WM_APP + 7
 unsafe fn on_wm_app_7(_hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // 文件夹异步扫描批次完成
     let raw = lparam.0 as usize;
+    // H-09: 立即重建 Box 确保 Rust drop 语义保证清理，即使 EDITOR_STATE 为 None
+    // 或 on_folder_scan_batch_ref panic 也不会内存泄漏
+    let _batch_guard = unsafe { Box::from_raw(raw as *mut crate::editor::ScannedBatch) };
     EDITOR_STATE.with(|s| {
         if let Some(state) = s.borrow().as_ref() {
-            state.borrow_mut().on_folder_scan_batch(raw);
+            // 由 window 层负责重建 Box 并持有 _batch_guard；向 editor 传引用，
+            // 避免 editor 内部再次 from_raw 同一块内存造成 double-free。
+            state.borrow_mut().on_folder_scan_batch_ref(&*_batch_guard);
             state.borrow_mut().render();
         }
     });
@@ -1924,11 +1965,24 @@ unsafe fn on_e_r_a_s_e_b_k_g_n_d(
 unsafe fn on_p_a_i_n_t(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
     let mut ps = PAINTSTRUCT::default();
     let _hdc = BeginPaint(hwnd, &mut ps);
-    EDITOR_STATE.with(|s| {
-        if let Some(state) = s.borrow().as_ref() {
-            state.borrow_mut().render();
-        }
-    });
+    // C-04: 渲染路径中存在 40+ 处 D2D 资源创建 .unwrap()，设备丢失（GPU 驱动崩溃、
+    // 显示模式切换）时会 panic。此处统一 catch_unwind 记录诊断并优雅跳过本次绘制，
+    // 避免逐个替换 unwrap 的同时也保证 panic 不传播。
+    let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        EDITOR_STATE.with(|s| {
+            if let Some(state) = s.borrow().as_ref() {
+                state.borrow_mut().render();
+            }
+        });
+    }));
+    if let Err(payload) = render_result {
+        let msg = payload
+            .downcast_ref::<&'static str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+            .unwrap_or("<non-string panic>");
+        eprintln!("[C-04] render panic recovered (D2D device loss?): {}", msg);
+    }
     let _ = EndPaint(hwnd, &ps);
     LRESULT(0)
 }
@@ -2332,6 +2386,57 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
         };
         if handled {
             return LRESULT(0);
+        }
+    }
+
+    // Phase H2: 补全弹窗可见时拦截导航键（↑↓/Enter/Esc）
+    if !ctrl {
+        let completion_active = EDITOR_STATE.with(|s| {
+            s.borrow()
+                .as_ref()
+                .map(|state| state.borrow().completion_visible)
+                .unwrap_or(false)
+        });
+        if completion_active {
+            match vk {
+                VK_UP => {
+                    EDITOR_STATE.with(|s| {
+                        if let Some(state) = s.borrow().as_ref() {
+                            state.borrow_mut().completion_prev();
+                            state.borrow_mut().render();
+                        }
+                    });
+                    return LRESULT(0);
+                }
+                VK_DOWN => {
+                    EDITOR_STATE.with(|s| {
+                        if let Some(state) = s.borrow().as_ref() {
+                            state.borrow_mut().completion_next();
+                            state.borrow_mut().render();
+                        }
+                    });
+                    return LRESULT(0);
+                }
+                VK_RETURN => {
+                    EDITOR_STATE.with(|s| {
+                        if let Some(state) = s.borrow().as_ref() {
+                            state.borrow_mut().completion_accept();
+                            state.borrow_mut().render();
+                        }
+                    });
+                    return LRESULT(0);
+                }
+                VK_ESCAPE => {
+                    EDITOR_STATE.with(|s| {
+                        if let Some(state) = s.borrow().as_ref() {
+                            state.borrow_mut().completion_cancel();
+                            state.borrow_mut().render();
+                        }
+                    });
+                    return LRESULT(0);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -2750,6 +2855,15 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().new_file();
                         state.borrow_mut().render();
+                    }
+                });
+            }
+            VK_SPACE => {
+                // Phase H1: Ctrl+Space 触发 LSP 补全请求
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().request_completion();
+                        // 不立即 render：补全结果到达后由 WM_APP+3 触发重绘
                     }
                 });
             }
@@ -3648,7 +3762,9 @@ unsafe fn on_default(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LR
 }
 
 extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    unsafe {
+    // C-01: WndProc 是 FFI 边界（extern "system"），任何 panic 穿越此边界均为未定义行为。
+    // 使用 catch_unwind 包裹整个函数体，panic 时回退到 DefWindowProcW 以保证进程稳定。
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
         // UI-M06: 从窗口 GWLP_USERDATA 获取状态，同步到 thread_local，
         // 防止多窗口消息交错时键盘输入路由到错误窗口
         match msg {
@@ -3659,7 +3775,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             WM_TIMER => on_t_i_m_e_r(hwnd, msg, wparam, lparam),
             WM_DESTROY => on_d_e_s_t_r_o_y(hwnd, msg, wparam, lparam),
             msg if msg == WM_APP + 2 => on_wm_app_2(hwnd, msg, wparam, lparam),
-            msg if msg == WM_APP + 3 => LRESULT(0),
+            msg if msg == WM_APP + 3 => on_wm_app_3(hwnd, msg, wparam, lparam),
             msg if msg == WM_APP + 4 => on_wm_app_4(hwnd, msg, wparam, lparam),
             msg if msg == WM_APP + 5 => on_wm_app_5(hwnd, msg, wparam, lparam),
             msg if msg == WM_APP + 6 => on_wm_app_6(hwnd, msg, wparam, lparam),
@@ -3681,6 +3797,22 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             WM_MOUSEWHEEL => on_m_o_u_s_e_w_h_e_e_l(hwnd, msg, wparam, lparam),
             WM_MOUSEHWHEEL => on_m_o_u_s_e_h_w_h_e_e_l(hwnd, msg, wparam, lparam),
             _ => on_default(hwnd, msg, wparam, lparam),
+        }
+    }));
+    match result {
+        Ok(lr) => lr,
+        Err(panic_payload) => {
+            // 记录诊断信息后回退到默认处理，避免 panic 穿越 FFI 边界
+            let msg_str = panic_payload
+                .downcast_ref::<&'static str>()
+                .copied()
+                .or_else(|| panic_payload.downcast_ref::<String>().map(|s| s.as_str()))
+                .unwrap_or("<non-string panic>");
+            eprintln!(
+                "[C-01] window_proc panic recovered (msg={}): {}",
+                msg, msg_str
+            );
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
     }
 }

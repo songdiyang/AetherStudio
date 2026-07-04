@@ -26,3 +26,12 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Learning reference: cloned vscode repo (not part of this project)
+vscode/
+
+# Trae IDE shared HTML packages cache
+.trae-html-share-packages/
+
+# Upload cache
+.uploads/

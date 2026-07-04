@@ -74,8 +74,6 @@ dependencies = [
 name = "aether-remote"
 version = "0.1.0"
 dependencies = [
- "base64",
- "hex",
  "serde",
  "serde_json",
  "shell-escape",
@@ -124,14 +122,19 @@ version = "0.1.0"
 dependencies = [
  "aether-ai",
  "aether-core",
+ "aether-lsp",
  "aether-remote",
  "aether-render",
  "aether-shared",
+ "aether-tree-sitter",
  "dirs",
+ "lsp-types",
  "time",
+ "tokio",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "url",
  "windows",
 ]
 
@@ -411,12 +414,6 @@ dependencies = [
  "libc",
  "r-efi",
 ]
-
-[[package]]
-name = "hex"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "icu_collections"

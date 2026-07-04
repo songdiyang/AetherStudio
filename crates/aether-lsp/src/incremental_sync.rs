@@ -45,9 +45,15 @@ impl IncrementalChangeCalculator {
 
         for edit in edits.into_iter().skip(1) {
             if let (Some(current_range), Some(next_range)) = (current.range, edit.range) {
-                // 检查是否可以合并（相邻或重叠）
-                if next_range.start.line <= current_range.end.line + 1 {
-                    // 合并两个范围
+                // H-22: 仅合并真正相邻的编辑（next.start == current.end），
+                // 避免合并非相邻编辑时丢失两次编辑之间的原始文本。
+                // 原代码使用 next.start.line <= current.end.line + 1 过于宽松，
+                // 会将相邻行但不相邻位置的编辑合并，导致中间文本丢失。
+                let is_adjacent = next_range.start.line == current_range.end.line
+                    && next_range.start.character == current_range.end.character;
+                if is_adjacent {
+                    // 相邻编辑可以安全合并：[current.start, current.end) + [next.start, next.end)
+                    // → [current.start, next.end)，替换文本为 current.text + next.text
                     let merged_text = current.text + &edit.text;
                     current = TextDocumentContentChangeEvent {
                         range: Some(Range {
@@ -147,7 +153,14 @@ impl LineIndexProvider for FastLineIndex {
             .get(line)
             .copied()
             .unwrap_or(self.total_bytes);
-        let character = position.character as usize;
+        // H-18: 限制 character 不超出本行末尾，避免跨行偏移导致文档模型损坏
+        let line_end = self
+            .line_starts
+            .get(line + 1)
+            .copied()
+            .unwrap_or(self.total_bytes);
+        let max_char = line_end.saturating_sub(line_start);
+        let character = (position.character as usize).min(max_char);
         line_start + character
     }
 }
@@ -353,6 +366,7 @@ mod tests {
 
     #[test]
     fn test_merge_edits() {
+        // H-22: 仅真正相邻的编辑（next.start == current.end）才应合并
         let edits = vec![
             TextDocumentContentChangeEvent {
                 range: Some(Range {
@@ -368,15 +382,16 @@ mod tests {
                 range_length: None,
                 text: "hello".to_string(),
             },
+            // 此编辑紧接上一个结尾（line 0, char 5），属于真正相邻
             TextDocumentContentChangeEvent {
                 range: Some(Range {
                     start: Position {
-                        line: 1,
-                        character: 0,
+                        line: 0,
+                        character: 5,
                     },
                     end: Position {
-                        line: 1,
-                        character: 5,
+                        line: 0,
+                        character: 10,
                     },
                 }),
                 range_length: None,
@@ -386,6 +401,7 @@ mod tests {
 
         let merged = IncrementalChangeCalculator::merge_edits(edits);
         assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "helloworld");
     }
 
     #[test]

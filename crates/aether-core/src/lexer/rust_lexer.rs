@@ -82,7 +82,11 @@ impl RustLexer {
                         }
                         b'*' => {
                             let end = skip_block_comment(bytes, pos);
-                            let kind = if bytes[pos..end].starts_with(b"/**") {
+                            // M-10: `/**/`（空块注释）不应被分类为 DocComment。
+                            // 与 C 词法分析器保持一致，添加 `!starts_with("/**/")` 守卫。
+                            let kind = if bytes[pos..end].starts_with(b"/**")
+                                && !bytes[pos..end].starts_with(b"/**/")
+                            {
                                 TokenKind::DocComment
                             } else {
                                 TokenKind::BlockComment
@@ -474,6 +478,11 @@ fn skip_block_comment(bytes: &[u8], pos: usize) -> usize {
             i += 1;
         }
     }
+    // L-01: 未终止的块注释，循环因 i+1 >= len 退出但 i 仍指向倒数第二字节，
+    // 导致末尾字节未被消费、后续产生 1 字节残余 token。将 i 推进到末尾。
+    if depth > 0 && i < bytes.len() {
+        i = bytes.len();
+    }
     i
 }
 
@@ -537,24 +546,44 @@ fn skip_lifetime(bytes: &[u8], pos: usize) -> usize {
 
 fn skip_number(bytes: &[u8], pos: usize) -> usize {
     let mut i = pos;
-    while i < bytes.len()
-        && (bytes[i].is_ascii_digit()
-            || bytes[i] == b'.'
-            || bytes[i] == b'e'
-            || bytes[i] == b'E'
-            || bytes[i] == b'+'
-            || bytes[i] == b'-'
-            || bytes[i] == b'x'
-            || bytes[i] == b'X'
-            || bytes[i] == b'o'
-            || bytes[i] == b'O'
-            || bytes[i] == b'b'
-            || bytes[i] == b'B'
-            || (bytes[i] >= b'a' && bytes[i] <= b'f')
-            || (bytes[i] >= b'A' && bytes[i] <= b'F')
-            || bytes[i] == b'_')
-    {
-        i += 1;
+
+    // H-07: 检测进制前缀。十六进制字符 a-f/A-F 仅在 0x 前缀后有效，
+    // 避免 `42fn` 被识别为单个数字 token（应为 42 + fn 关键字）。
+    let mut is_hex = false;
+    if i < bytes.len() && bytes[i] == b'0' && i + 1 < bytes.len() {
+        match bytes[i + 1] {
+            b'x' | b'X' => {
+                is_hex = true;
+                i += 2;
+            }
+            b'b' | b'B' => {
+                // 二进制前缀
+                i += 2;
+            }
+            b'o' | b'O' => {
+                // 八进制前缀
+                i += 2;
+            }
+            _ => {}
+        }
+    }
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b.is_ascii_digit()
+            || b == b'.'
+            || b == b'e'
+            || b == b'E'
+            || b == b'+'
+            || b == b'-'
+            || b == b'_'
+        {
+            i += 1;
+        } else if is_hex && ((b >= b'a' && b <= b'f') || (b >= b'A' && b <= b'F')) {
+            i += 1;
+        } else {
+            break;
+        }
     }
     i
 }

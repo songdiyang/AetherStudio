@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::time::Duration;
+use tokio::process::Child;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use crate::transport::{spawn_adapter, spawn_stderr_drain, DapTransport};
@@ -12,6 +14,11 @@ use crate::types::*;
 /// 通过后续的 "stopped" 通知异步推送。30 秒足以覆盖慢速适配器初始化。
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// H-04: 发送 disconnect 后等待适配器自行退出的超时时间。
+///
+/// 超过此时间适配器仍未退出则强制 kill，防止僵尸进程。
+const DISCONNECT_KILL_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// 调试会话
 /// 管理单个调试适配器的完整生命周期
 pub struct DebugSession {
@@ -21,6 +28,10 @@ pub struct DebugSession {
     breakpoints: HashMap<String, Vec<Breakpoint>>,
     event_tx: mpsc::UnboundedSender<DapEventUi>,
     seq_generator: RequestIdGenerator,
+    /// H-04: 子进程句柄，disconnect 后超时未退出则强制 kill
+    child: Option<Child>,
+    /// H-04: stderr 读取任务句柄，finalize 时主动 abort 避免任务残留
+    stderr_drain: Option<JoinHandle<()>>,
 }
 
 impl DebugSession {
@@ -39,10 +50,17 @@ impl DebugSession {
                 "Failed to capture adapter stdout",
             )
         })?;
+        // H-04: 单独取出 stderr，保留 Child 句柄以便后续 kill
+        let stderr = process.stderr.take().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to capture adapter stderr",
+            )
+        })?;
         let transport = DapTransport::new(stdin, stdout);
 
         // 启动后台 stderr 读取任务，避免适配器 stderr 缓冲区满后阻塞
-        spawn_stderr_drain(process);
+        let stderr_drain = spawn_stderr_drain(stderr);
 
         let mut session = Self {
             transport,
@@ -50,6 +68,8 @@ impl DebugSession {
             breakpoints: HashMap::new(),
             event_tx,
             seq_generator: RequestIdGenerator::new(),
+            child: Some(process),
+            stderr_drain: Some(stderr_drain),
         };
 
         // 发送 initialize 请求
@@ -75,7 +95,6 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
-            message_type: "request".to_string(),
             command: "initialize".to_string(),
             arguments: Some(args),
         });
@@ -120,6 +139,14 @@ impl DebugSession {
         args: Vec<String>,
         cwd: Option<&str>,
     ) -> std::io::Result<()> {
+        // H-11: 状态机校验 — 已终止的会话不能重新 launch
+        if self.state == DebugSessionState::Terminated {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Cannot launch: session already terminated",
+            ));
+        }
+
         let seq = self.seq_generator.next();
         let mut launch_args = serde_json::json!({
             "program": program,
@@ -132,7 +159,6 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
-            message_type: "request".to_string(),
             command: "launch".to_string(),
             arguments: Some(launch_args),
         });
@@ -190,7 +216,6 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
-            message_type: "request".to_string(),
             command: "setBreakpoints".to_string(),
             arguments: Some(args),
         });
@@ -270,7 +295,6 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
-            message_type: "request".to_string(),
             command: "stackTrace".to_string(),
             arguments: Some(args),
         });
@@ -317,7 +341,6 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
-            message_type: "request".to_string(),
             command: "scopes".to_string(),
             arguments: Some(args),
         });
@@ -364,7 +387,6 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
-            message_type: "request".to_string(),
             command: "variables".to_string(),
             arguments: Some(args),
         });
@@ -422,7 +444,6 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
-            message_type: "request".to_string(),
             command: "evaluate".to_string(),
             arguments: Some(args),
         });
@@ -466,8 +487,11 @@ impl DebugSession {
     /// 此方法会发送 `terminateDebuggee: true`，被调试的进程将被强制终止。
     /// 若希望在断开后让被调试进程继续运行，请使用 [`detach`]。
     pub async fn disconnect(&mut self) -> std::io::Result<()> {
-        self.send_simple_request("disconnect", serde_json::json!({"terminateDebuggee": true}))
-            .await?;
+        // H-04: 即使发送请求失败，也要确保子进程被回收
+        let _ = self
+            .send_simple_request("disconnect", serde_json::json!({"terminateDebuggee": true}))
+            .await;
+        self.finalize_child().await;
         self.state = DebugSessionState::Terminated;
         Ok(())
     }
@@ -477,13 +501,39 @@ impl DebugSession {
     /// 与 [`disconnect`] 不同，此方法发送 `terminateDebuggee: false`，
     /// 适用于「附加到运行进程」场景下，希望断开调试器但不杀掉进程。
     pub async fn detach(&mut self) -> std::io::Result<()> {
-        self.send_simple_request(
-            "disconnect",
-            serde_json::json!({"terminateDebuggee": false}),
-        )
-        .await?;
+        let _ = self
+            .send_simple_request(
+                "disconnect",
+                serde_json::json!({"terminateDebuggee": false}),
+            )
+            .await;
+        // H-04: detach 不杀被调试进程，但适配器进程本身仍需回收
+        self.finalize_child().await;
         self.state = DebugSessionState::Terminated;
         Ok(())
+    }
+
+    /// H-04: 等待适配器子进程在 DISCONNECT_KILL_TIMEOUT 内自行退出，
+    /// 超时则强制 kill，防止僵尸进程驻留。
+    ///
+    /// 多次调用安全：第二次取 child 会得到 None，直接返回。
+    async fn finalize_child(&mut self) {
+        // 先中止 stderr drain 任务，避免 child 退出/被 kill 后任务仍短暂持有句柄
+        if let Some(drain) = self.stderr_drain.take() {
+            drain.abort();
+        }
+        if let Some(mut child) = self.child.take() {
+            match timeout(DISCONNECT_KILL_TIMEOUT, child.wait()).await {
+                Ok(_) => {
+                    // 适配器已正常退出
+                }
+                Err(_) => {
+                    // 超时未退出，强制 kill
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                }
+            }
+        }
     }
 
     /// 获取当前状态
@@ -503,7 +553,6 @@ impl DebugSession {
         let seq = self.seq_generator.next();
         let request = DapMessage::Request(DapRequest {
             seq,
-            message_type: "request".to_string(),
             command: command.to_string(),
             arguments: Some(arguments),
         });
@@ -545,6 +594,15 @@ impl DebugSession {
 
     /// 处理 DAP 事件
     async fn handle_event(&mut self, event: DapEvent) -> std::io::Result<()> {
+        // H-11: 状态机校验 — 已终止的会话忽略所有延迟事件，防止"复活"
+        // 仅允许 "terminated" 和 "exited" 事件通过（它们确认终止，不会改变状态）
+        if self.state == DebugSessionState::Terminated
+            && event.event != "terminated"
+            && event.event != "exited"
+        {
+            return Ok(());
+        }
+
         match event.event.as_str() {
             "stopped" => {
                 self.state = DebugSessionState::Paused;
@@ -616,5 +674,20 @@ impl DebugSession {
             _ => {}
         }
         Ok(())
+    }
+}
+
+/// H-04: 防止 DebugSession 异常路径下未调用 disconnect 导致僵尸进程。
+///
+/// tokio::process::Child 默认不会在 drop 时 kill 子进程，
+/// 必须显式处理，否则适配器进程会一直驻留。
+impl Drop for DebugSession {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            // 尝试同步 kill，忽略错误
+            let _ = child.start_kill();
+            // 在 drop 中不能 await，让进程在后台被回收
+            // tokio 会在 runtime 中处理孤儿进程的 reaping
+        }
     }
 }

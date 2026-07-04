@@ -3,18 +3,15 @@ use serde::{Deserialize, Serialize};
 use std::io::Read;
 use url::Url;
 
-/// DNS 解析结果缓存（用于 SSRF 防护中消除 DNS Rebinding 窗口）
-#[derive(Clone, Debug)]
-struct ResolvedEndpoint {
-    #[allow(dead_code)]
-    host: String,
-    #[allow(dead_code)]
-    port: u16,
-    // P0-6 后不再用 IP 直连构建 URL（会破坏 TLS 主机名校验），
-    // 保留此字段仅为未来可能的连接级 IP pinning 预留。
-    #[allow(dead_code)]
-    verified_ips: Vec<std::net::IpAddr>,
-}
+// H-01: SSRF DNS 重绑定限制说明
+//
+// 当前实现对 DNS 解析返回的所有 IP 做私有地址校验（resolve_and_lock），
+// 能阻断「域名始终解析到内网 IP」的静态攻击。
+//
+// 但由于 ureq + rustls 不支持在保持 TLS 主机名校验的前提下固定连接 IP，
+// DNS 重绑定攻击（验证时返回公网 IP，连接时返回 169.254.169.254）仍有残余风险。
+// 彻底修复需要自定义 TLS connector + IP pinning，属于架构级改造，暂不实施。
+// 此处保留 DNS 校验作为纵深防御层，并移除从未使用的 verified_ips 死代码。
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum AiProvider {
@@ -84,7 +81,12 @@ pub enum AiError {
     Http(String),
     Parse(String),
     Config(String),
-    Api { code: u16, message: String },
+    /// H-21: message 已截断至 200 字符，但仍可能含敏感信息，
+    /// 展示给用户时应使用 `safe_display()` 而非 `Display`。
+    Api {
+        code: u16,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for AiError {
@@ -99,6 +101,31 @@ impl std::fmt::Display for AiError {
 }
 
 impl std::error::Error for AiError {}
+
+impl AiError {
+    /// H-18 / H-21: 返回对用户安全的错误描述，不包含原始 API 响应体。
+    ///
+    /// `Display` 实现包含完整（已截断）的 API 响应体，可能含 API Key 等敏感信息，
+    /// 仅供日志使用。展示给用户时应调用此方法，仅返回 HTTP 状态码和通用描述。
+    pub fn safe_display(&self) -> String {
+        match self {
+            AiError::Http(_) => "网络请求失败，请检查网络连接".to_string(),
+            AiError::Parse(_) => "API 响应解析失败".to_string(),
+            AiError::Config(e) => e.clone(),
+            AiError::Api { code, .. } => {
+                let desc = match *code {
+                    401 => "API Key 无效或已过期",
+                    403 => "API Key 权限不足",
+                    404 => "请求的资源不存在（请检查 Base URL 和模型名）",
+                    429 => "请求频率超限，请稍后重试",
+                    500..=599 => "API 服务器内部错误，请稍后重试",
+                    _ => "API 请求失败",
+                };
+                format!("HTTP {}: {}", code, desc)
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct AiConfig {
@@ -184,6 +211,12 @@ impl AiClient {
 
     pub fn test_connection(&self) -> Result<String, AiError> {
         self.complete("Hello, this is a test. Please reply with a simple greeting.")
+    }
+
+    /// H-18: test_connection 的安全版本，错误信息经过脱敏处理，
+    /// 可直接用于 UI 展示。调用方无需再单独 sanitize。
+    pub fn test_connection_safe(&self) -> Result<String, String> {
+        self.test_connection().map_err(|e| e.safe_display())
     }
 
     fn validate_https(url: &str) -> Result<(), AiError> {
@@ -283,9 +316,12 @@ impl AiClient {
         Ok(())
     }
 
-    /// SEC-A01: 解析并锁定 DNS 结果，消除 DNS Rebinding 窗口
-    /// 返回已验证的 IP 列表，后续 HTTP 请求必须直连这些 IP
-    fn resolve_and_lock(url_str: &str) -> Result<ResolvedEndpoint, AiError> {
+    /// SEC-A01: 解析并校验 DNS 结果，阻断「域名始终解析到内网 IP」的攻击。
+    ///
+    /// H-01: 此方法对 DNS 解析返回的所有 IP 做私有地址校验，但不固定连接 IP。
+    /// DNS 重绑定攻击（验证后 DNS 返回不同 IP）的彻底防护需要自定义 TLS connector，
+    /// 属于架构级改造，暂不实施。当前校验作为纵深防御层保留。
+    fn resolve_and_lock(url_str: &str) -> Result<(), AiError> {
         let parsed =
             Url::parse(url_str).map_err(|e| AiError::Config(format!("无效的 URL: {}", e)))?;
         let host = parsed
@@ -296,11 +332,7 @@ impl AiClient {
         // 如果已经是 IP 地址，直接校验
         if let Ok(ip) = host.parse::<std::net::IpAddr>() {
             Self::check_ip_private(ip, host)?;
-            return Ok(ResolvedEndpoint {
-                host: host.to_string(),
-                port,
-                verified_ips: vec![ip],
-            });
+            return Ok(());
         }
 
         // DNS 解析并校验所有 IP
@@ -311,22 +343,15 @@ impl AiClient {
         if addrs.is_empty() {
             return Err(AiError::Config(format!("DNS 解析无结果: {}", host)));
         }
-        let mut verified_ips = Vec::new();
         for addr in &addrs {
             Self::check_ip_private(addr.ip(), host)?;
-            verified_ips.push(addr.ip());
         }
-        Ok(ResolvedEndpoint {
-            host: host.to_string(),
-            port,
-            verified_ips,
-        })
+        Ok(())
     }
 
     /// SEC-C03: TOCTOU 二次 DNS 校验 — 在发起 HTTP 请求前调用
-    /// 验证 DNS 解析结果未在两次查询间被篡改
-    fn validate_tcp_connect_target(url_str: &str) -> Result<ResolvedEndpoint, AiError> {
-        // 使用 resolve_and_lock 替代独立校验，确保 DNS 结果在请求前锁定
+    /// 验证 DNS 解析结果未在两次查询间被篡改为私有地址
+    fn validate_tcp_connect_target(url_str: &str) -> Result<(), AiError> {
         Self::resolve_and_lock(url_str)
     }
 
@@ -352,6 +377,18 @@ impl AiClient {
             }
         }
         String::from_utf8(buf).map_err(|e| AiError::Parse(format!("UTF-8 解码失败: {}", e)))
+    }
+
+    /// H-21: 截断错误消息至 200 字符（在 UTF-8 字符边界上截断），防止大量响应体传入 UI
+    fn truncate_error_message(text: &str) -> String {
+        const MAX_ERR_LEN: usize = 200;
+        if text.len() <= MAX_ERR_LEN {
+            return text.to_string();
+        }
+        let safe_len = text.floor_char_boundary(MAX_ERR_LEN);
+        let mut truncated = text[..safe_len].to_string();
+        truncated.push_str("...(已截断)");
+        truncated
     }
 
     pub fn complete(&self, prompt: &str) -> Result<String, AiError> {
@@ -409,9 +446,10 @@ impl AiClient {
         let status = response.status();
         if status != 200 {
             let text = Self::read_limited_response(response)?;
+            // H-21: 截断 API 错误响应体至 200 字符，防止大量数据（可能含敏感信息）传入 UI
             return Err(AiError::Api {
                 code: status,
-                message: text,
+                message: Self::truncate_error_message(&text),
             });
         }
 
@@ -467,7 +505,8 @@ impl AiClient {
             let text = Self::read_limited_response(response)?;
             return Err(AiError::Api {
                 code: status,
-                message: text,
+                // H-21: 截断 API 错误响应体至 200 字符
+                message: Self::truncate_error_message(&text),
             });
         }
 
@@ -532,7 +571,8 @@ impl AiClient {
             let text = Self::read_limited_response(response)?;
             return Err(AiError::Api {
                 code: status,
-                message: text,
+                // H-21: 截断 API 错误响应体至 200 字符
+                message: Self::truncate_error_message(&text),
             });
         }
 
@@ -598,7 +638,8 @@ impl AiClient {
             let text = Self::read_limited_response(response)?;
             return Err(AiError::Api {
                 code: status,
-                message: text,
+                // H-21: 截断 API 错误响应体至 200 字符
+                message: Self::truncate_error_message(&text),
             });
         }
 
