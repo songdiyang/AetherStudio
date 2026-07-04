@@ -2389,6 +2389,57 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
         }
     }
 
+    // Phase H2: 补全弹窗可见时拦截导航键（↑↓/Enter/Esc）
+    if !ctrl {
+        let completion_active = EDITOR_STATE.with(|s| {
+            s.borrow()
+                .as_ref()
+                .map(|state| state.borrow().completion_visible)
+                .unwrap_or(false)
+        });
+        if completion_active {
+            match vk {
+                VK_UP => {
+                    EDITOR_STATE.with(|s| {
+                        if let Some(state) = s.borrow().as_ref() {
+                            state.borrow_mut().completion_prev();
+                            state.borrow_mut().render();
+                        }
+                    });
+                    return LRESULT(0);
+                }
+                VK_DOWN => {
+                    EDITOR_STATE.with(|s| {
+                        if let Some(state) = s.borrow().as_ref() {
+                            state.borrow_mut().completion_next();
+                            state.borrow_mut().render();
+                        }
+                    });
+                    return LRESULT(0);
+                }
+                VK_RETURN => {
+                    EDITOR_STATE.with(|s| {
+                        if let Some(state) = s.borrow().as_ref() {
+                            state.borrow_mut().completion_accept();
+                            state.borrow_mut().render();
+                        }
+                    });
+                    return LRESULT(0);
+                }
+                VK_ESCAPE => {
+                    EDITOR_STATE.with(|s| {
+                        if let Some(state) = s.borrow().as_ref() {
+                            state.borrow_mut().completion_cancel();
+                            state.borrow_mut().render();
+                        }
+                    });
+                    return LRESULT(0);
+                }
+                _ => {}
+            }
+        }
+    }
+
     // Settings field active - intercept keyboard input
     let settings_field_active = EDITOR_STATE.with(|s| {
         s.borrow()
@@ -2804,6 +2855,15 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().new_file();
                         state.borrow_mut().render();
+                    }
+                });
+            }
+            VK_SPACE => {
+                // Phase H1: Ctrl+Space 触发 LSP 补全请求
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().request_completion();
+                        // 不立即 render：补全结果到达后由 WM_APP+3 触发重绘
                     }
                 });
             }

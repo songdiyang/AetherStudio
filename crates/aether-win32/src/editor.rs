@@ -15,7 +15,7 @@ use aether_render::d2d::factory::D2DFactory;
 use aether_render::d2d::text::TextRenderer;
 use aether_render::theme::Theme;
 use aether_tree_sitter::TreeSitterHighlighter;
-use lsp_types::{Diagnostic, TextDocumentContentChangeEvent};
+use lsp_types::{CompletionItem, Diagnostic, TextDocumentContentChangeEvent};
 use url::Url;
 
 use crate::activity_bar::ActivityBar;
@@ -277,6 +277,16 @@ pub struct EditorState {
     pub(crate) lsp_client: Arc<LspClient>,
     /// LSP 诊断表（uri -> diagnostics），由 WM_APP+3 处理更新
     pub(crate) lsp_diagnostics: std::collections::HashMap<Url, Vec<Diagnostic>>,
+    // Phase H: 补全弹窗状态
+    pub(crate) completion_items: Vec<CompletionItem>,
+    pub(crate) completion_visible: bool,
+    pub(crate) completion_selected: usize,
+    pub(crate) completion_trigger_line: usize,
+    pub(crate) completion_trigger_col: usize,
+    // Phase H: 悬停 tooltip 状态
+    pub(crate) hover_content: Option<String>,
+    pub(crate) hover_x: f32,
+    pub(crate) hover_y: f32,
 }
 
 impl EditorState {
@@ -571,6 +581,9 @@ impl EditorState {
 
         let ts_highlighter = TreeSitterHighlighter::new();
         let lsp_diagnostics = std::collections::HashMap::new();
+        // Phase H: 补全/悬停状态初始化
+        let completion_items = Vec::new();
+        let hover_content = None;
 
         let mut state = Self {
             hwnd,
@@ -682,6 +695,14 @@ impl EditorState {
             tokio_runtime,
             lsp_client,
             lsp_diagnostics,
+            completion_items,
+            completion_visible: false,
+            completion_selected: 0,
+            completion_trigger_line: 0,
+            completion_trigger_col: 0,
+            hover_content,
+            hover_x: 0.0,
+            hover_y: 0.0,
         };
         // 应用持久化的活动栏/菜单栏顺序（空配置使用默认顺序）
         let activity_order = state.app_settings.ui.activity_bar_order.clone();
@@ -922,6 +943,75 @@ impl EditorState {
         });
     }
 
+    /// Phase H1: 请求补全（Ctrl+Space 触发）。
+    /// 异步调用 LSP request_completion，结果通过 LspEvent::Completion 回传。
+    pub(crate) fn request_completion(&mut self) {
+        let language_id = match language_to_lsp_id(self.language) {
+            Some(id) => id.to_string(),
+            None => return,
+        };
+        let path = match &self.file_path {
+            Some(p) => p.as_path(),
+            None => return,
+        };
+        let uri = match Url::from_file_path(path) {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+        // LSP Position：line 0-based，character 为 UTF-16 偏移（ASCII 下等同字节列）
+        let position = lsp_types::Position {
+            line: self.cursor_line as u32,
+            character: self.cursor_col as u32,
+        };
+        // 记录触发位置，用于弹窗定位
+        self.completion_trigger_line = self.cursor_line;
+        self.completion_trigger_col = self.cursor_col;
+
+        let client = self.lsp_client.clone();
+        let lang_id = language_id;
+        self.tokio_runtime.spawn(async move {
+            if !client.is_server_ready(&lang_id).await {
+                return; // server 未就绪，静默跳过
+            }
+            if let Err(e) = client.request_completion(&uri, position).await {
+                eprintln!("LSP request_completion({}) failed: {}", lang_id, e);
+            }
+        });
+    }
+
+    /// Phase H3: 请求悬停信息（鼠标悬停触发）。
+    /// 异步调用 LSP request_hover，结果通过 LspEvent::Hover 回传。
+    /// 注意：触发逻辑（WM_MOUSEMOVE + 定时器去抖）尚未接线，此方法预留就绪。
+    #[allow(dead_code)]
+    pub(crate) fn request_hover(&mut self, line: usize, col: usize) {
+        let language_id = match language_to_lsp_id(self.language) {
+            Some(id) => id.to_string(),
+            None => return,
+        };
+        let path = match &self.file_path {
+            Some(p) => p.as_path(),
+            None => return,
+        };
+        let uri = match Url::from_file_path(path) {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+        let position = lsp_types::Position {
+            line: line as u32,
+            character: col as u32,
+        };
+        let client = self.lsp_client.clone();
+        let lang_id = language_id;
+        self.tokio_runtime.spawn(async move {
+            if !client.is_server_ready(&lang_id).await {
+                return;
+            }
+            if let Err(e) = client.request_hover(&uri, position).await {
+                eprintln!("LSP request_hover({}) failed: {}", lang_id, e);
+            }
+        });
+    }
+
     /// 处理从 LSP 服务器收到的异步事件（由 WM_APP+3 调用）。
     /// 第一版重点处理 Diagnostics（诊断更新）和 ServerReady（状态提示）。
     /// 其他事件（Completion/Hover/References 等）留待 Phase H 接线 UI 组件。
@@ -962,19 +1052,115 @@ impl EditorState {
                 // 服务器日志输出到 stderr，不显示在状态栏（避免刷屏）
                 eprintln!("[LSP/{}] {}", language_id, message);
             }
-            // Phase H 将接线补全/悬停 UI；当前静默忽略
-            LspEvent::Completion { .. }
-            | LspEvent::Hover { .. }
-            | LspEvent::References { .. }
+            // Phase H1: 补全结果到达，显示弹窗
+            LspEvent::Completion { uri, items } => {
+                if items.is_empty() {
+                    self.completion_visible = false;
+                } else {
+                    // 验证是当前文件的补全结果
+                    let is_current = self
+                        .file_path
+                        .as_ref()
+                        .and_then(|p| Url::from_file_path(p).ok())
+                        .map(|u| u == uri)
+                        .unwrap_or(false);
+                    if is_current {
+                        self.completion_items = items;
+                        self.completion_selected = 0;
+                        self.completion_visible = true;
+                    }
+                }
+            }
+            // Phase H3: 悬停结果到达，显示 tooltip
+            LspEvent::Hover { uri, hover } => {
+                let is_current = self
+                    .file_path
+                    .as_ref()
+                    .and_then(|p| Url::from_file_path(p).ok())
+                    .map(|u| u == uri)
+                    .unwrap_or(false);
+                if is_current {
+                    self.hover_content = extract_hover_text(&hover);
+                }
+            }
+            // 未接线的 LSP 事件静默忽略
+            LspEvent::References { .. }
             | LspEvent::Rename { .. }
             | LspEvent::CodeActions { .. }
             | LspEvent::Formatting { .. }
             | LspEvent::SemanticTokens { .. }
             | LspEvent::SemanticTokensDelta { .. }
             | LspEvent::InlayHints { .. } => {
-                // TODO: Phase H 接线补全/悬停/引用等 UI 组件
+                // 后续版本接线
             }
         }
+    }
+
+    // ===== Phase H2: 补全弹窗导航 =====
+
+    /// 补全列表下一项（↓ 键）
+    pub(crate) fn completion_next(&mut self) {
+        if !self.completion_visible || self.completion_items.is_empty() {
+            return;
+        }
+        self.completion_selected =
+            (self.completion_selected + 1) % self.completion_items.len();
+    }
+
+    /// 补全列表上一项（↑ 键）
+    pub(crate) fn completion_prev(&mut self) {
+        if !self.completion_visible || self.completion_items.is_empty() {
+            return;
+        }
+        if self.completion_selected == 0 {
+            self.completion_selected = self.completion_items.len() - 1;
+        } else {
+            self.completion_selected -= 1;
+        }
+    }
+
+    /// 接受当前选中的补全项（Enter 键）。
+    /// 将光标移回触发位置，删除已输入的过滤文本，插入补全项的 insert_text 或 label。
+    pub(crate) fn completion_accept(&mut self) {
+        if !self.completion_visible || self.completion_items.is_empty() {
+            return;
+        }
+        let item = self.completion_items[self.completion_selected].clone();
+        // 优先用 insert_text，其次 label
+        let insert_text = item
+            .insert_text
+            .clone()
+            .unwrap_or_else(|| item.label.clone());
+        // 关闭弹窗
+        self.completion_visible = false;
+        self.completion_items.clear();
+        // 将光标移回触发位置
+        if self.cursor_line != self.completion_trigger_line {
+            return; // 跨行编辑，放弃插入
+        }
+        // 删除触发位置到当前光标之间的文本（用户输入的过滤字符）
+        let delete_count = self.cursor_col.saturating_sub(self.completion_trigger_col);
+        for _ in 0..delete_count {
+            self.delete_char();
+        }
+        // 插入补全文本
+        for ch in insert_text.chars() {
+            self.insert_char(ch);
+        }
+    }
+
+    /// 关闭补全弹窗（Esc 键 或 失焦）
+    pub(crate) fn completion_cancel(&mut self) {
+        if self.completion_visible {
+            self.completion_visible = false;
+            self.completion_items.clear();
+        }
+    }
+
+    /// 关闭悬停 tooltip
+    #[allow(dead_code)]
+    pub(crate) fn hover_cancel(&mut self) {
+        self.hover_content = None;
     }
 
     /// 加载图片文件
@@ -4573,6 +4759,38 @@ fn language_to_lsp_id(lang: Language) -> Option<&'static str> {
         Language::TypeScript => Some("typescript"),
         Language::C => Some("c"),
         _ => None,
+    }
+}
+
+/// 从 LSP Hover 响应中提取纯文本内容。
+/// HoverContents 可能是 Scalar(单个)、Array(多个) 或 Markup(带格式)，
+/// 统一提取为可显示的 String。
+fn extract_hover_text(hover: &lsp_types::Hover) -> Option<String> {
+    use lsp_types::{HoverContents, MarkedString};
+    let text = match &hover.contents {
+        HoverContents::Scalar(ms) => match ms {
+            MarkedString::String(s) => s.clone(),
+            MarkedString::LanguageString(ls) => ls.value.clone(),
+        },
+        HoverContents::Array(arr) => {
+            let parts: Vec<String> = arr
+                .iter()
+                .map(|ms| match ms {
+                    MarkedString::String(s) => s.clone(),
+                    MarkedString::LanguageString(ls) => ls.value.clone(),
+                })
+                .collect();
+            if parts.is_empty() {
+                return None;
+            }
+            parts.join("\n")
+        }
+        HoverContents::Markup(markup) => markup.value.clone(),
+    };
+    if text.trim().is_empty() {
+        None
+    } else {
+        Some(text)
     }
 }
 

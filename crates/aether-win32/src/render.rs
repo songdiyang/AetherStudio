@@ -2,9 +2,12 @@ use aether_core::lexer::Language;
 use aether_core::workspace::file_tree::{FileKind, FileTree};
 use aether_render::d2d::factory::color_f;
 use aether_render::d2d::glass;
-use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
+use lsp_types::DiagnosticSeverity;
+use url::Url;
+use windows::Win32::Graphics::Direct2D::Common::{D2D_POINT_2F, D2D_RECT_F};
 use windows::Win32::Graphics::Direct2D::{
-    ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_ALIASED, D2D1_DRAW_TEXT_OPTIONS_NONE,
+    ID2D1HwndRenderTarget, ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_ALIASED,
+    D2D1_DRAW_TEXT_OPTIONS_NONE,
 };
 use windows::Win32::Graphics::DirectWrite::{
     IDWriteTextFormat, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
@@ -425,6 +428,18 @@ impl EditorState {
                 editor_content_region.width,
                 editor_content_region.height,
             );
+            // Phase H2: 补全弹窗（叠加在编辑器内容上）
+            if self.completion_visible {
+                self.render_completion_popup(
+                    &target,
+                    editor_content_region.x,
+                    editor_content_region.y,
+                );
+            }
+            // Phase H3: 悬停 tooltip
+            if self.hover_content.is_some() {
+                self.render_hover_tooltip(&target);
+            }
         }
 
         // 5.5 查找替换框
@@ -6577,6 +6592,13 @@ impl EditorState {
                 }
             }
 
+            // Phase G: 绘制 LSP 诊断波浪线（在文本之后、光标之前，使光标可见）
+            self.render_diagnostics(
+                target, x, y, height,
+                start_line, end_line,
+                line_height, char_width, line_number_width,
+            );
+
             // 光标：将字节列转换为字符列计算x坐标
             // UI-H04: 使用字符宽度累加而非简单 char count * char_width，
             // 支持 CJK 等双宽度字符的正确光标定位
@@ -6655,6 +6677,352 @@ impl EditorState {
                     };
                     target.FillRectangle(&cursor_rect, &cursor_brush);
                 }
+            }
+        }
+    }
+
+    /// Phase G: 绘制 LSP 诊断波浪线。
+    /// 遍历当前文件的诊断，对可见行内的诊断范围画锯齿状下划线。
+    /// 颜色按 severity 区分：Error 红、Warning 黄、Information 蓝、Hint 灰。
+    fn render_diagnostics(
+        &mut self,
+        target: &ID2D1HwndRenderTarget,
+        x: f32,
+        y: f32,
+        height: f32,
+        start_line: usize,
+        end_line: usize,
+        line_height: f32,
+        char_width: f32,
+        line_number_width: f32,
+    ) {
+        // 获取当前文件的 URI
+        let path = match &self.file_path {
+            Some(p) => p.as_path(),
+            None => return,
+        };
+        let uri = match Url::from_file_path(path) {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+
+        // 获取该文件的诊断列表（克隆避免借用冲突）
+        let diagnostics: Vec<lsp_types::Diagnostic> = match self.lsp_diagnostics.get(&uri) {
+            Some(d) => d.clone(),
+            None => return,
+        };
+        if diagnostics.is_empty() {
+            return;
+        }
+
+        let text_x = x + line_number_width + 5.0 - self.scroll_x;
+
+        unsafe {
+            for diag in &diagnostics {
+                let diag_line = diag.range.start.line as usize;
+
+                // 只绘制可见行内的诊断
+                if diag_line < start_line || diag_line >= end_line {
+                    continue;
+                }
+
+                // 计算行 Y 坐标（与 render_editor 中的公式一致）
+                let line_y = y + (diag_line - start_line) as f32 * line_height
+                    - (self.scroll_y % line_height);
+                if line_y > y + height || line_y + line_height < y {
+                    continue;
+                }
+
+                // 波浪线基线 Y：行底部上方 3px
+                let squiggly_y = line_y + line_height - 3.0;
+
+                // LSP character → 像素 X（第一版用 character 直接作为列号，ASCII 正确）
+                let start_char = diag.range.start.character as f32;
+                let end_char = if diag.range.end.line == diag.range.start.line {
+                    diag.range.end.character as f32
+                } else {
+                    // 多行诊断：只画第一行从 start 到行尾
+                    if let Some(line_text) = self.cached_lines.get(diag_line) {
+                        line_text.chars().count() as f32
+                    } else {
+                        start_char + 10.0
+                    }
+                };
+
+                let x_start = text_x + start_char * char_width;
+                let x_end = (text_x + end_char * char_width).max(x_start + char_width);
+
+                // 根据 severity 选择颜色
+                let color = match diag.severity {
+                    Some(DiagnosticSeverity::ERROR) => color_f(0.95, 0.30, 0.30, 1.0),
+                    Some(DiagnosticSeverity::WARNING) => color_f(0.90, 0.75, 0.25, 1.0),
+                    Some(DiagnosticSeverity::INFORMATION) => color_f(0.30, 0.60, 0.95, 1.0),
+                    _ => color_f(0.55, 0.55, 0.55, 1.0),
+                };
+
+                let brush = self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &color)
+                    .unwrap();
+                Self::draw_squiggly_line(target, x_start, x_end, squiggly_y, &brush);
+            }
+        }
+    }
+
+    /// 绘制锯齿状波浪线（squiggly underline）。
+    /// 用多条短斜线交替上下构成锯齿，模拟 VSCode 风格的波浪线。
+    unsafe fn draw_squiggly_line(
+        target: &ID2D1HwndRenderTarget,
+        x_start: f32,
+        x_end: f32,
+        y: f32,
+        brush: &ID2D1SolidColorBrush,
+    ) {
+        let tooth_width = 3.0_f32; // 每个锯齿宽度（像素）
+        let amplitude = 1.5_f32; // 波浪幅度（像素）
+
+        let mut x = x_start;
+        let mut tooth_idx: u32 = 0;
+        while x < x_end {
+            let x_next = (x + tooth_width).min(x_end);
+            // 交替上下：偶数齿向上，奇数齿向下
+            let offset = if tooth_idx % 2 == 0 {
+                -amplitude
+            } else {
+                amplitude
+            };
+            let p0 = D2D_POINT_2F { x, y };
+            let p1 = D2D_POINT_2F { x: x_next, y: y + offset };
+            target.DrawLine(p0, p1, brush, 1.0, None);
+            x = x_next;
+            tooth_idx += 1;
+        }
+    }
+
+    /// Phase H2: 渲染补全弹窗。
+    /// 在触发位置下方显示补全项列表，选中项高亮。
+    fn render_completion_popup(
+        &mut self,
+        target: &ID2D1HwndRenderTarget,
+        editor_x: f32,
+        editor_y: f32,
+    ) {
+        if self.completion_items.is_empty() {
+            return;
+        }
+        let line_height = self.text_renderer.line_height();
+        let char_width = self.text_renderer.char_width();
+        let line_number_width = 60.0;
+        let font_size = self.text_renderer.font_size();
+
+        // 弹窗位置：触发位置的下一行
+        let start_line = (self.scroll_y / line_height) as usize;
+        let popup_x = editor_x + line_number_width + 5.0 - self.scroll_x
+            + self.completion_trigger_col as f32 * char_width;
+        let popup_y = editor_y
+            + (self.completion_trigger_line.saturating_sub(start_line)) as f32 * line_height
+            - (self.scroll_y % line_height)
+            + line_height;
+
+        // 弹窗尺寸
+        let max_items = 10_usize;
+        let visible_items = self.completion_items.len().min(max_items);
+        let item_height = line_height;
+        let popup_width = 300.0_f32;
+        let popup_height = visible_items as f32 * item_height;
+
+        unsafe {
+            // 背景
+            let bg_color = color_f(0.15, 0.15, 0.18, 0.96);
+            let bg_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &bg_color)
+                .unwrap();
+            let popup_rect = D2D_RECT_F {
+                left: popup_x,
+                top: popup_y,
+                right: popup_x + popup_width,
+                bottom: popup_y + popup_height,
+            };
+            target.FillRectangle(&popup_rect, &bg_brush);
+
+            // 选中项高亮
+            let sel_color = color_f(0.2, 0.45, 0.8, 1.0);
+            let sel_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &sel_color)
+                .unwrap();
+            let sel_rect = D2D_RECT_F {
+                left: popup_x,
+                top: popup_y + self.completion_selected as f32 * item_height,
+                right: popup_x + popup_width,
+                bottom: popup_y + (self.completion_selected as f32 + 1.0) * item_height,
+            };
+            target.FillRectangle(&sel_rect, &sel_brush);
+
+            // 边框
+            let border_color = color_f(0.4, 0.4, 0.45, 1.0);
+            let border_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &border_color)
+                .unwrap();
+            target.DrawRectangle(&popup_rect, &border_brush, 1.0, None);
+
+            // 文本画笔
+            let text_color = color_f(0.92, 0.92, 0.92, 1.0);
+            let text_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &text_color)
+                .unwrap();
+            let detail_color = color_f(0.55, 0.55, 0.6, 1.0);
+            let detail_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &detail_color)
+                .unwrap();
+
+            let code_format = self
+                .render_ctx
+                .text_format_cache
+                .get_code_format(font_size)
+                .unwrap();
+
+            // 绘制每一项
+            let mut label_buf: Vec<u16> = Vec::new();
+            let mut detail_buf: Vec<u16> = Vec::new();
+            for (i, item) in self.completion_items.iter().enumerate().take(max_items) {
+                let item_y = popup_y + i as f32 * item_height;
+
+                // label（左侧）
+                label_buf.clear();
+                label_buf.extend(item.label.encode_utf16());
+                let label_rect = D2D_RECT_F {
+                    left: popup_x + 8.0,
+                    top: item_y,
+                    right: popup_x + popup_width * 0.65,
+                    bottom: item_y + item_height,
+                };
+                target.DrawText(
+                    &label_buf,
+                    &code_format,
+                    &label_rect,
+                    &text_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+
+                // detail（右侧，暗色）
+                if let Some(detail) = &item.detail {
+                    detail_buf.clear();
+                    detail_buf.extend(detail.encode_utf16());
+                    let detail_rect = D2D_RECT_F {
+                        left: popup_x + popup_width * 0.65,
+                        top: item_y,
+                        right: popup_x + popup_width - 8.0,
+                        bottom: item_y + item_height,
+                    };
+                    target.DrawText(
+                        &detail_buf,
+                        &code_format,
+                        &detail_rect,
+                        &detail_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Phase H3: 渲染悬停 tooltip。
+    /// 在 hover_x/hover_y 位置显示 hover_content 文本。
+    fn render_hover_tooltip(&mut self, target: &ID2D1HwndRenderTarget) {
+        let content = match &self.hover_content {
+            Some(c) => c.clone(),
+            None => return,
+        };
+        let line_height = self.text_renderer.line_height();
+        let char_width = self.text_renderer.char_width();
+        let font_size = self.text_renderer.font_size();
+
+        let lines: Vec<&str> = content.lines().collect();
+        if lines.is_empty() {
+            return;
+        }
+
+        // 计算尺寸（按最长行估算宽度）
+        let max_width = 450.0_f32;
+        let estimated_width =
+            lines.iter().map(|l| l.len() as f32 * char_width).fold(0.0_f32, f32::max);
+        let tooltip_width = estimated_width + 16.0_f32;
+        let tooltip_width = tooltip_width.min(max_width).max(100.0);
+        let tooltip_height = lines.len() as f32 * line_height + 8.0;
+
+        let tooltip_x = self.hover_x;
+        let tooltip_y = self.hover_y;
+
+        unsafe {
+            // 背景
+            let bg_color = color_f(0.18, 0.18, 0.22, 0.96);
+            let bg_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &bg_color)
+                .unwrap();
+            let tooltip_rect = D2D_RECT_F {
+                left: tooltip_x,
+                top: tooltip_y,
+                right: tooltip_x + tooltip_width,
+                bottom: tooltip_y + tooltip_height,
+            };
+            target.FillRectangle(&tooltip_rect, &bg_brush);
+
+            // 边框
+            let border_color = color_f(0.45, 0.45, 0.5, 1.0);
+            let border_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &border_color)
+                .unwrap();
+            target.DrawRectangle(&tooltip_rect, &border_brush, 1.0, None);
+
+            // 文本
+            let text_color = color_f(0.9, 0.9, 0.9, 1.0);
+            let text_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &text_color)
+                .unwrap();
+            let code_format = self
+                .render_ctx
+                .text_format_cache
+                .get_code_format(font_size)
+                .unwrap();
+
+            let mut text_buf: Vec<u16> = Vec::new();
+            for (i, line) in lines.iter().enumerate() {
+                let line_y = tooltip_y + 4.0 + i as f32 * line_height;
+                text_buf.clear();
+                text_buf.extend(line.encode_utf16());
+                let text_rect = D2D_RECT_F {
+                    left: tooltip_x + 8.0,
+                    top: line_y,
+                    right: tooltip_x + tooltip_width - 8.0,
+                    bottom: line_y + line_height,
+                };
+                target.DrawText(
+                    &text_buf,
+                    &code_format,
+                    &text_rect,
+                    &text_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
             }
         }
     }
