@@ -354,6 +354,9 @@ impl EditorState {
             self.sync_from_tab();
             self.is_selecting = false;
             self.sync_file_tree_selection();
+            // UI-G01: 标签页切换后 buffer/cursor/selection 全部改变，必须全量重绘，
+            // 否则脏矩形优化会导致旧标签页内容在编辑器区域残留形成重影。
+            self.dirty_tracker.mark_full_window();
             self.status_message = format!("切换到: {}", self.current_tab().file_name());
         }
     }
