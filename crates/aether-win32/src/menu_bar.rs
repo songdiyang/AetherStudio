@@ -70,6 +70,10 @@ pub enum CommandId {
     RunDebug,
     // 终端
     TerminalNew,
+    // 搜索
+    SearchGlobal,
+    // AI
+    AiFixDiagnostics,
     // 帮助
     HelpAbout,
 }
@@ -105,6 +109,8 @@ impl CommandId {
             CommandId::RunStart => "启动",
             CommandId::RunDebug => "调试",
             CommandId::TerminalNew => "新建终端",
+            CommandId::SearchGlobal => "全局搜索",
+            CommandId::AiFixDiagnostics => "AI 修复当前诊断",
             CommandId::HelpAbout => "关于",
         }
     }

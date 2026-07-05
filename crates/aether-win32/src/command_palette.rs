@@ -187,6 +187,20 @@ impl CommandPalette {
                 icon: Some(IconKind::Terminal),
             },
             CommandPaletteItem {
+                label: "搜索: 全局搜索".to_string(),
+                description: Some("在工作区中搜索文本".to_string()),
+                shortcut: Some("Ctrl+Shift+F".to_string()),
+                command_id: CommandId::SearchGlobal,
+                icon: Some(IconKind::Search),
+            },
+            CommandPaletteItem {
+                label: "AI: 修复当前诊断".to_string(),
+                description: Some("把当前文件的 LSP 错误发送给 AI 修复".to_string()),
+                shortcut: Some("Ctrl+Shift+D".to_string()),
+                command_id: CommandId::AiFixDiagnostics,
+                icon: Some(IconKind::Info),
+            },
+            CommandPaletteItem {
                 label: "帮助: 关于".to_string(),
                 description: Some("关于 Aether 编辑器".to_string()),
                 shortcut: None,

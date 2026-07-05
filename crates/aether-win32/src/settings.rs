@@ -7,6 +7,9 @@ pub enum SettingsField {
     ApiKey,
     BaseUrl,
     Model,
+    Temperature,
+    MaxTokens,
+    SystemPrompt,
 }
 
 /// 设置面板按钮标识
@@ -21,7 +24,7 @@ pub enum SettingsButton {
 pub enum SettingsTab {
     /// 通用：主题、字体等
     General,
-    /// AI 接口：provider / key / url / model / 测试连接
+    /// AI 接口：provider / key / url / model / temperature / max_tokens / system_prompt / 测试连接
     Ai,
     /// 外观：侧边栏、密度等
     Appearance,
@@ -54,6 +57,9 @@ pub struct SettingsPanel {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    pub temperature: String,
+    pub max_tokens: String,
+    pub system_prompt: String,
     pub active_field: Option<SettingsField>,
     pub hover_button: Option<SettingsButton>,
     pub test_status: String,
@@ -76,6 +82,9 @@ impl SettingsPanel {
             api_key: String::new(),
             base_url: String::new(),
             model: "gpt-4".to_string(),
+            temperature: "0.7".to_string(),
+            max_tokens: "2048".to_string(),
+            system_prompt: String::new(),
             active_field: None,
             hover_button: None,
             test_status: String::new(),
@@ -94,6 +103,17 @@ impl SettingsPanel {
             api_key: settings.ai.api_key.clone(),
             base_url: settings.ai.base_url.clone().unwrap_or_default(),
             model: settings.ai.model.clone(),
+            temperature: settings
+                .ai
+                .temperature
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "0.7".to_string()),
+            max_tokens: settings
+                .ai
+                .max_tokens
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| "2048".to_string()),
+            system_prompt: settings.ai.system_prompt.clone().unwrap_or_default(),
             active_field: None,
             hover_button: None,
             test_status: String::new(),
@@ -116,6 +136,13 @@ impl SettingsPanel {
                 Some(self.base_url.clone())
             },
             model: self.model.clone(),
+            temperature: self.temperature.parse().ok(),
+            max_tokens: self.max_tokens.parse().ok(),
+            system_prompt: if self.system_prompt.is_empty() {
+                None
+            } else {
+                Some(self.system_prompt.clone())
+            },
         }
     }
 
@@ -124,6 +151,17 @@ impl SettingsPanel {
         self.api_key = settings.ai.api_key.clone();
         self.base_url = settings.ai.base_url.clone().unwrap_or_default();
         self.model = settings.ai.model.clone();
+        self.temperature = settings
+            .ai
+            .temperature
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "0.7".to_string());
+        self.max_tokens = settings
+            .ai
+            .max_tokens
+            .map(|m| m.to_string())
+            .unwrap_or_else(|| "2048".to_string());
+        self.system_prompt = settings.ai.system_prompt.clone().unwrap_or_default();
     }
 
     pub fn clear_regions(&mut self) {
@@ -179,10 +217,14 @@ impl SettingsPanel {
                 SettingsField::ApiKey => self.api_key.push(ch),
                 SettingsField::BaseUrl => self.base_url.push(ch),
                 SettingsField::Model => self.model.push(ch),
+                SettingsField::Temperature => self.temperature.push(ch),
+                SettingsField::MaxTokens => self.max_tokens.push(ch),
+                SettingsField::SystemPrompt => self.system_prompt.push(ch),
             }
         }
     }
 
+    /// 退格
     pub fn backspace(&mut self) {
         if let Some(field) = self.active_field {
             match field {
@@ -198,6 +240,15 @@ impl SettingsPanel {
                 SettingsField::Model => {
                     self.model.pop();
                 }
+                SettingsField::Temperature => {
+                    self.temperature.pop();
+                }
+                SettingsField::MaxTokens => {
+                    self.max_tokens.pop();
+                }
+                SettingsField::SystemPrompt => {
+                    self.system_prompt.pop();
+                }
             }
         }
     }
@@ -210,6 +261,9 @@ impl SettingsPanel {
                 SettingsField::ApiKey => self.api_key.clear(),
                 SettingsField::BaseUrl => self.base_url.clear(),
                 SettingsField::Model => self.model.clear(),
+                SettingsField::Temperature => self.temperature.clear(),
+                SettingsField::MaxTokens => self.max_tokens.clear(),
+                SettingsField::SystemPrompt => self.system_prompt.clear(),
             }
         }
     }
@@ -220,14 +274,20 @@ impl SettingsPanel {
             Some(SettingsField::Provider) => Some(SettingsField::ApiKey),
             Some(SettingsField::ApiKey) => Some(SettingsField::BaseUrl),
             Some(SettingsField::BaseUrl) => Some(SettingsField::Model),
-            Some(SettingsField::Model) => None,
+            Some(SettingsField::Model) => Some(SettingsField::Temperature),
+            Some(SettingsField::Temperature) => Some(SettingsField::MaxTokens),
+            Some(SettingsField::MaxTokens) => Some(SettingsField::SystemPrompt),
+            Some(SettingsField::SystemPrompt) => None,
         };
         self.active_field = next;
     }
 
     pub fn prev_field(&mut self) {
         let prev = match self.active_field {
-            None => Some(SettingsField::Model),
+            None => Some(SettingsField::SystemPrompt),
+            Some(SettingsField::SystemPrompt) => Some(SettingsField::MaxTokens),
+            Some(SettingsField::MaxTokens) => Some(SettingsField::Temperature),
+            Some(SettingsField::Temperature) => Some(SettingsField::Model),
             Some(SettingsField::Model) => Some(SettingsField::BaseUrl),
             Some(SettingsField::BaseUrl) => Some(SettingsField::ApiKey),
             Some(SettingsField::ApiKey) => Some(SettingsField::Provider),

@@ -24,6 +24,9 @@ pub struct AiSettings {
     pub api_key: String,
     pub base_url: Option<String>,
     pub model: String,
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<u32>,
+    pub system_prompt: Option<String>,
 }
 
 impl std::fmt::Debug for AiSettings {
@@ -33,6 +36,12 @@ impl std::fmt::Debug for AiSettings {
             .field("api_key", &"[REDACTED]")
             .field("base_url", &self.base_url)
             .field("model", &self.model)
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .field(
+                "system_prompt",
+                &self.system_prompt.as_deref().map(|_| "[PRESENT]"),
+            )
             .finish()
     }
 }
@@ -213,6 +222,9 @@ impl Default for AppSettings {
                 api_key: String::new(),
                 base_url: None,
                 model: "gpt-4".to_string(),
+                temperature: Some(0.7),
+                max_tokens: Some(2048),
+                system_prompt: None,
             },
             ui: UiSettings::default(),
             remote: RemoteSettings::default(),

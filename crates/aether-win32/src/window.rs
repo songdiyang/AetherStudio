@@ -2190,6 +2190,23 @@ unsafe fn on_c_h_a_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> 
                 return LRESULT(0);
             }
 
+            // 搜索面板可见时，输入字符进入搜索查询
+            let search_panel_active = EDITOR_STATE.with(|s| {
+                s.borrow()
+                    .as_ref()
+                    .map(|state| state.borrow().search_panel.visible)
+                    .unwrap_or(false)
+            });
+            if search_panel_active {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().search_panel.input_char(c);
+                        state.borrow_mut().render();
+                    }
+                });
+                return LRESULT(0);
+            }
+
             // 命令面板激活时，输入字符进入搜索框
             let command_palette_active = EDITOR_STATE.with(|s| {
                 s.borrow()
@@ -2364,6 +2381,65 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 }
             });
             return LRESULT(0);
+        }
+    }
+
+    // ===== 全局搜索面板键盘处理 =====
+    let search_panel_visible = EDITOR_STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|state| state.borrow().search_panel.visible)
+            .unwrap_or(false)
+    });
+    if search_panel_visible && !ctrl {
+        match vk {
+            VK_ESCAPE => {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().search_panel.hide();
+                        state.borrow_mut().render();
+                    }
+                });
+                return LRESULT(0);
+            }
+            VK_BACK => {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().search_panel.backspace();
+                        state.borrow_mut().render();
+                    }
+                });
+                return LRESULT(0);
+            }
+            VK_RETURN => {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        let root = state.borrow().current_folder.clone();
+                        state.borrow_mut().search_panel.search(root.as_deref());
+                        state.borrow_mut().render();
+                    }
+                });
+                return LRESULT(0);
+            }
+            VK_DOWN => {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().search_panel.select_next();
+                        state.borrow_mut().render();
+                    }
+                });
+                return LRESULT(0);
+            }
+            VK_UP => {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().search_panel.select_prev();
+                        state.borrow_mut().render();
+                    }
+                });
+                return LRESULT(0);
+            }
+            _ => {}
         }
     }
 
@@ -3334,7 +3410,13 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         let settings = state.borrow().app_settings.ai.clone();
-                        let _ = state.borrow_mut().ai_panel.send_message(&settings);
+                        let mode = state.borrow().ai_panel.mode;
+                        let attachments = state.borrow().ai_panel.attachments.clone();
+                        let context = state.borrow().gather_context(&attachments);
+                        let _ = state
+                            .borrow_mut()
+                            .ai_panel
+                            .send_message_with_prepared_context(&settings, context, mode);
                         state.borrow_mut().render();
                     }
                 });

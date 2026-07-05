@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use windows::core::Result;
@@ -13,7 +14,10 @@ use aether_render::d2d::text::TextRenderer;
 use aether_render::theme::Theme;
 
 use crate::activity_bar::ActivityBar;
+use crate::ai_agent::AiEdit;
+use crate::ai_context::{truncate_middle, wrap_code_block, AiContextAttachment};
 use crate::ai_panel::AiPanel;
+use crate::ai_prompt::AiMode;
 use crate::command_palette::CommandPalette;
 use crate::dialogs::Dialogs;
 use crate::git::GitIntegration;
@@ -137,6 +141,17 @@ struct SshListDirResult {
 struct SendHwnd(usize);
 unsafe impl Send for SendHwnd {}
 
+/// 简化的 LSP 诊断项（UI 层不直接依赖 lsp-types）
+#[derive(Clone, Debug)]
+pub struct DiagnosticItem {
+    pub severity: u8,
+    pub message: String,
+    pub line: usize,
+    pub col: usize,
+    pub end_line: usize,
+    pub end_col: usize,
+}
+
 /// 编辑器应用状态
 pub struct EditorState {
     pub hwnd: HWND,
@@ -229,6 +244,16 @@ pub struct EditorState {
     pub terminal_panel: TerminalPanel,
     /// AI 助手面板
     pub ai_panel: AiPanel,
+    /// 全局搜索面板
+    pub search_panel: crate::search_panel::SearchPanel,
+    /// 当前工作区中各文件的 LSP 诊断（路径字符串 -> 诊断列表）
+    pub diagnostics: HashMap<String, Vec<DiagnosticItem>>,
+    /// LSP 客户端（工作区打开时初始化）
+    pub lsp_client: Option<std::sync::Arc<aether_lsp::client::LspClient>>,
+    /// LSP 事件接收器
+    pub lsp_rx: Option<tokio::sync::mpsc::UnboundedReceiver<aether_lsp::client::LspEvent>>,
+    /// Tokio 运行时（用于 LSP 异步操作）
+    pub lsp_runtime: Option<tokio::runtime::Runtime>,
     /// SSH 连接对话框
     pub ssh_dialog: SshConnectionDialog,
     /// 远程会话
@@ -314,6 +339,8 @@ pub struct EditorState {
     pub last_bottom_panel_visible: bool,
     /// 上一帧的状态消息（用于检测状态栏变化）
     pub last_status_message: String,
+    /// 上一帧的活动标签页索引（用于检测标签切换）
+    pub last_active_tab: usize,
     /// 用户菜单
     pub user_menu: crate::user_menu::UserMenu,
     /// 长按检测：按下时刻（None 表示当前未进行长按检测）
@@ -659,6 +686,11 @@ impl EditorState {
             git: GitIntegration::new(),
             terminal_panel: TerminalPanel::new(),
             ai_panel: AiPanel::new(),
+            search_panel: crate::search_panel::SearchPanel::new(),
+            diagnostics: HashMap::new(),
+            lsp_client: None,
+            lsp_rx: None,
+            lsp_runtime: None,
             settings_panel: SettingsPanel::from_settings(&app_settings),
             open_tabs_panel: crate::open_tabs::OpenTabsPanel::new(),
             app_settings,
@@ -702,6 +734,7 @@ impl EditorState {
             last_right_panel_visible: false,
             last_bottom_panel_visible: false,
             last_status_message: "就绪".to_string(),
+            last_active_tab: 0,
             user_menu: crate::user_menu::UserMenu::new(),
             lpress_start: None,
             lpress_x: 0.0,
@@ -1012,6 +1045,12 @@ impl EditorState {
                 self.status_message = msg.clone();
                 Dialogs::show_error(self.hwnd, "打开文件", &msg);
             }
+        }
+
+        // 文件加载成功后通知 LSP 服务器
+        if self.file_path.as_ref() == Some(&path) {
+            let text = self.buffer.get_text(0, self.buffer.len_bytes());
+            self.lsp_open_document(&path, &text);
         }
     }
 
@@ -1879,6 +1918,15 @@ impl EditorState {
             crate::menu_bar::CommandId::RunDebug => {
                 self.status_message = "调试功能即将推出".to_string();
             }
+            crate::menu_bar::CommandId::SearchGlobal => {
+                self.search_panel.toggle();
+                if self.search_panel.visible {
+                    self.search_panel.search(self.current_folder.as_deref());
+                }
+            }
+            crate::menu_bar::CommandId::AiFixDiagnostics => {
+                self.ai_fix_diagnostics();
+            }
             crate::menu_bar::CommandId::TerminalNew => {
                 self.layout.toggle_terminal_panel();
                 if self.layout.bottom_panel_visible {
@@ -1946,6 +1994,9 @@ impl EditorState {
         self.status_message = format!("正在扫描: {}...", path.display());
         self.recent_projects.add(&path);
         self.file_tree = Some(FileTree::new());
+
+        // 初始化 LSP 客户端（启动 rust-analyzer 等语言服务器）
+        self.init_lsp(&path);
 
         let hwnd = self.hwnd;
         let path_clone = path.clone();
@@ -4234,20 +4285,17 @@ impl EditorState {
         let cache_end = (visible_end + 2).min(total_lines);
 
         // 延迟创建 lexer：只在发现至少一行需要重建时才创建
-        // 避免每帧都创建 lexer（Box 分配 + 初始化开销）
         // P2.3: 大文件模式下跳过语法高亮，只缓存行文本
-        let mut lexer: Option<Box<dyn aether_core::lexer::Lexer>> = None;
+        // 使用 Language::lex_full 静态分发，避免 Box 分配与动态分发
+        let lang = self.language;
 
         for i in cache_start..cache_end {
             if self.line_cache_versions[i] != self.buffer_version {
                 let line = self.buffer.get_line(i).unwrap_or_default();
-                if !self.is_large_file && lexer.is_none() {
-                    lexer = Some(self.language.create_lexer());
-                }
                 let tokens = if self.is_large_file {
                     Vec::new()
                 } else {
-                    lexer.as_ref().unwrap().lex_full(&line)
+                    lang.lex_full(&line)
                 };
                 self.cached_lines[i] = line;
                 self.cached_tokens[i] = tokens;
@@ -4265,7 +4313,7 @@ impl EditorState {
     #[allow(dead_code)]
     pub(crate) fn rebuild_cache_full(&mut self) {
         let total_lines = self.buffer.len_lines().max(1);
-        let lexer = self.language.create_lexer();
+        let lang = self.language;
 
         if self.cached_lines.len() != total_lines {
             self.cached_lines.resize_with(total_lines, String::new);
@@ -4276,7 +4324,7 @@ impl EditorState {
         for i in 0..total_lines {
             if self.line_cache_versions[i] != self.buffer_version {
                 let line = self.buffer.get_line(i).unwrap_or_default();
-                let tokens = lexer.lex_full(&line);
+                let tokens = lang.lex_full(&line);
                 self.cached_lines[i] = line;
                 self.cached_tokens[i] = tokens;
                 self.line_cache_versions[i] = self.buffer_version;
@@ -4524,6 +4572,329 @@ impl EditorState {
         self.find_focus = FindReplaceFocus::None;
     }
 
+    /// 把当前文件的 LSP 诊断发送给 AI 修复
+    pub fn ai_fix_diagnostics(&mut self) {
+        let settings = self.app_settings.ai.clone();
+        let attachments = vec![
+            AiContextAttachment::CurrentFile,
+            AiContextAttachment::Diagnostics,
+        ];
+        let context = self.gather_context(&attachments);
+        self.ai_panel.clear_input();
+        self.ai_panel.clear_attachments();
+        self.ai_panel.attachments = attachments;
+        self.ai_panel.mode = AiMode::Edit;
+        self.ai_panel.input = "请分析并修复当前文件中的问题。".to_string();
+        let _ = self
+            .ai_panel
+            .send_message_with_prepared_context(&settings, context, AiMode::Edit);
+    }
+
+    /// 初始化 LSP 客户端（在打开工作区文件夹时调用）
+    pub fn init_lsp(&mut self, root_dir: &Path) {
+        // 如果已有 LSP 客户端，先清理
+        self.lsp_client = None;
+        self.lsp_rx = None;
+        self.lsp_runtime = None;
+
+        let root_uri = url::Url::from_directory_path(root_dir).ok();
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(_) => return,
+        };
+
+        let (client, rx) = aether_lsp::client::LspClient::new(root_uri.clone());
+
+        // 在 tokio 运行时中启动 Rust 语言服务器（如果 rust-analyzer 可用）
+        if let Some(config) = aether_lsp::client::default_server_config("rust") {
+            let config = aether_lsp::types::ServerConfig {
+                root_uri: root_uri.clone(),
+                ..config
+            };
+            let client_clone = std::sync::Arc::new(client);
+            let client_for_spawn = std::sync::Arc::clone(&client_clone);
+            runtime.spawn(async move {
+                let _ = client_for_spawn.start_server("rust", config).await;
+            });
+            self.lsp_client = Some(client_clone);
+        } else {
+            self.lsp_client = Some(std::sync::Arc::new(client));
+        }
+
+        self.lsp_rx = Some(rx);
+        self.lsp_runtime = Some(runtime);
+    }
+
+    /// 通知 LSP 服务器文档已打开
+    pub fn lsp_open_document(&mut self, path: &Path, text: &str) {
+        let Some(client) = self.lsp_client.clone() else {
+            return;
+        };
+        let Some(runtime) = self.lsp_runtime.as_ref() else {
+            return;
+        };
+        let Ok(uri) = url::Url::from_file_path(path) else {
+            return;
+        };
+        let language_id = language_to_lsp_id(self.language).to_string();
+        let text = text.to_string();
+        runtime.spawn(async move {
+            let _ = client.open_document(uri, language_id, text).await;
+        });
+    }
+
+    /// 通知 LSP 服务器文档内容已变更
+    ///
+    /// 传入新全文，由 LspClient 内部基于保存的旧文本计算精确增量变更（UTF-16 位置）。
+    pub fn lsp_notify_change(&mut self, path: &Path, full_text: &str) {
+        let Some(client) = self.lsp_client.clone() else {
+            return;
+        };
+        let Some(runtime) = self.lsp_runtime.as_ref() else {
+            return;
+        };
+        let Ok(uri) = url::Url::from_file_path(path) else {
+            return;
+        };
+        let full_text = full_text.to_string();
+        runtime.spawn(async move {
+            let _ = client.notify_change(&uri, &full_text).await;
+        });
+    }
+
+    /// 轮询 LSP 事件，将诊断同步到 LspClient 缓存和 EditorState.diagnostics
+    /// 应在渲染循环中每帧调用
+    pub fn poll_lsp_events(&mut self) {
+        let Some(rx) = self.lsp_rx.as_mut() else {
+            return;
+        };
+        while let Ok(event) = rx.try_recv() {
+            use aether_lsp::client::LspEvent;
+            match event {
+                LspEvent::Diagnostics { uri, diagnostics } => {
+                    // 同时写入 LspClient 诊断缓存（供其他模块查询）
+                    if let Some(client) = self.lsp_client.as_ref() {
+                        client.update_diagnostics(&uri, diagnostics.clone());
+                    }
+
+                    let path_str = match uri.to_file_path() {
+                        Ok(p) => p.to_string_lossy().to_string(),
+                        Err(()) => uri.as_str().to_string(),
+                    };
+                    let items: Vec<DiagnosticItem> = diagnostics
+                        .iter()
+                        .map(|d| {
+                            use aether_lsp::lsp_types::DiagnosticSeverity;
+                            let severity = match d.severity {
+                                Some(DiagnosticSeverity::ERROR) => 1,
+                                Some(DiagnosticSeverity::WARNING) => 2,
+                                Some(DiagnosticSeverity::INFORMATION) => 3,
+                                Some(DiagnosticSeverity::HINT) => 4,
+                                _ => 1,
+                            };
+                            DiagnosticItem {
+                                severity,
+                                message: d.message.clone(),
+                                line: d.range.start.line as usize + 1,
+                                col: d.range.start.character as usize + 1,
+                                end_line: d.range.end.line as usize + 1,
+                                end_col: d.range.end.character as usize + 1,
+                            }
+                        })
+                        .collect();
+                    if items.is_empty() {
+                        self.diagnostics.remove(&path_str);
+                    } else {
+                        self.diagnostics.insert(path_str, items);
+                    }
+                }
+                LspEvent::ServerReady { language_id } => {
+                    self.status_message = format!("LSP 服务器就绪: {}", language_id);
+                }
+                LspEvent::Log { message, .. } => {
+                    tracing::debug!("LSP: {}", message);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// 根据附件列表收集 AI 上下文
+    pub fn gather_context(&self, attachments: &[AiContextAttachment]) -> String {
+        let mut parts = Vec::new();
+        let current_path = self
+            .file_path
+            .as_deref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "当前文件".to_string());
+        let current_lang = language_str(self.language);
+
+        for attachment in attachments {
+            match attachment {
+                AiContextAttachment::CurrentFile => {
+                    let text = self.buffer.get_text(0, self.buffer.len_bytes());
+                    parts.push(wrap_code_block(
+                        &current_path,
+                        current_lang,
+                        &truncate_middle(&text, 30_000),
+                    ));
+                }
+                AiContextAttachment::Selection => {
+                    if let Some(text) = self.selected_text() {
+                        parts.push(wrap_code_block(
+                            &format!("{} (选区)", current_path),
+                            current_lang,
+                            &truncate_middle(&text, 10_000),
+                        ));
+                    }
+                }
+                AiContextAttachment::OpenFiles => {
+                    let mut summary = String::from("打开的文件列表：\n");
+                    for (i, tab) in self.tabs.iter().enumerate() {
+                        let path = tab
+                            .file_path
+                            .as_deref()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|| format!("未命名-{}", i + 1));
+                        let lang = language_str(tab.language);
+                        let text = tab.buffer.get_text(0, tab.buffer.len_bytes());
+                        summary.push_str(&wrap_code_block(
+                            &path,
+                            lang,
+                            &truncate_middle(&text, 5_000),
+                        ));
+                    }
+                    parts.push(summary);
+                }
+                AiContextAttachment::Diagnostics => {
+                    let current_key = self
+                        .file_path
+                        .as_deref()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let mut all: Vec<&DiagnosticItem> = self.diagnostics.values().flatten().collect();
+                    // 优先显示当前文件，再按 severity 排序（1=Error, 2=Warning）
+                    all.sort_by_key(|d| {
+                        let is_current = self
+                            .file_path
+                            .as_deref()
+                            .map(|p| p.to_string_lossy().to_string() == current_key)
+                            .unwrap_or(false);
+                        (if is_current { 0 } else { 1 }, d.severity)
+                    });
+                    if all.is_empty() {
+                        parts.push("当前文件暂无 LSP 诊断信息。\n".to_string());
+                    } else {
+                        let mut text = String::from("当前 LSP 诊断：\n");
+                        for d in all.iter().take(20) {
+                            let severity = match d.severity {
+                                1 => "Error",
+                                2 => "Warning",
+                                3 => "Information",
+                                4 => "Hint",
+                                _ => "Diagnostic",
+                            };
+                            text.push_str(&format!(
+                                "[{}] {}:{} {}\n",
+                                severity, d.line, d.col, d.message
+                            ));
+                        }
+                        parts.push(text);
+                    }
+                }
+                AiContextAttachment::FileTree => {
+                    if let Some(tree) = &self.file_tree {
+                        parts.push(format!("工作区文件树：\n{}\n", self.format_file_tree(tree)));
+                    } else {
+                        parts.push("未加载工作区文件树。\n".to_string());
+                    }
+                }
+                AiContextAttachment::CustomText(text) => {
+                    parts.push(format!("用户附加文本：\n{}\n", text));
+                }
+            }
+        }
+
+        parts.join("\n")
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        let (start_line, start_col) = self.selection_start?;
+        let (end_line, end_col) = self.selection_end?;
+        let (first_line, first_col) = if start_line <= end_line {
+            (start_line, start_col)
+        } else {
+            (end_line, end_col)
+        };
+        let (last_line, last_col) = if start_line <= end_line {
+            (end_line, end_col)
+        } else {
+            (start_line, start_col)
+        };
+        let start_byte = self.line_byte_start(first_line) + first_col;
+        let end_byte = self.line_byte_start(last_line) + last_col;
+        if start_byte >= end_byte {
+            return None;
+        }
+        Some(self.buffer.get_text(start_byte, end_byte))
+    }
+
+    fn format_file_tree(&self, tree: &FileTree) -> String {
+        let mut lines = Vec::new();
+        let max_files = 200;
+        for (idx, node) in tree.nodes_iter().enumerate() {
+            if idx >= max_files {
+                lines.push("...".to_string());
+                break;
+            }
+            if node.kind != FileKind::File {
+                continue;
+            }
+            if let Some(path) = file_tree_node_path(tree, idx as u32) {
+                lines.push(path);
+            }
+        }
+        if lines.is_empty() {
+            "(空)".to_string()
+        } else {
+            lines.join("\n")
+        }
+    }
+}
+
+fn language_str(lang: Language) -> &'static str {
+    match lang {
+        Language::C => "c",
+        Language::Rust => "rust",
+        Language::Python => "python",
+        Language::JavaScript => "javascript",
+        Language::TypeScript => "typescript",
+        Language::Json => "json",
+        Language::Markdown => "markdown",
+        Language::Toml => "toml",
+        Language::Html => "html",
+        Language::Css => "css",
+        Language::PlainText => "text",
+        Language::Image => "image",
+    }
+}
+
+/// 将内部 Language 枚举映射为 LSP language_id 字符串
+fn language_to_lsp_id(lang: Language) -> &'static str {
+    match lang {
+        Language::Rust => "rust",
+        Language::Python => "python",
+        Language::JavaScript => "javascript",
+        Language::TypeScript => "typescript",
+        Language::C => "c",
+        _ => "plaintext",
+    }
+}
+
+impl EditorState {
     /// 应用 AI 生成的代码到当前编辑器
     pub fn apply_ai_code(&mut self, code: &str) -> bool {
         if code.is_empty() {
@@ -4613,72 +4984,136 @@ impl EditorState {
         self.status_message = "已插入 AI 代码".to_string();
         true
     }
+
+    /// 应用 AI 生成的工作区编辑（支持修改已打开/未打开的文件以及创建新文件）
+    pub fn apply_ai_workspace_edits(
+        &mut self,
+        edits: &[AiEdit],
+    ) -> std::result::Result<Vec<PathBuf>, String> {
+        let mut applied = Vec::new();
+        let original_tab = self.active_tab;
+
+        for edit in edits {
+            let full_path = self.resolve_edit_path(&edit.path);
+
+            // 找到或创建对应标签页
+            let tab_idx = self
+                .tabs
+                .iter()
+                .position(|t| t.file_path.as_ref() == Some(&full_path));
+            if let Some(idx) = tab_idx {
+                self.switch_tab(idx);
+            } else if full_path.exists() {
+                self.load_file(full_path.clone());
+            } else {
+                self.create_new_file_tab(&full_path);
+            }
+
+            // 应用单个编辑
+            let old_text = self.buffer.get_text(0, self.buffer.len_bytes());
+            let new_text = if edit.search.trim().is_empty() {
+                edit.replace.clone()
+            } else {
+                match old_text.find(&edit.search) {
+                    Some(pos) => {
+                        let mut replaced = old_text.clone();
+                        replaced.replace_range(pos..pos + edit.search.len(), &edit.replace);
+                        replaced
+                    }
+                    None => {
+                        return Err(format!(
+                            "无法在 {} 中找到要替换的代码片段",
+                            full_path.display()
+                        ));
+                    }
+                }
+            };
+
+            let len = self.buffer.len_bytes();
+            self.buffer.delete(0, len);
+            self.buffer.insert(0, &new_text);
+            self.is_dirty = true;
+            self.buffer_version += 1;
+            self.status_message = format!("已应用 AI 编辑: {}", full_path.display());
+            applied.push(full_path);
+        }
+
+        // 尽量回到原来的标签页
+        if original_tab < self.tabs.len() {
+            self.switch_tab(original_tab);
+        }
+
+        Ok(applied)
+    }
+
+    pub(crate) fn resolve_edit_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            return path.to_path_buf();
+        }
+        self.current_folder
+            .as_ref()
+            .map(|root| root.join(path))
+            .unwrap_or_else(|| path.to_path_buf())
+    }
+
+    fn create_new_file_tab(&mut self, path: &Path) {
+        let lang = Language::from_path(path);
+        let tab = Tab {
+            file_path: Some(path.to_path_buf()),
+            buffer: PieceTable::from_string(String::new()),
+            cursor_line: 0,
+            cursor_col: 0,
+            selection_start: None,
+            selection_end: None,
+            scroll_y: 0.0,
+            scroll_x: 0.0,
+            history: History::new(),
+            is_dirty: true,
+            cached_lines: Vec::new(),
+            cached_tokens: Vec::new(),
+            line_cache_versions: Vec::new(),
+            buffer_version: 1,
+            is_large_file: false,
+            line_y_offsets: Vec::new(),
+            inline_completion: None,
+            language: lang,
+        };
+        self.open_in_new_tab(tab);
+    }
 }
 
-/// 检查文件是否为文本文件
-pub(crate) fn is_text_file(path: &std::path::Path) -> bool {
-    // 已知的文本文件扩展名
-    let text_extensions = [
-        "txt",
-        "rs",
-        "c",
-        "h",
-        "cpp",
-        "hpp",
-        "cc",
-        "cxx",
-        "js",
-        "jsx",
-        "ts",
-        "tsx",
-        "json",
-        "md",
-        "markdown",
-        "py",
-        "pyw",
-        "pyi",
-        "toml",
-        "yaml",
-        "yml",
-        "xml",
-        "html",
-        "htm",
-        "css",
-        "scss",
-        "sass",
-        "less",
-        "java",
-        "kt",
-        "go",
-        "rb",
-        "php",
-        "swift",
-        "sh",
-        "bash",
-        "zsh",
-        "ps1",
-        "bat",
-        "cmd",
-        "sql",
-        "lua",
-        "r",
-        "pl",
-        "pm",
-        "t",
-        "ini",
-        "cfg",
-        "conf",
-        "properties",
-        "log",
-        "csv",
-        "tsv",
-    ];
+/// 已知二进制文件扩展名（黑名单）
+const BINARY_EXTENSIONS: &[&str] = &[
+    // 图片
+    "png", "jpg", "jpeg", "gif", "bmp", "webp", "ico", "tiff", "tif", "raw", "psd", "ai",
+    "sketch", "fig",
+    // 音视频
+    "mp4", "avi", "mov", "wmv", "flv", "mkv", "webm", "mp3", "wav", "flac", "aac", "ogg",
+    "wma", "m4a",
+    // 压缩/归档
+    "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "lz4", "br", "deb", "rpm", "msi", "dmg",
+    "pkg", "apk", "ipa",
+    // 可执行/库
+    "exe", "dll", "so", "dylib", "bin", "elf", "o", "obj", "lib", "a", "pdb", "ilk",
+    // 字体
+    "ttf", "otf", "woff", "woff2", "eot",
+    // 文档/办公（二进制格式）
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
+    // 数据库/缓存
+    "db", "sqlite", "sqlite3", "mdb", "accdb", "cache",
+    // 其他二进制
+    "class", "jar", "war", "ear", "pyc", "pyo", "o", "lo", "la",
+];
 
+/// 检查文件是否为文本文件
+/// 策略：先排除已知二进制扩展名，再用内容探测（前 8KB 可打印字符比例）兜底。
+/// 这样无需维护庞大的文本扩展名白名单，大多数代码/配置/数据文件都能打开。
+pub(crate) fn is_text_file(path: &std::path::Path) -> bool {
     if let Some(ext) = path.extension() {
         if let Some(ext_str) = ext.to_str() {
             let ext_lower = ext_str.to_lowercase();
-            if text_extensions.contains(&ext_lower.as_str()) {
-                return true;
+            if BINARY_EXTENSIONS.contains(&ext_lower.as_str()) {
+                return false;
             }
         }
     }
@@ -4706,7 +5141,8 @@ pub(crate) fn is_text_file(path: &std::path::Path) -> bool {
         }
     }
 
-    false
+    // 无扩展名且无法读取内容时，保守视为文本（如 UNIX 可执行脚本）
+    path.extension().is_none()
 }
 
 /// 将字符偏移量转换为字节偏移量。

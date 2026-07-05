@@ -1,6 +1,14 @@
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use aether_ai::{AiClient, ChatMessage};
+use aether_ai::{AiClient, AiStreamEvent, ChatMessage};
+use aether_shared::settings::AiSettings;
+
+use crate::ai_agent::{AiEdit, parse_edits};
+use crate::ai_context::{AiContextAttachment, truncate_middle};
+use crate::ai_prompt::{AiMode, build_chat_prompt};
+use crate::diff_view::DiffView;
+use crate::editor::EditorState;
 
 /// 脱敏错误消息，避免泄漏 API 密钥等敏感信息
 /// SEC-C04: 用于 test_connection 路径等所有 UI 错误展示
@@ -118,6 +126,17 @@ impl AiQuickAction {
     }
 }
 
+/// 流式响应的共享状态
+#[derive(Clone, Debug, Default)]
+pub struct AiStreamState {
+    /// 已累积但尚未被 UI 取走的 token
+    pub partial: String,
+    /// 流是否已结束
+    pub done: bool,
+    /// 流式过程中发生的错误
+    pub error: Option<String>,
+}
+
 /// AI 助手面板状态
 #[derive(Clone, Debug)]
 pub struct AiPanel {
@@ -139,13 +158,30 @@ pub struct AiPanel {
     pub hover_apply_button: bool,
     /// 快捷操作行数（用于滚动计算）
     pub action_rows: usize,
-    /// 上次生成的完整回复（用于追加）
-    pub pending_response: String,
-    /// AI-H01: 后台线程异步结果，UI 渲染时轮询此字段
-    #[allow(clippy::type_complexity)]
-    pub background_result: Arc<Mutex<Option<Result<String, String>>>>,
+    /// AI-H01: 后台线程流式状态，UI 渲染时轮询此字段
+    pub stream_state: Arc<Mutex<AiStreamState>>,
     /// C-10: 输入框是否聚焦。仅当聚焦时才拦截键盘输入，避免面板可见即劫持编辑器
     pub input_focused: bool,
+    /// 当前 AI 模式（Ask / Edit / Agent）
+    pub mode: AiMode,
+    /// 已附加的上下文项
+    pub attachments: Vec<AiContextAttachment>,
+    /// 模式切换按钮命中区域 (mode, x, y, w, h)
+    pub mode_button_regions: Vec<(AiMode, f32, f32, f32, f32)>,
+    /// 附件 chip 命中区域 (index, x, y, w, h)
+    pub attachment_chip_regions: Vec<(usize, f32, f32, f32, f32)>,
+    /// 变更列表项命中区域 (index, x, y, w, h) — 0=预览, 1=接受, 2=拒绝
+    pub change_action_regions: Vec<(usize, u8, f32, f32, f32, f32)>,
+    /// 悬停的附件 chip 索引
+    pub hover_attachment: Option<usize>,
+    /// 当前等待用户确认的 AI 编辑（Agent/Edit 模式）
+    pub pending_edits: Vec<AiEdit>,
+    /// Diff 预览视图
+    pub diff_view: DiffView,
+    /// 是否显示 diff 预览
+    pub show_diff_view: bool,
+    /// 变更列表中当前选中的索引
+    pub selected_change_index: usize,
 }
 
 impl AiPanel {
@@ -163,9 +199,18 @@ impl AiPanel {
             hover_action: None,
             hover_apply_button: false,
             action_rows: 2,
-            pending_response: String::new(),
-            background_result: Arc::new(Mutex::new(None)),
+            stream_state: Arc::new(Mutex::new(AiStreamState::default())),
             input_focused: false,
+            mode: AiMode::Ask,
+            attachments: Vec::new(),
+            mode_button_regions: Vec::new(),
+            attachment_chip_regions: Vec::new(),
+            change_action_regions: Vec::new(),
+            hover_attachment: None,
+            pending_edits: Vec::new(),
+            diff_view: DiffView::new(),
+            show_diff_view: false,
+            selected_change_index: 0,
         }
     }
 
@@ -199,28 +244,63 @@ impl AiPanel {
         ]
     }
 
-    /// 发送消息（AI-H01: 非阻塞 — HTTP 调用在后台线程执行，结果通过 background_result 返回）
+    /// 发送消息（AI-H01: 非阻塞 — HTTP 调用在后台线程执行，结果通过 stream_state 流式返回）
     pub fn send_message(
         &mut self,
-        settings: &aether_shared::settings::AiSettings,
+        settings: &AiSettings,
     ) -> Result<String, String> {
-        if self.input.is_empty() {
+        self.send_message_internal(settings, self.input.clone(), AiMode::Ask, None)
+    }
+
+    /// 发送消息，并附带当前编辑器的上下文
+    pub fn send_message_with_context(
+        &mut self,
+        settings: &AiSettings,
+        editor: &EditorState,
+        mode: AiMode,
+    ) -> Result<String, String> {
+        let context = editor.gather_context(&self.attachments);
+        self.send_message_internal(settings, self.input.clone(), mode, Some(context))
+    }
+
+    /// 发送消息，使用已经准备好的上下文字符串
+    pub fn send_message_with_prepared_context(
+        &mut self,
+        settings: &AiSettings,
+        context: String,
+        mode: AiMode,
+    ) -> Result<String, String> {
+        self.send_message_internal(settings, self.input.clone(), mode, Some(context))
+    }
+
+    fn send_message_internal(
+        &mut self,
+        settings: &AiSettings,
+        user_input: String,
+        mode: AiMode,
+        context: Option<String>,
+    ) -> Result<String, String> {
+        if user_input.is_empty() {
             return Err("输入为空".to_string());
         }
 
         // 限制输入长度（M-03）
         const MAX_INPUT_LEN: usize = 10000;
-        let user_input = if self.input.len() > MAX_INPUT_LEN {
-            let safe_len = self.input.floor_char_boundary(MAX_INPUT_LEN);
-            self.input[..safe_len].to_string()
+        let user_input = if user_input.len() > MAX_INPUT_LEN {
+            let safe_len = user_input.floor_char_boundary(MAX_INPUT_LEN);
+            user_input[..safe_len].to_string()
         } else {
-            self.input.clone()
+            user_input
         };
 
         self.add_user_message(user_input.clone());
         self.input.clear();
         self.is_generating = true;
-        self.pending_response.clear();
+        self.clear_pending_changes();
+        // 重置流式状态
+        if let Ok(mut s) = self.stream_state.lock() {
+            *s = AiStreamState::default();
+        }
 
         // 限制消息历史长度（M-05: 滑动窗口，保留最近 20 条）
         const MAX_HISTORY: usize = 20;
@@ -243,42 +323,57 @@ impl AiPanel {
             self.messages.extend(recent);
         }
 
-        // AI-H01: 后台线程执行 HTTP 请求，不阻塞 UI 线程
         let settings = settings.clone();
-        let messages: Vec<ChatMessage> = self
-            .messages
-            .iter()
-            .filter(|m| m.role != AiRole::System)
-            .map(|m| match m.role {
-                AiRole::User => ChatMessage::user(m.content.clone()),
-                AiRole::Assistant => ChatMessage::assistant(m.content.clone()),
-                AiRole::System => ChatMessage::user(m.content.clone()),
-            })
-            .collect();
-        let result_arc = Arc::clone(&self.background_result);
+        let context = context.unwrap_or_default();
+        let messages = build_chat_prompt(&settings, &context, &user_input, mode);
+        let stream_state = Arc::clone(&self.stream_state);
 
         std::thread::spawn(move || {
             let client = AiClient::new(&settings);
-            let response = match client.chat_completion(&messages) {
-                Ok(resp) => Ok(resp),
-                Err(e) => Err(format!("请求失败: {}", sanitize_error(&e.to_string()))),
-            };
-            if let Ok(mut guard) = result_arc.lock() {
-                *guard = Some(response);
+            match client.chat_completion_stream(&messages) {
+                Ok(rx) => {
+                    while let Ok(event) = rx.recv() {
+                        match event {
+                            AiStreamEvent::Token(token) => {
+                                if let Ok(mut s) = stream_state.lock() {
+                                    s.partial.push_str(&token);
+                                }
+                            }
+                            AiStreamEvent::Done => {
+                                if let Ok(mut s) = stream_state.lock() {
+                                    s.done = true;
+                                }
+                                break;
+                            }
+                            AiStreamEvent::Error(err) => {
+                                if let Ok(mut s) = stream_state.lock() {
+                                    s.error = Some(format!("请求失败: {}", sanitize_error(&err)));
+                                    s.done = true;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    if let Ok(mut s) = stream_state.lock() {
+                        s.error = Some(format!("请求失败: {}", sanitize_error(&e.to_string())));
+                        s.done = true;
+                    }
+                }
             }
         });
 
         Ok("请求已提交".to_string())
     }
 
-    /// 使用快捷操作发送代码（AI-H01: 非阻塞版本）
+    /// 使用快捷操作发送代码（AI-H01: 非阻塞流式版本）
     pub fn send_quick_action(
         &mut self,
         action: AiQuickAction,
         code: &str,
-        settings: &aether_shared::settings::AiSettings,
+        settings: &AiSettings,
     ) -> Result<String, String> {
-        // 防护：空代码时返回提示，避免无意义请求
         if code.trim().is_empty() {
             let msg = "请先打开文件或输入代码，再使用 AI 快捷操作。".to_string();
             self.add_assistant_message(msg.clone());
@@ -297,20 +392,48 @@ impl AiPanel {
         let prompt = action.build_prompt(code);
         self.add_user_message(format!("[{}]\n{}", action.label(), code));
         self.is_generating = true;
+        self.clear_pending_changes();
+        if let Ok(mut s) = self.stream_state.lock() {
+            *s = AiStreamState::default();
+        }
 
-        // AI-H01: 后台线程执行 HTTP 请求
         let settings = settings.clone();
         let messages = vec![ChatMessage::user(prompt)];
-        let result_arc = Arc::clone(&self.background_result);
+        let stream_state = Arc::clone(&self.stream_state);
 
         std::thread::spawn(move || {
             let client = AiClient::new(&settings);
-            let response = match client.chat_completion(&messages) {
-                Ok(resp) => Ok(resp),
-                Err(e) => Err(format!("请求失败: {}", sanitize_error(&e.to_string()))),
-            };
-            if let Ok(mut guard) = result_arc.lock() {
-                *guard = Some(response);
+            match client.chat_completion_stream(&messages) {
+                Ok(rx) => {
+                    while let Ok(event) = rx.recv() {
+                        match event {
+                            AiStreamEvent::Token(token) => {
+                                if let Ok(mut s) = stream_state.lock() {
+                                    s.partial.push_str(&token);
+                                }
+                            }
+                            AiStreamEvent::Done => {
+                                if let Ok(mut s) = stream_state.lock() {
+                                    s.done = true;
+                                }
+                                break;
+                            }
+                            AiStreamEvent::Error(err) => {
+                                if let Ok(mut s) = stream_state.lock() {
+                                    s.error = Some(format!("请求失败: {}", sanitize_error(&err)));
+                                    s.done = true;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    if let Ok(mut s) = stream_state.lock() {
+                        s.error = Some(format!("请求失败: {}", sanitize_error(&e.to_string())));
+                        s.done = true;
+                    }
+                }
             }
         });
 
@@ -340,9 +463,8 @@ impl AiPanel {
             content: "你好！我是 AI 助手，可以帮助你解释代码、重构、修复问题、生成测试等。"
                 .to_string(),
         });
-        // 重置后台结果
-        if let Ok(mut guard) = self.background_result.lock() {
-            *guard = None;
+        if let Ok(mut s) = self.stream_state.lock() {
+            *s = AiStreamState::default();
         }
         self.is_generating = false;
     }
@@ -352,30 +474,87 @@ impl AiPanel {
         if !self.is_generating {
             return;
         }
-        // 先取出结果并释放锁，再修改 self
-        let pending = {
-            if let Ok(mut guard) = self.background_result.lock() {
-                guard.take()
+        let delta = {
+            if let Ok(mut s) = self.stream_state.lock() {
+                let partial = std::mem::take(&mut s.partial);
+                let done = s.done;
+                let error = s.error.take();
+                if done {
+                    s.done = false;
+                }
+                Some((partial, done, error))
             } else {
                 None
             }
         };
-        if let Some(result) = pending {
-            match result {
-                Ok(response) => {
-                    self.add_assistant_message(response);
-                }
-                Err(err_msg) => {
-                    self.add_assistant_message(err_msg);
+        if let Some((partial, done, error)) = delta {
+            if !partial.is_empty() {
+                if let Some(last) = self.messages.last_mut() {
+                    if last.role == AiRole::Assistant {
+                        last.content.push_str(&partial);
+                    } else {
+                        self.add_assistant_message(partial);
+                    }
+                } else {
+                    self.add_assistant_message(partial);
                 }
             }
-            self.is_generating = false;
+            if let Some(err) = error {
+                self.add_assistant_message(err);
+                self.is_generating = false;
+                return;
+            }
+            if done {
+                self.is_generating = false;
+                if matches!(self.mode, AiMode::Edit | AiMode::Agent) {
+                    self.parse_pending_edits(None);
+                }
+            }
         }
+    }
+
+    /// 解析最后一条助手消息中的编辑标记，生成 diff 预览
+    pub fn parse_pending_edits(&mut self, default_path: Option<&Path>) {
+        let Some(text) = self.last_assistant_text() else {
+            return;
+        };
+        let default = default_path.map(|p| p.to_string_lossy().to_string());
+        self.pending_edits = parse_edits(&text, default.as_deref());
+        self.diff_view = DiffView::from_edits(&self.pending_edits, None);
+        self.show_diff_view = !self.pending_edits.is_empty();
+    }
+
+    /// 在已知工作区目录的情况下重新生成 diff 视图
+    pub fn rebuild_diff_view(&mut self, current_folder: Option<&Path>) {
+        self.diff_view = DiffView::from_edits(&self.pending_edits, current_folder);
+    }
+
+    /// 清除当前待确认的编辑
+    pub fn clear_pending_changes(&mut self) {
+        self.pending_edits.clear();
+        self.diff_view = DiffView::new();
+        self.show_diff_view = false;
+        self.selected_change_index = 0;
+    }
+
+    /// 接受所有已接受的编辑并应用到编辑器
+    pub fn apply_accepted_changes(&mut self, editor: &mut EditorState) -> std::result::Result<Vec<PathBuf>, String> {
+        let edits: Vec<AiEdit> = self.diff_view.to_edits();
+        if edits.is_empty() {
+            return Ok(Vec::new());
+        }
+        let applied = editor.apply_ai_workspace_edits(&edits)?;
+        self.clear_pending_changes();
+        Ok(applied)
+    }
+
+    /// 拒绝所有待确认编辑
+    pub fn reject_all_changes(&mut self) {
+        self.clear_pending_changes();
     }
 
     /// 从最后一条助手消息中提取代码块
     pub fn extract_last_code_block(&self) -> Option<String> {
-        // 从后往前找到第一条助手消息
         for msg in self.messages.iter().rev() {
             if msg.role == AiRole::Assistant {
                 return Self::extract_code_blocks(&msg.content);
@@ -394,7 +573,6 @@ impl AiPanel {
             let trimmed = line.trim();
             if trimmed.starts_with("```") {
                 if in_code {
-                    // 代码块结束
                     if !code_content.is_empty() {
                         if !result.is_empty() {
                             result.push('\n');
@@ -404,7 +582,6 @@ impl AiPanel {
                     code_content.clear();
                     in_code = false;
                 } else {
-                    // 代码块开始
                     in_code = true;
                 }
             } else if in_code {
@@ -438,5 +615,79 @@ impl AiPanel {
             }
         }
         None
+    }
+
+    /// 切换附件：已存在则移除，否则添加
+    pub fn toggle_attachment(&mut self, attachment: AiContextAttachment) {
+        let pos = self.attachments.iter().position(|a| match (a, &attachment) {
+            (AiContextAttachment::CurrentFile, AiContextAttachment::CurrentFile) => true,
+            (AiContextAttachment::Selection, AiContextAttachment::Selection) => true,
+            (AiContextAttachment::OpenFiles, AiContextAttachment::OpenFiles) => true,
+            (AiContextAttachment::Diagnostics, AiContextAttachment::Diagnostics) => true,
+            (AiContextAttachment::FileTree, AiContextAttachment::FileTree) => true,
+            (AiContextAttachment::CustomText(x), AiContextAttachment::CustomText(y)) => x == y,
+            _ => false,
+        });
+        if let Some(idx) = pos {
+            self.attachments.remove(idx);
+        } else {
+            self.attachments.push(attachment);
+        }
+    }
+
+    /// 清除所有上下文附件
+    pub fn clear_attachments(&mut self) {
+        self.attachments.clear();
+    }
+
+    /// 当前已附加的上下文文本摘要（用于 UI 展示）
+    pub fn attachment_summary(&self) -> String {
+        if self.attachments.is_empty() {
+            return String::new();
+        }
+        let labels: Vec<String> = self.attachments.iter().map(|a| a.short_label()).collect();
+        format!("上下文: {}", labels.join(" "))
+    }
+
+    /// 限制并格式化自定义文本附件
+    pub fn prepare_custom_text(text: &str) -> AiContextAttachment {
+        AiContextAttachment::CustomText(truncate_middle(text, 2000))
+    }
+
+    /// 命中测试：模式切换按钮
+    pub fn hit_test_mode_button(&self, px: f32, py: f32) -> Option<AiMode> {
+        for (mode, x, y, w, h) in &self.mode_button_regions {
+            if px >= *x && px <= *x + *w && py >= *y && py <= *y + *h {
+                return Some(*mode);
+            }
+        }
+        None
+    }
+
+    /// 命中测试：附件 chip（返回索引）
+    pub fn hit_test_attachment(&self, px: f32, py: f32) -> Option<usize> {
+        for (idx, x, y, w, h) in &self.attachment_chip_regions {
+            if px >= *x && px <= *x + *w && py >= *y && py <= *y + *h {
+                return Some(*idx);
+            }
+        }
+        None
+    }
+
+    /// 命中测试：变更列表操作按钮 (文件索引, 操作类型 0=预览 1=接受 2=拒绝)
+    pub fn hit_test_change_action(&self, px: f32, py: f32) -> Option<(usize, u8)> {
+        for (idx, action, x, y, w, h) in &self.change_action_regions {
+            if px >= *x && px <= *x + *w && py >= *y && py <= *y + *h {
+                return Some((*idx, *action));
+            }
+        }
+        None
+    }
+
+    /// 清除所有命中区域（每帧渲染前调用）
+    pub fn clear_hit_regions(&mut self) {
+        self.mode_button_regions.clear();
+        self.attachment_chip_regions.clear();
+        self.change_action_regions.clear();
     }
 }

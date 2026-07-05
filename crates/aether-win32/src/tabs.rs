@@ -93,7 +93,7 @@ impl Tab {
 
     pub fn rebuild_cache(&mut self) {
         let total_lines = self.buffer.len_lines().max(1);
-        let lexer = self.language.create_lexer();
+        let lang = self.language;
         if self.cached_lines.len() != total_lines {
             self.cached_lines.resize_with(total_lines, String::new);
             self.cached_tokens.resize_with(total_lines, Vec::new);
@@ -102,7 +102,7 @@ impl Tab {
         for i in 0..total_lines {
             if self.line_cache_versions[i] != self.buffer_version {
                 let line = self.buffer.get_line(i).unwrap_or_default();
-                let tokens = lexer.lex_full(&line);
+                let tokens = lang.lex_full(&line);
                 self.cached_lines[i] = line;
                 self.cached_tokens[i] = tokens;
                 self.line_cache_versions[i] = self.buffer_version;

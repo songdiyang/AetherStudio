@@ -1,6 +1,7 @@
 use aether_shared::settings::AiSettings;
 use serde::{Deserialize, Serialize};
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
+use std::sync::mpsc;
 use url::Url;
 
 /// DNS 解析结果缓存（用于 SSRF 防护中消除 DNS Rebinding 窗口）
@@ -107,6 +108,9 @@ pub struct AiConfig {
     pub api_key: String,
     pub base_url: Option<String>,
     pub model: String,
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<u32>,
+    pub system_prompt: Option<String>,
 }
 
 impl std::fmt::Debug for AiConfig {
@@ -116,6 +120,9 @@ impl std::fmt::Debug for AiConfig {
             .field("api_key", &"[REDACTED]")
             .field("base_url", &self.base_url)
             .field("model", &self.model)
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .field("system_prompt", &self.system_prompt.as_deref().map(|_| "[PRESENT]"))
             .finish()
     }
 }
@@ -141,6 +148,9 @@ impl AiConfig {
             api_key: settings.api_key.clone(),
             base_url,
             model,
+            temperature: settings.temperature,
+            max_tokens: settings.max_tokens,
+            system_prompt: settings.system_prompt.clone(),
         }
     }
 }
@@ -170,6 +180,17 @@ impl ChatMessage {
             content: content.into(),
         }
     }
+}
+
+/// AI 流式响应事件
+#[derive(Clone, Debug)]
+pub enum AiStreamEvent {
+    /// 一个新的文本 token
+    Token(String),
+    /// 流结束
+    Done,
+    /// 流式过程中出现错误
+    Error(String),
 }
 
 impl AiClient {
@@ -613,5 +634,218 @@ impl AiClient {
             .to_string();
 
         Ok(content)
+    }
+
+    /// 流式聊天补全。
+    ///
+    /// 返回一个 Receiver，后台线程会在每次收到 token 时发送 `AiStreamEvent::Token`，
+    /// 流结束时发送 `AiStreamEvent::Done`，出错时发送 `AiStreamEvent::Error`。
+    pub fn chat_completion_stream(
+        &self,
+        messages: &[ChatMessage],
+    ) -> Result<mpsc::Receiver<AiStreamEvent>, AiError> {
+        match self.config.provider {
+            AiProvider::Claude => self.stream_claude(messages),
+            _ => self.stream_openai_compatible(messages),
+        }
+    }
+
+    fn stream_openai_compatible(
+        &self,
+        messages: &[ChatMessage],
+    ) -> Result<mpsc::Receiver<AiStreamEvent>, AiError> {
+        let base_url = self
+            .config
+            .base_url
+            .as_deref()
+            .unwrap_or("https://api.openai.com/v1");
+        Self::validate_https(base_url)?;
+        Self::validate_not_private_ip(base_url)?;
+        Self::validate_tcp_connect_target(base_url)?;
+
+        if self.config.api_key.is_empty() {
+            return Err(AiError::Config("API Key 未设置".to_string()));
+        }
+
+        let url = format!("{}/chat/completions", base_url);
+        let mut body_messages: Vec<serde_json::Value> = Vec::new();
+        if let Some(sys) = &self.config.system_prompt {
+            body_messages.push(serde_json::json!({"role": "system", "content": sys}));
+        }
+        body_messages.extend(messages.iter().map(|m| {
+            serde_json::json!({
+                "role": m.role,
+                "content": m.content,
+            })
+        }));
+
+        let mut body = serde_json::json!({
+            "model": self.config.model,
+            "messages": body_messages,
+            "stream": true,
+        });
+        if let Some(t) = self.config.temperature {
+            body["temperature"] = serde_json::json!(t);
+        }
+        if let Some(m) = self.config.max_tokens {
+            body["max_tokens"] = serde_json::json!(m);
+        }
+
+        let response = self
+            .http
+            .post(&url)
+            .set("Authorization", &format!("Bearer {}", self.config.api_key))
+            .set("Content-Type", "application/json")
+            .send_json(body)
+            .map_err(|e| AiError::Http(e.to_string()))?;
+
+        Self::stream_response(response)
+    }
+
+    fn stream_claude(
+        &self,
+        messages: &[ChatMessage],
+    ) -> Result<mpsc::Receiver<AiStreamEvent>, AiError> {
+        let base_url = self
+            .config
+            .base_url
+            .as_deref()
+            .unwrap_or("https://api.anthropic.com/v1");
+        Self::validate_https(base_url)?;
+        Self::validate_not_private_ip(base_url)?;
+        Self::validate_tcp_connect_target(base_url)?;
+
+        if self.config.api_key.is_empty() {
+            return Err(AiError::Config("API Key 未设置".to_string()));
+        }
+
+        let url = format!("{}/messages", base_url);
+        let msgs: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role,
+                    "content": m.content,
+                })
+            })
+            .collect();
+        let max_tokens = self.config.max_tokens.unwrap_or(2048);
+
+        let mut body = serde_json::json!({
+            "model": self.config.model,
+            "messages": msgs,
+            "max_tokens": max_tokens,
+            "stream": true,
+        });
+        if let Some(sys) = &self.config.system_prompt {
+            body["system"] = serde_json::json!(sys);
+        }
+        if let Some(t) = self.config.temperature {
+            body["temperature"] = serde_json::json!(t);
+        }
+
+        let response = self
+            .http
+            .post(&url)
+            .set("x-api-key", &self.config.api_key)
+            .set("anthropic-version", "2023-06-01")
+            .set("Content-Type", "application/json")
+            .send_json(body)
+            .map_err(|e| AiError::Http(e.to_string()))?;
+
+        Self::stream_response(response)
+    }
+
+    fn stream_response(
+        response: ureq::Response,
+    ) -> Result<mpsc::Receiver<AiStreamEvent>, AiError> {
+        let status = response.status();
+        if status != 200 {
+            let text = Self::read_limited_response(response)?;
+            return Err(AiError::Api {
+                code: status,
+                message: text,
+            });
+        }
+
+        let (tx, rx) = mpsc::channel::<AiStreamEvent>();
+        std::thread::spawn(move || {
+            let reader = response.into_reader();
+            let mut buf = BufReader::new(reader);
+            let mut data_buf = String::new();
+            let mut line = String::new();
+            let mut done = false;
+
+            loop {
+                line.clear();
+                match buf.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(e) => {
+                        let _ = tx.send(AiStreamEvent::Error(format!("读取流失败: {}", e)));
+                        break;
+                    }
+                }
+
+                let trimmed = line.trim_end();
+                if trimmed.is_empty() {
+                    if !data_buf.is_empty() {
+                        if data_buf.trim() == "[DONE]" {
+                            done = true;
+                        } else {
+                            match serde_json::from_str::<serde_json::Value>(&data_buf) {
+                                Ok(json) => {
+                                    if json.get("error").is_some() {
+                                        let _ = tx.send(AiStreamEvent::Error(format!(
+                                            "API error: {}",
+                                            json["error"]
+                                        )));
+                                        break;
+                                    }
+                                    if let Some(token) = Self::extract_stream_token(&json) {
+                                        if !token.is_empty() {
+                                            let _ = tx.send(AiStreamEvent::Token(token));
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(AiStreamEvent::Error(format!(
+                                        "解析 SSE JSON 失败: {}",
+                                        e
+                                    )));
+                                }
+                            }
+                        }
+                        data_buf.clear();
+                    }
+                    continue;
+                }
+
+                if let Some(data) = trimmed.strip_prefix("data:") {
+                    data_buf.push_str(data.trim_start());
+                }
+            }
+
+            if !done {
+                let _ = tx.send(AiStreamEvent::Done);
+            }
+        });
+
+        Ok(rx)
+    }
+
+    fn extract_stream_token(json: &serde_json::Value) -> Option<String> {
+        // OpenAI / OpenAI-compatible: choices[0].delta.content
+        if let Some(content) = json
+            .pointer("/choices/0/delta/content")
+            .and_then(|v| v.as_str())
+        {
+            return Some(content.to_string());
+        }
+        // Anthropic content_block_delta: delta.text
+        if let Some(text) = json.pointer("/delta/text").and_then(|v| v.as_str()) {
+            return Some(text.to_string());
+        }
+        None
     }
 }
