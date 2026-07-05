@@ -21,12 +21,18 @@ const WINDOW_TITLE: &str = "Aether";
 const LP_TIMER_ID: usize = 0xA001;
 /// 终端刷新定时器 ID（终端运行时周期性触发重绘以显示异步输出）
 const TERM_TIMER_ID: usize = 0xA002;
+/// P3.4: Hover tooltip 防抖定时器 ID
+const HOVER_TIMER_ID: usize = 0xA003;
 /// 长按阈值（毫秒）
 const LP_THRESHOLD_MS: u32 = 500;
 /// 终端刷新间隔（毫秒），约 20fps 足以实时显示 shell 输出
 const TERM_REFRESH_MS: u32 = 50;
+/// P3.4: Hover tooltip 触发延迟（毫秒）
+const HOVER_DELAY_MS: u32 = 500;
 /// 长按期间允许的鼠标移动容差（逻辑像素，超过则取消长按检测）
 const LP_MOVE_TOLERANCE: f32 = 4.0;
+/// P3.4: Hover tooltip 防抖鼠标移动容差（逻辑像素，超过则重新计时）
+const HOVER_MOVE_TOLERANCE: f32 = 4.0;
 
 /// 设置 DPI 感知模式
 fn set_dpi_awareness() {
@@ -1530,6 +1536,41 @@ unsafe fn on_m_o_u_s_e_m_o_v_e(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: LP
             }
         }
 
+        // P3.4: Hover tooltip 防抖逻辑
+        // - 鼠标在文件树区域且有悬停节点时，启动/重启防抖定时器
+        // - 鼠标移动超过容差或离开文件树时，清除 tooltip 并重启定时器
+        {
+            let in_sidebar = sidebar_region.contains(mouse_x, mouse_y)
+                && matches!(
+                    st.sidebar_content,
+                    crate::layout::SidebarContent::FileTree
+                        | crate::layout::SidebarContent::RemoteFileTree
+                );
+            let has_hover_node = st.hover_file_node.is_some() || st.hover_remote_node.is_some();
+            let dx = mouse_x - st.hover_last_mouse_x;
+            let dy = mouse_y - st.hover_last_mouse_y;
+            let moved_beyond_tolerance =
+                dx.abs() > HOVER_MOVE_TOLERANCE || dy.abs() > HOVER_MOVE_TOLERANCE;
+
+            if moved_beyond_tolerance || !in_sidebar || !has_hover_node {
+                // 鼠标移动或离开悬停区域：清除已有 tooltip
+                if st.hover_tooltip.is_some() {
+                    st.hover_tooltip = None;
+                }
+            }
+
+            if in_sidebar && has_hover_node {
+                // 在悬停区域且有目标：启动/重启防抖定时器
+                let _ = SetTimer(hwnd, HOVER_TIMER_ID, HOVER_DELAY_MS, None);
+            } else {
+                // 离开悬停区域：停止定时器
+                let _ = KillTimer(hwnd, HOVER_TIMER_ID);
+            }
+
+            st.hover_last_mouse_x = mouse_x;
+            st.hover_last_mouse_y = mouse_y;
+        }
+
         if old_menu_hover != new_menu_hover
             || old_hover != new_hover
             || old_titlebar_hover != new_titlebar_hover
@@ -1634,6 +1675,27 @@ unsafe fn on_l_b_u_t_t_o_n_d_b_l_c_l_k(
 
 /// WM_TIMER
 unsafe fn on_t_i_m_e_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+    if wparam.0 == HOVER_TIMER_ID {
+        // P3.4: Hover tooltip 防抖定时器触发
+        let _ = KillTimer(hwnd, HOVER_TIMER_ID);
+        if let Some(state) = get_and_set_state(hwnd) {
+            let mut st = state.borrow_mut();
+            // 仅在仍有悬停目标时计算 tooltip
+            if st.hover_file_node.is_some() || st.hover_remote_node.is_some() {
+                if let Some(text) = st.compute_hover_tooltip_text() {
+                    // tooltip 定位：鼠标右下方，预留 16px 间距
+                    let tx = st.hover_last_mouse_x + 16.0;
+                    let ty = st.hover_last_mouse_y + 16.0;
+                    let max_w = 400.0;
+                    st.hover_tooltip =
+                        Some(crate::editor::HoverTooltip::new(text, tx, ty, max_w));
+                    drop(st);
+                    state.borrow_mut().render();
+                }
+            }
+        }
+        return LRESULT(0);
+    }
     if wparam.0 == TERM_TIMER_ID {
         // 终端刷新：周期性重绘以显示异步到达的 shell 输出。
         // render() 内部会调用 flush_output 拉取子进程输出。

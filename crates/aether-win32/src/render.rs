@@ -575,6 +575,9 @@ impl EditorState {
         self.last_bottom_panel_visible = self.layout.bottom_panel_visible;
         self.last_status_message.clone_from(&self.status_message);
 
+        // P3.4: 渲染 hover tooltip（在最上层，覆盖所有内容）
+        self.render_hover_tooltip(&target);
+
         // 清除脏矩形标记（渲染完成）
         self.dirty_tracker.clear();
 
@@ -6725,6 +6728,113 @@ impl EditorState {
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
                 windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
             );
+        }
+    }
+
+    /// P3.4: 渲染 hover tooltip（鼠标悬停提示框）
+    ///
+    /// 在鼠标附近绘制一个深色背景的提示框，显示文件树节点的完整路径。
+    /// 后续可扩展为 LSP hover 信息显示。
+    fn render_hover_tooltip(
+        &mut self,
+        target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+    ) {
+        let Some(tooltip) = self.hover_tooltip.as_ref() else {
+            return;
+        };
+        if tooltip.is_empty() {
+            return;
+        }
+
+        unsafe {
+            // 估算文本尺寸：每行高度 16px，字符宽度约 7px
+            let char_width = 7.0_f32;
+            let line_height = 16.0_f32;
+            let padding = 8.0_f32;
+            let lines: Vec<&str> = tooltip.text.split('\n').collect();
+            let max_line_chars = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+            // 限制最大宽度
+            let max_w = tooltip.max_width.min(400.0);
+            let text_w = (max_line_chars as f32 * char_width).min(max_w);
+            let text_h = lines.len() as f32 * line_height;
+            let box_w = text_w + padding * 2.0;
+            let box_h = text_h + padding * 2.0;
+
+            // 钳制到窗口范围内，避免 tooltip 超出右/下边界
+            let win_w = self.window_width as f32;
+            let win_h = self.window_height as f32;
+            let tx = if tooltip.x + box_w > win_w {
+                (win_w - box_w).max(0.0)
+            } else {
+                tooltip.x
+            };
+            let ty = if tooltip.y + box_h > win_h {
+                (win_h - box_h).max(0.0)
+            } else {
+                tooltip.y
+            };
+
+            // 背景：半透明深色
+            let bg_color = color_f(0.12, 0.12, 0.15, 0.95);
+            let Ok(bg_brush) = self.render_ctx.brush_cache.get_brush(target, &bg_color) else {
+                return;
+            };
+            // 边框：浅色
+            let border_color = color_f(0.4, 0.4, 0.45, 1.0);
+            let Ok(border_brush) = self.render_ctx.brush_cache.get_brush(target, &border_color)
+            else {
+                return;
+            };
+            // 文本：浅色
+            let text_color = color_f(0.9, 0.9, 0.9, 1.0);
+            let Ok(text_brush) = self.render_ctx.brush_cache.get_brush(target, &text_color) else {
+                return;
+            };
+
+            let box_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                left: tx,
+                top: ty,
+                right: tx + box_w,
+                bottom: ty + box_h,
+            };
+            target.FillRectangle(&box_rect, &bg_brush);
+            target.DrawRectangle(
+                &box_rect,
+                &border_brush,
+                1.0,
+                None,
+            );
+
+            // 绘制文本（逐行）
+            // DWRITE_TEXT_ALIGNMENT_LEADING=0, DWRITE_PARAGRAPH_ALIGNMENT_NEAR=0
+            let font_size = self.text_renderer.font_size();
+            let tf = match self
+                .render_ctx
+                .text_format_cache
+                .get_format(font_size, 400, 0, 0)
+            {
+                Ok(tf) => tf,
+                Err(_) => return,
+            };
+
+            for (i, line) in lines.iter().enumerate() {
+                let line_y = ty + padding + i as f32 * line_height;
+                let line_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                    left: tx + padding,
+                    top: line_y,
+                    right: tx + box_w - padding,
+                    bottom: line_y + line_height,
+                };
+                let utf16: Vec<u16> = line.encode_utf16().collect();
+                target.DrawText(
+                    &utf16,
+                    &tf,
+                    &line_rect,
+                    &text_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
+                );
+            }
         }
     }
 

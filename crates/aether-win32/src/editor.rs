@@ -39,6 +39,58 @@ pub enum FindReplaceFocus {
     ReplaceText,
 }
 
+/// Hover Tooltip（鼠标悬停提示）
+///
+/// 当鼠标在某个区域停留超过 `HOVER_DELAY_MS` 后显示。
+/// 当前用于文件树节点完整路径提示，后续可扩展接入 LSP hover。
+#[derive(Clone, Debug, PartialEq)]
+pub struct HoverTooltip {
+    /// 提示文本（多行用 `\n` 分隔）
+    pub text: String,
+    /// 提示框左上角 x（逻辑像素）
+    pub x: f32,
+    /// 提示框左上角 y（逻辑像素）
+    pub y: f32,
+    /// 提示框最大宽度（用于自动换行，0 表示不限制）
+    pub max_width: f32,
+}
+
+impl HoverTooltip {
+    pub fn new(text: impl Into<String>, x: f32, y: f32, max_width: f32) -> Self {
+        Self {
+            text: text.into(),
+            x,
+            y,
+            max_width,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+}
+
+/// 计算文件树节点的完整路径（从根到该节点）。
+///
+/// 通过 `parent_idx` 链向上遍历，拼接各级目录名。
+/// 返回 `None` 表示节点不存在或树不可用。
+pub fn file_tree_node_path(tree: &FileTree, node_idx: u32) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    let mut current_idx = node_idx;
+
+    loop {
+        let node = tree.get_node(current_idx)?;
+        parts.push(tree.get_name(node));
+        if node.parent_idx == u32::MAX {
+            break;
+        }
+        current_idx = node.parent_idx;
+    }
+
+    parts.reverse();
+    Some(parts.join("/"))
+}
+
 /// 文件夹异步扫描条目（由后台线程生成，分批通过 PostMessage 发送回 UI 线程）
 #[derive(Clone, Debug)]
 struct ScannedEntry {
@@ -235,6 +287,11 @@ pub struct EditorState {
     pub inline_completion: Option<crate::inline_completion::InlineCompletion>,
     /// P3.1: 内联补全服务（占位）
     pub inline_completion_service: crate::inline_completion::InlineCompletionService,
+    /// P3.4: 当前显示的 hover tooltip（鼠标悬停提示）
+    pub hover_tooltip: Option<HoverTooltip>,
+    /// P3.4: 上次鼠标位置（用于 hover 防抖判定）
+    pub hover_last_mouse_x: f32,
+    pub hover_last_mouse_y: f32,
     /// 上一帧的光标位置（用于检测光标移动）
     pub last_cursor_line: usize,
     /// 上一帧的光标列（用于检测光标移动）
@@ -631,6 +688,9 @@ impl EditorState {
             event_queue: crate::events::EventQueue::new(),
             inline_completion: None,
             inline_completion_service: crate::inline_completion::InlineCompletionService::new(),
+            hover_tooltip: None,
+            hover_last_mouse_x: 0.0,
+            hover_last_mouse_y: 0.0,
             last_cursor_line: 0,
             last_cursor_col: 0,
             last_scroll_y: 0.0,
@@ -2713,6 +2773,34 @@ impl EditorState {
         changed
     }
 
+    /// P3.4: 计算当前悬停文件树节点的 tooltip 文本。
+    ///
+    /// 返回 `Some(text)` 表示应显示 tooltip；`None` 表示无需显示。
+    /// 仅本地文件树有完整路径信息；远程节点 hover_remote_node 本身就是路径。
+    pub fn compute_hover_tooltip_text(&self) -> Option<String> {
+        match &self.sidebar_content {
+            crate::layout::SidebarContent::FileTree => {
+                let node_idx = self.hover_file_node?;
+                let tree = self.file_tree.as_ref()?;
+                let path = file_tree_node_path(tree, node_idx)?;
+                if path.is_empty() {
+                    None
+                } else {
+                    Some(path)
+                }
+            }
+            crate::layout::SidebarContent::RemoteFileTree => {
+                self.hover_remote_node.clone().filter(|s| !s.is_empty())
+            }
+            _ => None,
+        }
+    }
+
+    /// P3.4: 清除当前 hover tooltip
+    pub fn clear_hover_tooltip(&mut self) {
+        self.hover_tooltip = None;
+    }
+
     /// 处理 SSH 对话框点击
     pub fn handle_ssh_dialog_click(
         &mut self,
@@ -4636,4 +4724,66 @@ fn char_offset_to_byte_offset(text: &str, char_offset: usize) -> usize {
         .nth(char_offset)
         .map(|(byte_idx, _)| byte_idx)
         .unwrap_or(text.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aether_core::workspace::file_tree::FileTree;
+
+    #[test]
+    fn test_hover_tooltip_new_and_is_empty() {
+        let t = HoverTooltip::new("hello", 10.0, 20.0, 300.0);
+        assert_eq!(t.text, "hello");
+        assert_eq!(t.x, 10.0);
+        assert_eq!(t.y, 20.0);
+        assert_eq!(t.max_width, 300.0);
+        assert!(!t.is_empty());
+
+        let empty = HoverTooltip::new(String::new(), 0.0, 0.0, 0.0);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_hover_tooltip_equality() {
+        let a = HoverTooltip::new("x", 1.0, 2.0, 3.0);
+        let b = HoverTooltip::new("x", 1.0, 2.0, 3.0);
+        let c = HoverTooltip::new("y", 1.0, 2.0, 3.0);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn test_file_tree_node_path_single_root() {
+        let mut tree = FileTree::new();
+        let root = tree.add_node("src", FileKind::Directory, u32::MAX, 0);
+        let path = file_tree_node_path(&tree, root).expect("应返回路径");
+        assert_eq!(path, "src");
+    }
+
+    #[test]
+    fn test_file_tree_node_path_nested() {
+        let mut tree = FileTree::new();
+        let src = tree.add_node("src", FileKind::Directory, u32::MAX, 0);
+        let main = tree.add_node("main.rs", FileKind::File, src, 1);
+        let path = file_tree_node_path(&tree, main).expect("应返回路径");
+        assert_eq!(path, "src/main.rs");
+    }
+
+    #[test]
+    fn test_file_tree_node_path_deep_nested() {
+        let mut tree = FileTree::new();
+        let a = tree.add_node("a", FileKind::Directory, u32::MAX, 0);
+        let b = tree.add_node("b", FileKind::Directory, a, 1);
+        let c = tree.add_node("c", FileKind::Directory, b, 2);
+        let f = tree.add_node("f.txt", FileKind::File, c, 3);
+        let path = file_tree_node_path(&tree, f).expect("应返回路径");
+        assert_eq!(path, "a/b/c/f.txt");
+    }
+
+    #[test]
+    fn test_file_tree_node_path_invalid_index_returns_none() {
+        let tree = FileTree::new();
+        assert!(file_tree_node_path(&tree, 999).is_none());
+    }
 }
