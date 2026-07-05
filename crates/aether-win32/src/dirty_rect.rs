@@ -1,9 +1,9 @@
-/// 脏矩形追踪系统
-///
-/// 优化策略：
-/// - 记录需要重绘的矩形区域，避免每帧全量清除+重绘
-/// - 合并重叠的脏矩形，减少绘制调用次数
-/// - 支持按区域类型标记（编辑器、侧边栏、状态栏等），实现局部重绘
+//! 脏矩形追踪系统
+//!
+//! 优化策略：
+//! - 记录需要重绘的矩形区域，避免每帧全量清除+重绘
+//! - 合并重叠的脏矩形，减少绘制调用次数
+//! - 支持按区域类型标记（编辑器、侧边栏、状态栏等），实现局部重绘
 
 /// 脏矩形区域类型
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -384,6 +384,7 @@ pub enum RenderCommand {
 
 impl RenderCommand {
     /// 根据当前状态推断最优渲染命令
+    #[allow(clippy::too_many_arguments)]
     pub fn infer_from_state(
         cursor_moved: bool,
         selection_changed: bool,

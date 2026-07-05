@@ -24,7 +24,7 @@ pub fn sanitize_error(err: &str) -> String {
     if let Some(pos) = result.to_lowercase().find("x-api-key:") {
         let start = pos + 10;
         let end = result[start..]
-            .find(|c: char| c == '\n' || c == '\r')
+            .find(['\n', '\r'])
             .map(|p| start + p)
             .unwrap_or(result.len());
         if end > start {
@@ -35,7 +35,7 @@ pub fn sanitize_error(err: &str) -> String {
     if let Some(pos) = result.to_lowercase().find("authorization:") {
         let start = pos + 14;
         let end = result[start..]
-            .find(|c: char| c == '\n' || c == '\r')
+            .find(['\n', '\r'])
             .map(|p| start + p)
             .unwrap_or(result.len());
         if end > start {

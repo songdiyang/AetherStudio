@@ -75,6 +75,11 @@ pub fn send_to_existing_instance(hwnd: HWND, args: &LaunchArgs) -> bool {
 }
 
 /// 从 WM_COPYDATA 的 lparam 中还原 LaunchArgs
+///
+/// # Safety
+///
+/// 调用者必须保证 `lparam` 指向一个有效的 `COPYDATASTRUCT` 结构，
+/// 且其中的 `lpData` 指向一段长度至少为 `cbData` 字节的有效内存。
 pub unsafe fn parse_copydata_lparam(lparam: LPARAM) -> Option<LaunchArgs> {
     let cds = &*(lparam.0 as *const COPYDATASTRUCT);
     if cds.dwData != 0 || cds.cbData == 0 || cds.lpData.is_null() {

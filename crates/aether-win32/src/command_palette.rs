@@ -288,7 +288,7 @@ impl CommandPalette {
                 label_lower.contains(&self.query)
                     || desc_lower
                         .as_ref()
-                        .map_or(false, |d| d.contains(&self.query))
+                        .is_some_and(|d| d.contains(&self.query))
             })
             .map(|(idx, _)| idx)
             .collect();

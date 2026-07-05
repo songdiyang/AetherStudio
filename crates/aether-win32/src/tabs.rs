@@ -95,8 +95,8 @@ impl Tab {
         let total_lines = self.buffer.len_lines().max(1);
         let lexer = self.language.create_lexer();
         if self.cached_lines.len() != total_lines {
-            self.cached_lines.resize_with(total_lines, || String::new());
-            self.cached_tokens.resize_with(total_lines, || Vec::new());
+            self.cached_lines.resize_with(total_lines, String::new);
+            self.cached_tokens.resize_with(total_lines, Vec::new);
             self.line_cache_versions.resize(total_lines, 0);
         }
         for i in 0..total_lines {

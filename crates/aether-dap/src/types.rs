@@ -157,6 +157,7 @@ impl RequestIdGenerator {
         Self { next_seq: 1 }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> i64 {
         let seq = self.next_seq;
         self.next_seq += 1;

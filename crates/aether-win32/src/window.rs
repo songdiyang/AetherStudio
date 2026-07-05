@@ -237,9 +237,9 @@ fn persist_window_state(state: &EditorState, hwnd: HWND) {
 }
 
 thread_local! {
-    static EDITOR_STATE: RefCell<Option<Rc<RefCell<EditorState>>>> = RefCell::new(None);
+    static EDITOR_STATE: RefCell<Option<Rc<RefCell<EditorState>>>> = const { RefCell::new(None) };
     // P2-9: 暂存 WM_CHAR 收到的高代理，等待配对的低代理组合为完整码点
-    static PENDING_HIGH_SURROGATE: RefCell<Option<u16>> = RefCell::new(None);
+    static PENDING_HIGH_SURROGATE: RefCell<Option<u16>> = const { RefCell::new(None) };
 }
 
 /// UI-C02: 全局窗口计数器，防止多窗口时关闭任一窗口就退出整个应用
@@ -987,7 +987,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
             let btn_h = 28.0;
             let btn_gap = 8.0;
             let action_start_y = 52.0; // 标题 + 分隔线 + 边距
-            let action_rows = (actions.len() + 1) / 2;
+            let action_rows = actions.len().div_ceil(2);
             let action_end_y = action_start_y + action_rows as f32 * (btn_h + 6.0) + 8.0;
 
             // 检测快捷操作按钮点击
@@ -1062,12 +1062,12 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
         // 4. 检测标签栏点击
         let has_multiple_tabs = st.tab_count() > 1;
         let tab_region = layout.tab_bar_region(has_multiple_tabs);
-        if tab_region.contains(mouse_x, mouse_y) {
-            if st.handle_tab_bar_click(mouse_x, mouse_y, tab_region.x) {
-                drop(st);
-                state.borrow_mut().render();
-                return LRESULT(0);
-            }
+        if tab_region.contains(mouse_x, mouse_y)
+            && st.handle_tab_bar_click(mouse_x, mouse_y, tab_region.x)
+        {
+            drop(st);
+            state.borrow_mut().render();
+            return LRESULT(0);
         }
 
         // 4.5 检测查找替换面板点击
@@ -1625,7 +1625,6 @@ unsafe fn on_l_b_u_t_t_o_n_u_p(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: 
             if persist_activity || persist_menu {
                 drop(st);
                 state.borrow_mut().render();
-                return;
             }
         }
     });

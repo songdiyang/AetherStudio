@@ -269,7 +269,7 @@ impl EditorState {
             // UI-M01: 合并所有脏矩形为新边界框，而非只使用第一个 rect
             let rects = self.dirty_tracker.rects();
             if !rects.is_empty() {
-                let mut merged = rects[0].clone();
+                let mut merged = rects[0];
                 for r in &rects[1..] {
                     merged = merged.merge(r);
                 }
@@ -974,7 +974,7 @@ impl EditorState {
                     height,
                     width,
                     &tree_format,
-                    &text_brush,
+                    text_brush,
                     &dir_brush,
                     &sel_brush,
                     &hover_brush,
@@ -3259,7 +3259,7 @@ impl EditorState {
 
             // 底部面板标签栏（类似 VS Code 底部面板标签）
             let tab_height = 28.0;
-            let tabs = vec!["终端", "输出", "问题"];
+            let tabs = ["终端", "输出", "问题"];
             let mut tab_x = x + 10.0;
             let tab_w = 60.0;
             for (i, tab) in tabs.iter().enumerate() {
@@ -3701,7 +3701,7 @@ impl EditorState {
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
             }
-            let action_rows = (actions.len() + 1) / 2;
+            let action_rows = actions.len().div_ceil(2);
             cy = action_start_y + action_rows as f32 * (btn_h + 6.0) + 10.0;
             self.ai_panel.action_rows = action_rows;
 
@@ -3859,28 +3859,26 @@ impl EditorState {
             }
 
             // 正在生成指示器（带动画点）
-            if self.ai_panel.is_generating {
-                if msg_y < chat_bottom && msg_y + 16.0 > chat_top {
-                    let typing_text = format!(
-                        "AI 正在思考{}",
-                        ".".repeat((self.ai_panel.messages.len() % 3) + 1)
-                    );
-                    let typing: Vec<u16> = typing_text.encode_utf16().chain(Some(0)).collect();
-                    let typing_rect = D2D_RECT_F {
-                        left: x + margin + 4.0,
-                        top: msg_y,
-                        right: x + width - margin,
-                        bottom: msg_y + 16.0,
-                    };
-                    target.DrawText(
-                        &typing,
-                        &small_format,
-                        &typing_rect,
-                        &yellow_brush,
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        DWRITE_MEASURING_MODE_NATURAL,
-                    );
-                }
+            if self.ai_panel.is_generating && msg_y < chat_bottom && msg_y + 16.0 > chat_top {
+                let typing_text = format!(
+                    "AI 正在思考{}",
+                    ".".repeat((self.ai_panel.messages.len() % 3) + 1)
+                );
+                let typing: Vec<u16> = typing_text.encode_utf16().chain(Some(0)).collect();
+                let typing_rect = D2D_RECT_F {
+                    left: x + margin + 4.0,
+                    top: msg_y,
+                    right: x + width - margin,
+                    bottom: msg_y + 16.0,
+                };
+                target.DrawText(
+                    &typing,
+                    &small_format,
+                    &typing_rect,
+                    &yellow_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
             }
 
             // ===== Apply 按钮区域 =====
@@ -5051,6 +5049,7 @@ impl EditorState {
 
     /// 渲染 AI 接口设置字段（provider / key / url / model / 保存 / 测试连接）
     #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     fn render_ai_settings_fields(
         &mut self,
         target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
@@ -5654,6 +5653,7 @@ impl EditorState {
 
     /// 渲染“通用”标签页内容（主题 / 字体大小）
     #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     fn render_general_settings(
         &mut self,
         target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
@@ -5766,6 +5766,7 @@ impl EditorState {
 
     /// 渲染“外观”标签页内容（侧边栏 / 密度）
     #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     fn render_appearance_settings(
         &mut self,
         target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
@@ -5903,6 +5904,7 @@ impl EditorState {
 
     /// 渲染“远程”标签页内容（SSH 主机列表）
     #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     fn render_remote_settings(
         &mut self,
         target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
@@ -6014,6 +6016,7 @@ impl EditorState {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_tree_nodes(
         &self,
         target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
@@ -6669,6 +6672,7 @@ impl EditorState {
     }
 
     /// P3.2: 渲染内联补全幽灵文本
+    #[allow(clippy::too_many_arguments)]
     fn render_inline_completion(
         &mut self,
         target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
@@ -7740,7 +7744,7 @@ impl EditorState {
                 .get_brush(target, &title_text_color)
                 .unwrap();
             // 计算标题区域：在菜单项右侧、按钮左侧
-            let menu_end_x = if self.menu_bar.item_x_positions.len() > 0 {
+            let menu_end_x = if !self.menu_bar.item_x_positions.is_empty() {
                 self.menu_bar
                     .item_x_positions
                     .last()

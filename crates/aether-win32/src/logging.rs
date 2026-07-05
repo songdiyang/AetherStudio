@@ -74,7 +74,7 @@ pub fn init_logging() -> io::Result<()> {
 /// 获取日志目录路径
 fn get_log_dir() -> PathBuf {
     dirs::data_dir()
-        .unwrap_or_else(|| std::env::temp_dir())
+        .unwrap_or_else(std::env::temp_dir)
         .join("Aether")
         .join("logs")
 }

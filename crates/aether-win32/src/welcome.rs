@@ -614,7 +614,7 @@ impl EditorState {
                 let path_str = ellipsize_path(
                     &project.path,
                     &project_path_format,
-                    &dwrite,
+                    dwrite,
                     layout.right_col_width - 52.0,
                 );
                 let path_text: Vec<u16> = path_str.encode_utf16().chain(Some(0)).collect();

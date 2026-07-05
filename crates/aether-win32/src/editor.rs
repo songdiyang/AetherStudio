@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use windows::core::Result;
 use windows::Win32::Foundation::HWND;
@@ -1052,14 +1052,14 @@ impl EditorState {
     }
 
     /// 显示不支持的文件提示
-    fn show_unsupported_file(&mut self, path: &PathBuf) {
+    fn show_unsupported_file(&mut self, path: &Path) {
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("unknown");
         let message = format!("不支持的文件格式: .{}\n文件: {}", ext, path.display());
         if self.can_reuse_current_tab() {
-            self.file_path = Some(path.clone());
+            self.file_path = Some(path.to_path_buf());
             self.language = Language::PlainText;
             self.buffer = PieceTable::from_string(message);
             self.reset_editor_state();
@@ -1067,7 +1067,7 @@ impl EditorState {
             self.status_message = format!("不支持的文件格式: .{}", ext);
         } else {
             let tab = Tab {
-                file_path: Some(path.clone()),
+                file_path: Some(path.to_path_buf()),
                 buffer: PieceTable::from_string(message),
                 cursor_line: 0,
                 cursor_col: 0,
@@ -2364,7 +2364,7 @@ impl EditorState {
 
     /// 在打开的文件夹根目录查找 README 并自动加载
     /// P2-7: 仅在当前标签页为空且未修改时才自动加载，避免覆盖用户已有内容
-    fn try_open_readme(&mut self, folder: &PathBuf) {
+    fn try_open_readme(&mut self, folder: &Path) {
         // 当前标签页有内容或未保存的修改时，不自动加载 README
         if self.is_dirty || self.buffer.len_bytes() > 0 || self.file_path.is_some() {
             return;
@@ -2398,7 +2398,7 @@ impl EditorState {
         self.active_tab = 0;
         self.selected_file_node = None;
         self.welcome_focus_action = None;
-        self.git.detect(&std::path::Path::new("."));
+        self.git.detect(std::path::Path::new("."));
         self.status_bar.update_git_branch(None);
         self.status_message = "已关闭工作区".to_string();
     }
@@ -2488,7 +2488,7 @@ impl EditorState {
         // 检测按钮点击 (Commit, Refresh)
         let button_y = current_y;
         if mouse_y >= button_y && mouse_y < button_y + 26.0 {
-            if mouse_x >= 10.0 && mouse_x < 70.0 {
+            if (10.0..70.0).contains(&mouse_x) {
                 // Commit 按钮
                 if !self.git.commit_message.is_empty() {
                     let msg = self.git.commit_message.clone();
@@ -2496,7 +2496,7 @@ impl EditorState {
                     self.git.commit_message.clear();
                 }
                 return true;
-            } else if mouse_x >= 80.0 && mouse_x < 140.0 {
+            } else if (80.0..140.0).contains(&mouse_x) {
                 // Refresh 按钮
                 self.git.refresh();
                 return true;
@@ -2764,10 +2764,8 @@ impl EditorState {
         let node_height = 20.0_f32;
         let mut current_y = 10.0 - self.remote_scroll_y;
         let new_hover =
-            match Self::find_remote_node_at_y(&tree.nodes, mouse_y, node_height, &mut current_y) {
-                Some((path, _)) => Some(path),
-                None => None,
-            };
+            Self::find_remote_node_at_y(&tree.nodes, mouse_y, node_height, &mut current_y)
+                .map(|(path, _)| path);
         let changed = self.hover_remote_node != new_hover;
         self.hover_remote_node = new_hover;
         changed
@@ -2955,7 +2953,7 @@ impl EditorState {
         }
     }
 
-    fn find_node_by_path(tree: &FileTree, target: &PathBuf, base: &PathBuf) -> Option<u32> {
+    fn find_node_by_path(tree: &FileTree, target: &Path, base: &Path) -> Option<u32> {
         // 获取相对于 base 的路径
         let rel_path = target.strip_prefix(base).ok()?;
         let components: Vec<_> = rel_path.components().collect();
@@ -3742,9 +3740,9 @@ impl EditorState {
                 while idx > 0 && is_word_char(chars[idx - 1]) {
                     idx -= 1;
                 }
-            } else if idx > 0 {
+            } else {
                 // 非单词字符：跳过一个符号
-                idx -= 1;
+                idx = idx.saturating_sub(1);
             }
             // 转回字节偏移
             let mut byte_col = 0;
@@ -4191,7 +4189,7 @@ impl EditorState {
         }
         let mut p = pos - 1;
         // P4-1: 使用 byte_at 替代 get_text(p, p+1).as_bytes()[0]，避免 String 堆分配
-        while p > 0 && self.buffer.byte_at(p).map_or(false, |b| (b & 0xC0) == 0x80) {
+        while p > 0 && self.buffer.byte_at(p).is_some_and(|b| (b & 0xC0) == 0x80) {
             p -= 1;
         }
         p
@@ -4204,7 +4202,7 @@ impl EditorState {
         }
         let mut p = pos + 1;
         // P4-1: 使用 byte_at 避免逐字节 String 分配
-        while p < total && self.buffer.byte_at(p).map_or(false, |b| (b & 0xC0) == 0x80) {
+        while p < total && self.buffer.byte_at(p).is_some_and(|b| (b & 0xC0) == 0x80) {
             p += 1;
         }
         p
@@ -4220,15 +4218,15 @@ impl EditorState {
 
         // 如果行数变化，重新调整缓存向量大小
         if self.cached_lines.len() != total_lines {
-            self.cached_lines.resize_with(total_lines, || String::new());
-            self.cached_tokens.resize_with(total_lines, || Vec::new());
+            self.cached_lines.resize_with(total_lines, String::new);
+            self.cached_tokens.resize_with(total_lines, Vec::new);
             self.line_cache_versions.resize(total_lines, 0);
         }
 
         // 调整行号 UTF-16 缓存大小
         if self.cached_line_numbers.len() != total_lines {
             self.cached_line_numbers
-                .resize_with(total_lines, || Vec::new());
+                .resize_with(total_lines, Vec::new);
         }
 
         // 只重建可见行范围内的缓存（加上前后各2行的缓冲，避免滚动时闪烁）
@@ -4270,8 +4268,8 @@ impl EditorState {
         let lexer = self.language.create_lexer();
 
         if self.cached_lines.len() != total_lines {
-            self.cached_lines.resize_with(total_lines, || String::new());
-            self.cached_tokens.resize_with(total_lines, || Vec::new());
+            self.cached_lines.resize_with(total_lines, String::new);
+            self.cached_tokens.resize_with(total_lines, Vec::new);
             self.line_cache_versions.resize(total_lines, 0);
         }
 
@@ -4309,8 +4307,8 @@ impl EditorState {
 
         if result.line_delta != 0 {
             // 行数变化，重新调整缓存向量
-            self.cached_lines.resize_with(total_lines, || String::new());
-            self.cached_tokens.resize_with(total_lines, || Vec::new());
+            self.cached_lines.resize_with(total_lines, String::new);
+            self.cached_tokens.resize_with(total_lines, Vec::new);
             self.line_cache_versions.resize(total_lines, 0);
         }
 

@@ -109,6 +109,7 @@ impl RequestIdGenerator {
         Self { next_id: 1 }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> serde_json::Value {
         let id = self.next_id;
         self.next_id += 1;

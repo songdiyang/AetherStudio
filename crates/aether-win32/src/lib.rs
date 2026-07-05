@@ -1,3 +1,6 @@
+// new_without_default: 多数 UI 组件的 new() 包含主题初始化数据，不适合 Default
+#![allow(clippy::new_without_default)]
+
 pub mod dirty_rect;
 pub mod events;
 pub mod render_context;

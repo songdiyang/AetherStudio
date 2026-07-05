@@ -292,7 +292,6 @@ impl LanguageServer {
                                 CompletionItemKind::OPERATOR,
                                 CompletionItemKind::TYPE_PARAMETER,
                             ]),
-                            ..Default::default()
                         }),
                         ..Default::default()
                     }),

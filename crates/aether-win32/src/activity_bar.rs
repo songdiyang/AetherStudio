@@ -72,7 +72,7 @@ impl ActivityBar {
 
     /// 点击检测（48x48 图标区域）
     pub fn hit_test(&self, x: f32, y: f32, bar_y: f32) -> Option<usize> {
-        if x < 0.0 || x > 48.0 {
+        if !(0.0..=48.0).contains(&x) {
             return None;
         }
         let icon_size = 48.0;
