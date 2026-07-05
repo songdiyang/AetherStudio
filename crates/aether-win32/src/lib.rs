@@ -1,6 +1,7 @@
 pub mod dirty_rect;
 pub mod events;
 pub mod render_context;
+pub mod launch;
 
 pub mod activity_bar;
 pub mod ai_panel;
@@ -8,8 +9,10 @@ pub mod command_palette;
 pub mod dialogs;
 pub mod editor;
 pub mod git;
+pub mod hit_test;
 pub mod icons;
 pub mod ime;
+pub mod inline_completion;
 pub mod input;
 pub mod layout;
 pub mod logging;

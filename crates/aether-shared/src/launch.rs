@@ -1,0 +1,209 @@
+use std::path::PathBuf;
+use std::str::FromStr;
+
+use serde::{Deserialize, Serialize};
+
+/// 传递给 GUI 主程序的启动参数
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct LaunchArgs {
+    pub paths: Vec<PathBuf>,
+    pub new_window: bool,
+    pub goto: Option<GotoPosition>,
+    pub wait: bool,
+}
+
+impl LaunchArgs {
+    /// 从命令行解析由 aether-cli 注入的 JSON 参数
+    pub fn from_env() -> Self {
+        let mut iter = std::env::args();
+        let _ = iter.next(); // 跳过可执行文件名称
+
+        while let Some(arg) = iter.next() {
+            if arg == "--aether-launch-args" {
+                if let Some(json) = iter.next() {
+                    if let Ok(parsed) = serde_json::from_str(&json) {
+                        return parsed;
+                    }
+                }
+            }
+        }
+
+        Self::default()
+    }
+
+    /// 是否没有任何启动路径或特殊指令
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty() && self.goto.is_none()
+    }
+}
+
+/// goto 位置参数，支持两种形式：
+/// - `file.txt:10:5` / `file.txt:10`
+/// - `10:5` / `10`（配合路径参数使用）
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GotoPosition {
+    pub line: usize,
+    pub column: usize,
+}
+
+impl GotoPosition {
+    /// 将 1-based 行号转成 0-based 内部索引
+    pub fn zero_based_line(&self) -> usize {
+        self.line.saturating_sub(1)
+    }
+
+    /// 将 1-based 列号转成 0-based 内部索引
+    pub fn zero_based_column(&self) -> usize {
+        self.column.saturating_sub(1)
+    }
+}
+
+impl FromStr for GotoPosition {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        parse_goto_position(s)
+    }
+}
+
+impl std::fmt::Display for GotoPosition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.line, self.column)
+    }
+}
+
+/// 解析纯位置字符串（不含文件路径）：10:5 或 10
+fn parse_goto_position(s: &str) -> Result<GotoPosition, String> {
+    if s.is_empty() {
+        return Err("goto 位置不能为空".to_string());
+    }
+
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() < 1 || parts.len() > 2 {
+        return Err("goto 位置格式错误，应为 line 或 line:column".to_string());
+    }
+
+    let line = parts[0]
+        .parse::<usize>()
+        .map_err(|_| "goto 行号必须是数字".to_string())?;
+    if line == 0 {
+        return Err("goto 行号必须从 1 开始".to_string());
+    }
+
+    let column = if parts.len() == 2 {
+        parts[1]
+            .parse::<usize>()
+            .map_err(|_| "goto 列号必须是数字".to_string())?
+    } else {
+        1
+    };
+
+    Ok(GotoPosition { line, column })
+}
+
+/// 解析完整 goto 字符串，返回（可选的文件路径，位置）。
+///
+/// 支持：
+/// - `file.txt:10:5` / `file.txt:10`
+/// - `10:5` / `10`（此时文件为 None）
+/// - Windows 绝对路径：`C:\folder\file.txt:10:5`
+pub fn parse_goto(s: &str) -> Result<(Option<PathBuf>, GotoPosition), String> {
+    if s.is_empty() {
+        return Err("goto 不能为空".to_string());
+    }
+
+    // 从右侧开始找行号/列号：最后一段和倒数第二段（如果都是数字）
+    let mut parts: Vec<&str> = s.rsplit(':').collect();
+    if parts.len() < 2 {
+        // 可能是纯位置如 "10"
+        return Ok((None, parse_goto_position(s)?));
+    }
+
+    // 尝试最后一段作为列号
+    let maybe_col = parts[0].parse::<usize>();
+    parts.remove(0);
+
+    // 尝试倒数第二段作为行号
+    let maybe_line = parts[0].parse::<usize>();
+
+    let (file_str, line, column) = match (maybe_line, maybe_col) {
+        (Ok(line), Ok(col)) if line > 0 => {
+            parts.remove(0); // line
+            let file = parts.iter().rev().cloned().collect::<Vec<_>>().join(":");
+            (file, line, col)
+        }
+        (Err(_), Ok(line)) if line > 0 => {
+            // 只有行号，列号默认 1
+            // 此时 "倒数第二段" 其实是文件的一部分，需要把它放回去
+            let file = parts.iter().rev().cloned().collect::<Vec<_>>().join(":");
+            (file, line, 1)
+        }
+        _ => {
+            // 没有数字后缀，尝试整体作为纯位置
+            return Ok((None, parse_goto_position(s)?));
+        }
+    };
+
+    let file = if file_str.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(file_str))
+    };
+
+    Ok((file, GotoPosition { line, column }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_goto_position() {
+        assert_eq!(
+            parse_goto_position("10:5").unwrap(),
+            GotoPosition { line: 10, column: 5 }
+        );
+        assert_eq!(
+            parse_goto_position("10").unwrap(),
+            GotoPosition { line: 10, column: 1 }
+        );
+    }
+
+    #[test]
+    fn test_parse_goto_with_file() {
+        let (file, pos) = parse_goto("file.txt:10:5").unwrap();
+        assert_eq!(file, Some(PathBuf::from("file.txt")));
+        assert_eq!(pos, GotoPosition { line: 10, column: 5 });
+
+        let (file, pos) = parse_goto("file.txt:10").unwrap();
+        assert_eq!(file, Some(PathBuf::from("file.txt")));
+        assert_eq!(pos, GotoPosition { line: 10, column: 1 });
+
+        let (file, pos) = parse_goto("C:\\folder\\file.txt:10:5").unwrap();
+        assert_eq!(file, Some(PathBuf::from("C:\\folder\\file.txt")));
+        assert_eq!(pos, GotoPosition { line: 10, column: 5 });
+
+        let (file, pos) = parse_goto("src:main.rs:10:5").unwrap();
+        assert_eq!(file, Some(PathBuf::from("src:main.rs")));
+        assert_eq!(pos, GotoPosition { line: 10, column: 5 });
+    }
+
+    #[test]
+    fn test_parse_goto_without_file() {
+        let (file, pos) = parse_goto("10:5").unwrap();
+        assert_eq!(file, None);
+        assert_eq!(pos, GotoPosition { line: 10, column: 5 });
+
+        let (file, pos) = parse_goto("10").unwrap();
+        assert_eq!(file, None);
+        assert_eq!(pos, GotoPosition { line: 10, column: 1 });
+    }
+
+    #[test]
+    fn test_parse_goto_errors() {
+        assert!(parse_goto("").is_err());
+        assert!(parse_goto("file.txt").is_err());
+        assert!(parse_goto("file.txt:abc").is_err());
+        assert!(parse_goto("file.txt:0:5").is_err());
+    }
+}

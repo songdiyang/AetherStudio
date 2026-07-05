@@ -10,6 +10,7 @@ members = [
     "crates/aether-remote",
     "crates/aether-ai",
     "crates/aether-shared",
+    "crates/aether-cli",
 ]
 resolver = "2"
 

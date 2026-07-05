@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::launch::{copydata_result, parse_copydata_lparam, LaunchArgs};
+
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -272,7 +274,49 @@ fn get_and_set_state(hwnd: HWND) -> Option<Rc<RefCell<EditorState>>> {
     }
 }
 
-pub fn run() {
+/// 应用 CLI 传入的启动参数到指定编辑器状态
+fn apply_launch_args(state: &mut EditorState, args: &LaunchArgs) {
+    let mut loaded_file_for_goto: Option<std::path::PathBuf> = None;
+
+    for path in &args.paths {
+        if path.is_dir() {
+            state.open_folder(path.clone());
+        } else if path.is_file() {
+            // 文件：先打开所在文件夹作为工作区，再加载文件到标签页
+            if let Some(parent) = path.parent() {
+                state.open_folder(parent.to_path_buf());
+            }
+            state.load_file(path.clone());
+            if args.goto.is_some() && loaded_file_for_goto.is_none() {
+                loaded_file_for_goto = Some(path.clone());
+            }
+        }
+    }
+
+    // 如果提供了 goto，且第一个路径就是文件，则直接跳转
+    // 如果 goto 指向的文件不是第一个路径，需要在后续扩展中支持按文件名匹配
+    if let Some(goto) = args.goto {
+        let target_file = loaded_file_for_goto.or_else(|| args.paths.first().cloned());
+        if target_file.map(|p| p.is_file()).unwrap_or(false) {
+            state.goto_position(goto.line, goto.column);
+        }
+    }
+
+    state.render();
+}
+
+/// WM_COPYDATA：接收来自第二个实例或 CLI 的启动参数
+unsafe fn on_copydata(hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if let Some(args) = parse_copydata_lparam(lparam) {
+        if let Some(state) = get_and_set_state(hwnd) {
+            apply_launch_args(&mut state.borrow_mut(), &args);
+            return copydata_result(true);
+        }
+    }
+    copydata_result(false)
+}
+
+pub fn run(args: LaunchArgs) {
     unsafe {
         // 设置 DPI 感知模式（Per-Monitor V2）
         set_dpi_awareness();
@@ -294,7 +338,12 @@ pub fn run() {
         RegisterClassW(&wc);
 
         // 创建第一个窗口
-        create_editor_window(instance.into(), None);
+        let hwnd = create_editor_window(instance.into(), None);
+
+        // 应用启动参数：打开传入的文件夹或文件
+        if let Some(state) = get_and_set_state(hwnd) {
+            apply_launch_args(&mut state.borrow_mut(), &args);
+        }
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
@@ -3142,6 +3191,17 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                     }
                 });
             }
+            // P3.3: Ctrl+Shift+I 手动触发内联补全（占位 AI）
+            VK_I => {
+                if shift {
+                    EDITOR_STATE.with(|s| {
+                        if let Some(state) = s.borrow().as_ref() {
+                            state.borrow_mut().request_inline_completion();
+                            state.borrow_mut().render();
+                        }
+                    });
+                }
+            }
             // P1-6: Ctrl+Alt+Up / Ctrl+Alt+Down 列光标
             VK_UP => {
                 let alt = GetKeyState(VK_MENU.0 as i32) < 0;
@@ -3518,12 +3578,21 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
             } else {
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
-                        let has_sel = has_selection(&state.borrow());
-                        if has_sel {
-                            state.borrow_mut().delete_selection();
+                        // P3.3: 若有内联补全建议，Tab 接受建议；否则插入制表符
+                        let accepted = {
+                            let mut st = state.borrow_mut();
+                            st.accept_inline_completion()
+                        };
+                        if accepted {
+                            state.borrow_mut().render();
+                        } else {
+                            let has_sel = has_selection(&state.borrow());
+                            if has_sel {
+                                state.borrow_mut().delete_selection();
+                            }
+                            state.borrow_mut().insert_tab();
+                            state.borrow_mut().render();
                         }
-                        state.borrow_mut().insert_tab();
-                        state.borrow_mut().render();
                     }
                 });
             }
@@ -3665,6 +3734,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             msg if msg == WM_APP + 6 => on_wm_app_6(hwnd, msg, wparam, lparam),
             msg if msg == WM_APP + 7 => on_wm_app_7(hwnd, msg, wparam, lparam),
             WM_DROPFILES => on_d_r_o_p_f_i_l_e_s(hwnd, msg, wparam, lparam),
+            WM_COPYDATA => on_copydata(hwnd, msg, wparam, lparam),
             WM_SIZE => on_s_i_z_e(hwnd, msg, wparam, lparam),
             WM_DPICHANGED => on_d_p_i_c_h_a_n_g_e_d(hwnd, msg, wparam, lparam),
             WM_NCACTIVATE => on_n_c_a_c_t_i_v_a_t_e(hwnd, msg, wparam, lparam),

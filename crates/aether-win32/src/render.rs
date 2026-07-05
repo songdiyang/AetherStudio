@@ -23,6 +23,9 @@ impl EditorState {
             return;
         }
 
+        // TEST: 每帧开始清除上一帧命中区域
+        crate::hit_test::clear_hit_regions();
+
         // AI-H01: 轮询后台 AI 请求结果，不阻塞 UI 线程
         self.ai_panel.check_background_result();
 
@@ -574,6 +577,9 @@ impl EditorState {
 
         // 清除脏矩形标记（渲染完成）
         self.dirty_tracker.clear();
+
+        // TEST: 将本帧命中区域写入文件
+        crate::hit_test::flush_hit_regions_to_file();
     }
 
     fn render_right_panel(
@@ -6563,6 +6569,20 @@ impl EditorState {
                 }
             }
 
+            // P3.2: 在光标之前渲染内联补全幽灵文本
+            self.render_inline_completion(
+                target,
+                x,
+                y,
+                width,
+                height,
+                start_line,
+                line_height,
+                char_width,
+                line_number_width,
+                &code_format,
+            );
+
             // 光标：将字节列转换为字符列计算x坐标
             // UI-H04: 使用字符宽度累加而非简单 char count * char_width，
             // 支持 CJK 等双宽度字符的正确光标定位
@@ -6642,6 +6662,69 @@ impl EditorState {
                     target.FillRectangle(&cursor_rect, &cursor_brush);
                 }
             }
+        }
+    }
+
+    /// P3.2: 渲染内联补全幽灵文本
+    fn render_inline_completion(
+        &mut self,
+        target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+        x: f32,
+        y: f32,
+        _width: f32,
+        _height: f32,
+        start_line: usize,
+        line_height: f32,
+        char_width: f32,
+        line_number_width: f32,
+        code_format: &windows::Win32::Graphics::DirectWrite::IDWriteTextFormat,
+    ) {
+        let Some(comp) = self.inline_completion.as_ref() else {
+            return;
+        };
+
+        // 仅当建议触发位置与当前光标位置匹配时渲染，避免错位
+        if comp.trigger_line != self.cursor_line || comp.trigger_col != self.cursor_col {
+            return;
+        }
+
+        unsafe {
+            let ghost_color = color_f(0.5, 0.5, 0.5, 0.6);
+            let Ok(ghost_brush) = self.render_ctx.brush_cache.get_brush(target, &ghost_color)
+            else {
+                return;
+            };
+
+            let cursor_char_col = if let Some(text) = self.cached_lines.get(self.cursor_line) {
+                let byte_pos = self.cursor_col.min(text.len());
+                text[..byte_pos]
+                    .chars()
+                    .map(|ch| if (ch as u32) > 0x7F { 2 } else { 1 })
+                    .sum::<usize>()
+            } else {
+                0
+            };
+
+            let ghost_x =
+                x + line_number_width + 5.0 - self.scroll_x + cursor_char_col as f32 * char_width;
+            let ghost_y = y + (self.cursor_line.saturating_sub(start_line)) as f32 * line_height
+                - (self.scroll_y % line_height);
+
+            let text_utf16: Vec<u16> = comp.text.encode_utf16().collect();
+            let text_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                left: ghost_x,
+                top: ghost_y,
+                right: ghost_x + comp.text.len() as f32 * char_width + 10.0,
+                bottom: ghost_y + line_height,
+            };
+            target.DrawText(
+                &text_utf16,
+                code_format,
+                &text_rect,
+                &ghost_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
+            );
         }
     }
 
@@ -7317,6 +7400,15 @@ impl EditorState {
                         DWRITE_MEASURING_MODE_NATURAL,
                     );
 
+                    // TEST: 注册状态栏区域命中区域
+                    crate::hit_test::register_hit_region(
+                        format!("status:{}", section.label),
+                        x + rx,
+                        y,
+                        *rw,
+                        height,
+                    );
+
                     // 分隔线
                     if i > 0 && i < 3 {
                         let sep_rect = D2D_RECT_F {
@@ -7681,6 +7773,15 @@ impl EditorState {
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
+
+                // TEST: 注册菜单项命中区域
+                crate::hit_test::register_hit_region(
+                    format!("menu:{}", item.label),
+                    item_x_pos,
+                    y,
+                    item_width,
+                    height,
+                );
             }
 
             // 自定义模式：菜单栏拖拽放置指示线（垂直）
@@ -8030,6 +8131,15 @@ impl EditorState {
                 bottom: y + height - 10.0,
             };
             target.FillRectangle(&ls_rect2, left_sidebar_icon_brush);
+
+            // TEST: 注册标题栏控制按钮命中区域
+            crate::hit_test::register_hit_region("titlebar:minimize", minimize_x, y, btn_width, btn_height);
+            crate::hit_test::register_hit_region("titlebar:maximize", maximize_x, y, btn_width, btn_height);
+            crate::hit_test::register_hit_region("titlebar:close", close_x, y, btn_width, btn_height);
+            crate::hit_test::register_hit_region("titlebar:user", user_btn_x, user_btn_y, user_btn_size, user_btn_size);
+            crate::hit_test::register_hit_region("titlebar:right_panel", right_panel_btn_x, y, panel_btn_width, btn_height);
+            crate::hit_test::register_hit_region("titlebar:bottom_panel", bottom_panel_btn_x, y, panel_btn_width, btn_height);
+            crate::hit_test::register_hit_region("titlebar:left_sidebar", left_sidebar_btn_x, y, panel_btn_width, btn_height);
         }
     }
 
@@ -8573,6 +8683,15 @@ impl EditorState {
                     brush,
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
+                );
+
+                // TEST: 注册活动栏按钮命中区域
+                crate::hit_test::register_hit_region(
+                    format!("activity:{:?}", item.view),
+                    x,
+                    icon_y,
+                    width,
+                    icon_size,
                 );
             }
 

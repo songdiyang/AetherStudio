@@ -231,6 +231,10 @@ pub struct EditorState {
     pub dirty_tracker: crate::dirty_rect::DirtyRectTracker,
     /// 事件队列（P1.1: 解耦模型改动与渲染）
     pub event_queue: crate::events::EventQueue,
+    /// P3.1: 当前内联补全建议（幽灵文本）
+    pub inline_completion: Option<crate::inline_completion::InlineCompletion>,
+    /// P3.1: 内联补全服务（占位）
+    pub inline_completion_service: crate::inline_completion::InlineCompletionService,
     /// 上一帧的光标位置（用于检测光标移动）
     pub last_cursor_line: usize,
     /// 上一帧的光标列（用于检测光标移动）
@@ -291,6 +295,7 @@ impl EditorState {
             tab.line_cache_versions = std::mem::take(&mut self.line_cache_versions);
             tab.is_large_file = self.is_large_file;
             tab.line_y_offsets = std::mem::take(&mut self.line_y_offsets);
+            tab.inline_completion = self.inline_completion.take();
             tab.buffer_version = self.buffer_version;
             tab.language = self.language;
         }
@@ -315,6 +320,7 @@ impl EditorState {
             self.line_cache_versions = std::mem::take(&mut tab.line_cache_versions);
             self.is_large_file = tab.is_large_file;
             self.line_y_offsets = std::mem::take(&mut tab.line_y_offsets);
+            self.inline_completion = tab.inline_completion.take();
             self.buffer_version = tab.buffer_version;
             self.language = tab.language;
         }
@@ -623,6 +629,8 @@ impl EditorState {
             git_panel: crate::git::GitIntegration::new(),
             dirty_tracker: crate::dirty_rect::DirtyRectTracker::new(1280.0, 800.0),
             event_queue: crate::events::EventQueue::new(),
+            inline_completion: None,
+            inline_completion_service: crate::inline_completion::InlineCompletionService::new(),
             last_cursor_line: 0,
             last_cursor_col: 0,
             last_scroll_y: 0.0,
@@ -703,6 +711,56 @@ impl EditorState {
     /// 发射一个编辑器事件到事件队列
     pub fn emit_event(&mut self, event: crate::events::EditorEvent) {
         self.event_queue.push(event);
+    }
+
+    /// P3.1: 请求内联补全建议（占位实现）
+    pub fn request_inline_completion(&mut self) {
+        // 收集光标前后文本作为上下文
+        let prefix = self
+            .buffer
+            .get_line(self.cursor_line)
+            .map(|s| s[..self.cursor_col.min(s.len())].to_string())
+            .unwrap_or_default();
+        let suffix = self
+            .buffer
+            .get_line(self.cursor_line)
+            .map(|s| s[self.cursor_col.min(s.len())..].to_string())
+            .unwrap_or_default();
+
+        if let Some(suggestion) = self.inline_completion_service.request(&prefix, &suffix) {
+            self.inline_completion = Some(crate::inline_completion::InlineCompletion {
+                text: suggestion.text,
+                trigger_line: self.cursor_line,
+                trigger_col: self.cursor_col,
+                version: suggestion.version,
+            });
+            self.emit_event(crate::events::EditorEvent::CursorMoved);
+        }
+    }
+
+    /// P3.1: 清除当前内联补全建议
+    pub fn clear_inline_completion(&mut self) {
+        self.inline_completion = None;
+    }
+
+    /// P3.3: 接受当前内联补全建议，将建议文本插入到光标处
+    pub fn accept_inline_completion(&mut self) -> bool {
+        let Some(comp) = self.inline_completion.take() else {
+            return false;
+        };
+        if comp.trigger_line != self.cursor_line || comp.trigger_col != self.cursor_col {
+            return false;
+        }
+        let pos = self.cursor_byte_pos();
+        self.buffer.insert(pos, &comp.text);
+        self.cursor_col += comp.text.len();
+        self.is_dirty = true;
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.is_dirty = true;
+        }
+        self.buffer_version += 1;
+        self.emit_edit_events();
+        true
     }
 
     /// 发射文本编辑相关事件（TextChanged + CursorMoved）
@@ -882,6 +940,7 @@ impl EditorState {
                         buffer_version: 1,
                         is_large_file: false,
                         line_y_offsets: Vec::new(),
+                        inline_completion: None,
                         language: lang,
                     };
                     self.open_in_new_tab(tab);
@@ -924,6 +983,7 @@ impl EditorState {
                 buffer_version: 1,
                 is_large_file: false,
                 line_y_offsets: Vec::new(),
+                inline_completion: None,
                 language: Language::Image,
             };
             self.open_in_new_tab(tab);
@@ -963,6 +1023,7 @@ impl EditorState {
                 buffer_version: 1,
                 is_large_file: false,
                 line_y_offsets: Vec::new(),
+                inline_completion: None,
                 language: Language::PlainText,
             };
             self.open_in_new_tab(tab);
@@ -1469,6 +1530,53 @@ impl EditorState {
             // 光标在可视区右侧，向右滚动（留 1 字符余量）
             self.scroll_x = cursor_x - text_visible_width + char_width;
         }
+    }
+
+    /// 跳转到指定 1-based 行/列位置，并确保光标可见。
+    ///
+    /// - line 和 column 均为 1-based（与用户输入一致）。
+    /// - 行号/列号越界时会自动钳制到有效范围。
+    pub fn goto_position(&mut self, line: usize, column: usize) {
+        if self.buffer.len_lines() == 0 {
+            return;
+        }
+
+        let max_line = self.buffer.len_lines().saturating_sub(1);
+        let target_line = line.saturating_sub(1).min(max_line);
+
+        let line_text = self.buffer.get_line(target_line).unwrap_or_default();
+        let target_col = char_offset_to_byte_offset(&line_text, column.saturating_sub(1))
+            .min(line_text.len());
+
+        self.cursor_line = target_line;
+        self.cursor_col = target_col;
+        self.selection_start = None;
+        self.selection_end = None;
+
+        // 同步到当前标签页
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.cursor_line = target_line;
+            tab.cursor_col = target_col;
+            tab.selection_start = None;
+            tab.selection_end = None;
+        }
+
+        // 垂直滚动：让目标行可见
+        let line_height = self.text_renderer.line_height();
+        let editor_region = self.layout.editor_region();
+        let editor_height = editor_region.height.max(1.0);
+        let cursor_y = target_line as f32 * line_height;
+
+        if cursor_y < self.scroll_y {
+            self.scroll_y = cursor_y;
+        } else if cursor_y + line_height > self.scroll_y + editor_height {
+            self.scroll_y = (cursor_y + line_height - editor_height).max(0.0);
+        }
+
+        // 水平滚动：让目标列可见
+        self.ensure_cursor_visible_horizontal();
+
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// 侧边栏滚动（文件树虚拟滚动）
@@ -2468,6 +2576,7 @@ impl EditorState {
                             buffer_version: 1,
                             is_large_file: false,
                             line_y_offsets: Vec::new(),
+                            inline_completion: None,
                             language: Language::PlainText,
                         };
                         self.open_in_new_tab(tab);
@@ -2540,6 +2649,7 @@ impl EditorState {
                     buffer_version: 1,
                     is_large_file: false,
                     line_y_offsets: Vec::new(),
+                    inline_completion: None,
                     language: Language::PlainText,
                 };
                 self.open_in_new_tab(tab);
@@ -4511,4 +4621,19 @@ pub(crate) fn is_text_file(path: &std::path::Path) -> bool {
     }
 
     false
+}
+
+/// 将字符偏移量转换为字节偏移量。
+///
+/// 编辑器内部使用字节偏移表示光标列，但用户输入的列号是字符位置。
+/// 该函数按 Unicode 标量值计数，返回对应字符起始位置的字节索引。
+fn char_offset_to_byte_offset(text: &str, char_offset: usize) -> usize {
+    if char_offset == 0 {
+        return 0;
+    }
+
+    text.char_indices()
+        .nth(char_offset)
+        .map(|(byte_idx, _)| byte_idx)
+        .unwrap_or(text.len())
 }

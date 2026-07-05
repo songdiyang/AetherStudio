@@ -26,6 +26,8 @@ pub struct Tab {
     pub(crate) is_large_file: bool,
     /// P2.3: 行 Y 偏移前缀和缓存
     pub(crate) line_y_offsets: Vec<f32>,
+    /// P3.1: 当前内联补全建议
+    pub(crate) inline_completion: Option<crate::inline_completion::InlineCompletion>,
     // 语言类型
     pub(crate) language: Language,
 }
@@ -59,6 +61,7 @@ impl Tab {
             buffer_version: 0,
             is_large_file: false,
             line_y_offsets: Vec::new(),
+            inline_completion: None,
             language: Language::PlainText,
         }
     }
@@ -83,6 +86,7 @@ impl Tab {
             buffer_version: 1,
             is_large_file: false,
             line_y_offsets: Vec::new(),
+            inline_completion: None,
             language,
         })
     }

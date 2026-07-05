@@ -26,3 +26,13 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Reference / local-only directories
+vscode/
+tests/screenshots/
+tests/gui_hit_regions.jsonl
+tests/gui_probe_report.json
+tests/gui_smoke_report.json
+
+# Runtime user data
+crates/aether-win32/recent_projects.json
