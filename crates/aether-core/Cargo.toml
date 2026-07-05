@@ -7,6 +7,13 @@ edition.workspace = true
 memmap2 = "0.9"
 smallvec = "1.13"
 rayon = "1.10"
+regex = "1.10"
+walkdir = "2.5"
 
 [dev-dependencies]
 rand = "0.8"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "lexer_bench"
+harness = false
