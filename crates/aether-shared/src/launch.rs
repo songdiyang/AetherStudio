@@ -206,4 +206,64 @@ mod tests {
         assert!(parse_goto("file.txt:abc").is_err());
         assert!(parse_goto("file.txt:0:5").is_err());
     }
+
+    #[test]
+    fn test_launch_args_default_and_is_empty() {
+        let args = LaunchArgs::default();
+        assert!(args.is_empty(), "默认 LaunchArgs 应为空");
+        assert!(args.paths.is_empty());
+        assert!(args.goto.is_none());
+        assert!(!args.new_window);
+        assert!(!args.wait);
+    }
+
+    #[test]
+    fn test_launch_args_is_empty_with_paths_or_goto() {
+        let with_path = LaunchArgs {
+            paths: vec![PathBuf::from("/tmp")],
+            ..Default::default()
+        };
+        assert!(!with_path.is_empty());
+
+        let with_goto = LaunchArgs {
+            goto: Some(GotoPosition { line: 1, column: 1 }),
+            ..Default::default()
+        };
+        assert!(!with_goto.is_empty());
+    }
+
+    #[test]
+    fn test_launch_args_roundtrip_json() {
+        let args = LaunchArgs {
+            paths: vec![PathBuf::from("C:\\src\\main.rs")],
+            new_window: true,
+            goto: Some(GotoPosition { line: 10, column: 5 }),
+            wait: false,
+        };
+        let json = serde_json::to_string(&args).expect("序列化失败");
+        let back: LaunchArgs = serde_json::from_str(&json).expect("反序列化失败");
+        assert_eq!(back.paths, args.paths);
+        assert_eq!(back.goto, args.goto);
+        assert_eq!(back.new_window, args.new_window);
+        assert_eq!(back.wait, args.wait);
+    }
+
+    #[test]
+    fn test_goto_position_zero_based() {
+        let pos = GotoPosition { line: 10, column: 5 };
+        assert_eq!(pos.zero_based_line(), 9);
+        assert_eq!(pos.zero_based_column(), 4);
+        // line=1 / column=1 应映射到 0
+        let first = GotoPosition { line: 1, column: 1 };
+        assert_eq!(first.zero_based_line(), 0);
+        assert_eq!(first.zero_based_column(), 0);
+    }
+
+    #[test]
+    fn test_goto_position_display_and_from_str() {
+        let pos = GotoPosition { line: 7, column: 3 };
+        assert_eq!(format!("{}", pos), "7:3");
+        let parsed: GotoPosition = "7:3".parse().expect("应解析成功");
+        assert_eq!(parsed, pos);
+    }
 }

@@ -135,3 +135,68 @@ fn hit_regions_path() -> std::path::PathBuf {
         .join("tests")
         .join("gui_hit_regions.jsonl")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_frame_new_is_empty() {
+        let frame = HitTestFrame::new();
+        assert!(frame.is_empty());
+        assert_eq!(frame.regions.len(), 0);
+    }
+
+    #[test]
+    fn test_frame_add_region() {
+        let mut frame = HitTestFrame::new();
+        frame.add("menu:file", 10.0, 20.0, 80.0, 24.0);
+        assert!(!frame.is_empty());
+        assert_eq!(frame.regions.len(), 1);
+        assert_eq!(frame.regions[0].action, "menu:file");
+        assert_eq!(frame.regions[0].x, 10.0);
+    }
+
+    #[test]
+    fn test_frame_add_ignores_non_positive_size() {
+        let mut frame = HitTestFrame::new();
+        frame.add("zero-w", 0.0, 0.0, 0.0, 10.0);
+        frame.add("zero-h", 0.0, 0.0, 10.0, 0.0);
+        frame.add("neg-w", 0.0, 0.0, -1.0, 10.0);
+        frame.add("neg-h", 0.0, 0.0, 10.0, -1.0);
+        assert!(frame.is_empty(), "零或负尺寸的区域应被忽略");
+    }
+
+    #[test]
+    fn test_frame_clear() {
+        let mut frame = HitTestFrame::new();
+        frame.add("a", 0.0, 0.0, 1.0, 1.0);
+        frame.add("b", 0.0, 0.0, 1.0, 1.0);
+        assert_eq!(frame.regions.len(), 2);
+        frame.clear();
+        assert!(frame.is_empty());
+    }
+
+    #[test]
+    fn test_register_and_clear_global_regions() {
+        // 全局 Mutex 状态可能在其他测试间共享，这里只验证调用不 panic 且语义自洽
+        register_hit_region("test:region", 1.0, 2.0, 3.0, 4.0);
+        register_hit_region("test:region2", 5.0, 6.0, 7.0, 8.0);
+        // 清除不应 panic
+        clear_hit_regions();
+    }
+
+    #[test]
+    fn test_hit_region_serializes_to_json() {
+        let region = HitRegion {
+            action: "menu:file".to_string(),
+            x: 1.5,
+            y: 2.5,
+            width: 80.0,
+            height: 24.0,
+        };
+        let json = serde_json::to_string(&region).expect("应可序列化");
+        assert!(json.contains("\"action\":\"menu:file\""));
+        assert!(json.contains("1.5"));
+    }
+}

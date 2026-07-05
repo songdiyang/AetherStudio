@@ -68,3 +68,54 @@ impl Default for InlineCompletionService {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_inline_completion_new_and_fields() {
+        let comp = InlineCompletion::new("hello".to_string(), 3, 5, 42);
+        assert_eq!(comp.text, "hello");
+        assert_eq!(comp.trigger_line, 3);
+        assert_eq!(comp.trigger_col, 5);
+        assert_eq!(comp.version, 42);
+    }
+
+    #[test]
+    fn test_inline_completion_is_empty() {
+        let empty = InlineCompletion::new(String::new(), 0, 0, 1);
+        assert!(empty.is_empty());
+
+        let non_empty = InlineCompletion::new("x".to_string(), 0, 0, 1);
+        assert!(!non_empty.is_empty());
+    }
+
+    #[test]
+    fn test_service_request_returns_some_with_incrementing_version() {
+        let mut svc = InlineCompletionService::new();
+        let r1 = svc.request("prefix", "suffix").expect("应返回建议");
+        let r2 = svc.request("prefix", "suffix").expect("应返回建议");
+        assert!(r2.version > r1.version, "版本号应递增");
+        assert!(!r1.text.is_empty(), "占位建议不应为空文本");
+    }
+
+    #[test]
+    fn test_service_default_equals_new() {
+        let mut a = InlineCompletionService::new();
+        let mut b = InlineCompletionService::default();
+        // 两者起始 counter 相同，第一次 request 返回的 version 应一致
+        let ra = a.request("", "");
+        let rb = b.request("", "");
+        assert_eq!(ra.map(|c| c.version), rb.map(|c| c.version));
+    }
+
+    #[test]
+    fn test_service_cancel_is_noop() {
+        let mut svc = InlineCompletionService::new();
+        // cancel 在占位实现中不应 panic
+        svc.cancel();
+        // cancel 后仍可正常 request
+        assert!(svc.request("a", "b").is_some());
+    }
+}
