@@ -1,3 +1,4 @@
+use super::common::{skip_line_comment, skip_quoted, skip_whitespace};
 use super::{LexemeSpan, Lexer, TokenKind};
 
 /// Rust 词法分析器
@@ -143,7 +144,7 @@ impl RustLexer {
             }
             b'"' => {
                 // 字符串字面量（Rust 没有三引号语法）
-                let end = skip_string(bytes, pos);
+                let end = skip_quoted(bytes, pos, b'"');
                 (
                     LexemeSpan {
                         start: pos,
@@ -158,7 +159,7 @@ impl RustLexer {
                 // 生命周期或字符字面量
                 // CORE-H03: 反斜杠后必为转义字符字面量（如 '\n', '\t'），不会误分类为生命周期
                 if pos + 1 < bytes.len() && bytes[pos + 1] == b'\\' {
-                    let end = skip_char(bytes, pos);
+                    let end = skip_quoted(bytes, pos, b'\'');
                     (
                         LexemeSpan {
                             start: pos,
@@ -173,7 +174,7 @@ impl RustLexer {
                     && bytes[pos + 2] == b'\''
                 {
                     // 单字符字面量: 'a', 'x', 'z'（格式为 'X'）
-                    let end = skip_char(bytes, pos);
+                    let end = skip_quoted(bytes, pos, b'\'');
                     (
                         LexemeSpan {
                             start: pos,
@@ -199,7 +200,7 @@ impl RustLexer {
                         end,
                     )
                 } else {
-                    let end = skip_char(bytes, pos);
+                    let end = skip_quoted(bytes, pos, b'\'');
                     (
                         LexemeSpan {
                             start: pos,
@@ -225,12 +226,12 @@ impl RustLexer {
             }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 let end = skip_identifier(bytes, pos);
-                let text = std::str::from_utf8(&bytes[pos..end]).unwrap_or("");
-                let kind = if is_keyword(text) {
+                let ident = &bytes[pos..end];
+                let kind = if is_keyword_bytes(ident) {
                     TokenKind::Keyword
-                } else if is_builtin_type(text) {
+                } else if is_builtin_type_bytes(ident) {
                     TokenKind::TypeName
-                } else if text.starts_with("macro_") || text == "macro" {
+                } else if is_macro_name(ident) {
                     TokenKind::Macro
                 } else {
                     TokenKind::Identifier
@@ -315,22 +316,25 @@ impl RustLexer {
                 },
                 pos + 1,
             ),
-            _ => (
-                LexemeSpan {
-                    start: pos,
-                    len: 1,
-                    kind: TokenKind::Unknown,
-                    flags: 0,
-                },
-                pos + 1,
-            ),
+            _ => {
+                let len = crate::lexer::utf8_char_len(bytes[pos]);
+                (
+                    LexemeSpan {
+                        start: pos,
+                        len,
+                        kind: TokenKind::Unknown,
+                        flags: 0,
+                    },
+                    pos + len,
+                )
+            }
         }
     }
 }
 
 impl Lexer for RustLexer {
     fn lex_full(&self, text: &str) -> Vec<LexemeSpan> {
-        let mut tokens = Vec::new();
+        let mut tokens = Vec::with_capacity(text.len() / 4 + 1);
         let bytes = text.as_bytes();
         let mut pos = 0;
 
@@ -350,114 +354,33 @@ impl Default for RustLexer {
     }
 }
 
-fn is_keyword(text: &str) -> bool {
-    matches!(
-        text,
-        "as" | "async"
-            | "await"
-            | "break"
-            | "const"
-            | "continue"
-            | "crate"
-            | "dyn"
-            | "else"
-            | "enum"
-            | "extern"
-            | "false"
-            | "fn"
-            | "for"
-            | "if"
-            | "impl"
-            | "in"
-            | "let"
-            | "loop"
-            | "match"
-            | "mod"
-            | "move"
-            | "mut"
-            | "pub"
-            | "ref"
-            | "return"
-            | "self"
-            | "Self"
-            | "static"
-            | "struct"
-            | "super"
-            | "trait"
-            | "true"
-            | "type"
-            | "unsafe"
-            | "use"
-            | "where"
-            | "while"
-            | "yield"
-            | "abstract"
-            | "become"
-            | "box"
-            | "do"
-            | "final"
-            | "macro"
-            | "override"
-            | "priv"
-            | "typeof"
-            | "unsized"
-            | "virtual"
-            | "try"
-            | "union"
-    )
-}
-
-fn is_builtin_type(text: &str) -> bool {
-    matches!(
-        text,
-        "i8" | "i16"
-            | "i32"
-            | "i64"
-            | "i128"
-            | "isize"
-            | "u8"
-            | "u16"
-            | "u32"
-            | "u64"
-            | "u128"
-            | "usize"
-            | "f32"
-            | "f64"
-            | "bool"
-            | "char"
-            | "str"
-            | "String"
-            | "Vec"
-            | "Option"
-            | "Result"
-            | "Box"
-            | "Rc"
-            | "Arc"
-            | "HashMap"
-            | "BTreeMap"
-            | "HashSet"
-            | "BTreeSet"
-            | "VecDeque"
-            | "LinkedList"
-            | "BinaryHeap"
-            | "Cow"
-    )
-}
-
-fn skip_whitespace(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos;
-    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r') {
-        i += 1;
+fn is_keyword_bytes(bytes: &[u8]) -> bool {
+    match bytes {
+        b"as" | b"async" | b"await" | b"break" | b"const" | b"continue" | b"crate"
+        | b"dyn" | b"else" | b"enum" | b"extern" | b"false" | b"fn" | b"for" | b"if"
+        | b"impl" | b"in" | b"let" | b"loop" | b"match" | b"mod" | b"move" | b"mut"
+        | b"pub" | b"ref" | b"return" | b"self" | b"Self" | b"static" | b"struct"
+        | b"super" | b"trait" | b"true" | b"type" | b"unsafe" | b"use" | b"where"
+        | b"while" | b"yield" | b"abstract" | b"become" | b"box" | b"do" | b"final"
+        | b"macro" | b"override" | b"priv" | b"typeof" | b"unsized" | b"virtual" | b"try"
+        | b"union" => true,
+        _ => false,
     }
-    i
 }
 
-fn skip_line_comment(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos + 2;
-    while i < bytes.len() && bytes[i] != b'\n' {
-        i += 1;
+fn is_builtin_type_bytes(bytes: &[u8]) -> bool {
+    match bytes {
+        b"i8" | b"i16" | b"i32" | b"i64" | b"i128" | b"isize" | b"u8" | b"u16" | b"u32"
+        | b"u64" | b"u128" | b"usize" | b"f32" | b"f64" | b"bool" | b"char" | b"str"
+        | b"String" | b"Vec" | b"Option" | b"Result" | b"Box" | b"Rc" | b"Arc" | b"HashMap"
+        | b"BTreeMap" | b"HashSet" | b"BTreeSet" | b"VecDeque" | b"LinkedList"
+        | b"BinaryHeap" | b"Cow" => true,
+        _ => false,
     }
-    i
+}
+
+fn is_macro_name(bytes: &[u8]) -> bool {
+    bytes == b"macro" || bytes.starts_with(b"macro_")
 }
 
 fn skip_block_comment(bytes: &[u8], pos: usize) -> usize {
@@ -499,34 +422,6 @@ fn skip_attribute(bytes: &[u8], pos: usize) -> usize {
     i
 }
 
-fn skip_string(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos + 1;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' {
-            i += 2;
-        } else if bytes[i] == b'"' {
-            return i + 1;
-        } else {
-            i += 1;
-        }
-    }
-    bytes.len()
-}
-
-fn skip_char(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos + 1;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' {
-            i += 2;
-        } else if bytes[i] == b'\'' {
-            return i + 1;
-        } else {
-            i += 1;
-        }
-    }
-    bytes.len()
-}
-
 fn skip_lifetime(bytes: &[u8], pos: usize) -> usize {
     let mut i = pos + 1;
     while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
@@ -537,24 +432,49 @@ fn skip_lifetime(bytes: &[u8], pos: usize) -> usize {
 
 fn skip_number(bytes: &[u8], pos: usize) -> usize {
     let mut i = pos;
-    while i < bytes.len()
-        && (bytes[i].is_ascii_digit()
-            || bytes[i] == b'.'
-            || bytes[i] == b'e'
-            || bytes[i] == b'E'
-            || bytes[i] == b'+'
-            || bytes[i] == b'-'
-            || bytes[i] == b'x'
-            || bytes[i] == b'X'
-            || bytes[i] == b'o'
-            || bytes[i] == b'O'
-            || bytes[i] == b'b'
-            || bytes[i] == b'B'
-            || (bytes[i] >= b'a' && bytes[i] <= b'f')
-            || (bytes[i] >= b'A' && bytes[i] <= b'F')
-            || bytes[i] == b'_')
+
+    // 前缀：0x / 0X / 0o / 0O / 0b / 0B
+    if i + 1 < bytes.len()
+        && bytes[i] == b'0'
+        && matches!(bytes[i + 1], b'x' | b'X' | b'o' | b'O' | b'b' | b'B')
     {
-        i += 1;
+        let base = bytes[i + 1].to_ascii_lowercase();
+        i += 2;
+        while i < bytes.len() {
+            let ch = bytes[i];
+            let valid = ch == b'_'
+                || ch.is_ascii_digit()
+                || (base == b'x' && ch.is_ascii_hexdigit());
+            if !valid {
+                break;
+            }
+            i += 1;
+        }
+        return i;
+    }
+
+    let mut dot_count = 0;
+    let mut exponent_seen = false;
+    while i < bytes.len() {
+        let ch = bytes[i];
+        if ch.is_ascii_digit() || ch == b'_' {
+            i += 1;
+        } else if ch == b'.' {
+            // 阻止范围语法 1..2 被合并
+            if dot_count > 0 || (i + 1 < bytes.len() && bytes[i + 1] == b'.') {
+                break;
+            }
+            dot_count += 1;
+            i += 1;
+        } else if matches!(ch, b'e' | b'E') && !exponent_seen {
+            exponent_seen = true;
+            i += 1;
+            if i < bytes.len() && matches!(bytes[i], b'+' | b'-') {
+                i += 1;
+            }
+        } else {
+            break;
+        }
     }
     i
 }

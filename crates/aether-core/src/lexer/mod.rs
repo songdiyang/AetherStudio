@@ -95,19 +95,36 @@ pub enum Language {
 
 impl Language {
     /// 根据文件扩展名检测语言
+    /// 对于没有独立 lexer 的扩展名，尽量归入语义相近的语言（如 vue/wxml 用 HTML lexer），
+    /// 完全未知的扩展名统一归为 PlainText，保证任何文本文件都能被查看。
     pub fn from_extension(ext: &str) -> Self {
         match ext.to_lowercase().as_str() {
-            "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" => Language::C,
+            // C/C++ 家族
+            "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" | "m" | "mm" => Language::C,
+            // Rust
             "rs" => Language::Rust,
-            "py" | "pyw" | "pyi" => Language::Python,
-            "js" | "jsx" | "mjs" | "cjs" => Language::JavaScript,
+            // Python
+            "py" | "pyw" | "pyi" | "pyx" | "pxd" => Language::Python,
+            // JavaScript/TypeScript 及其衍生
+            "js" | "jsx" | "mjs" | "cjs" | "es" | "es6" => Language::JavaScript,
             "ts" | "tsx" | "mts" | "cts" => Language::TypeScript,
-            "json" => Language::Json,
-            "md" | "markdown" => Language::Markdown,
-            "toml" => Language::Toml,
-            "html" | "htm" => Language::Html,
-            "css" => Language::Css,
-            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "svg" => Language::Image,
+            // JSON / JSON-like
+            "json" | "jsonc" | "jsonl" => Language::Json,
+            // Markdown / 文档
+            "md" | "markdown" | "mdx" => Language::Markdown,
+            // TOML / INI / 配置
+            "toml" | "ini" | "cfg" | "conf" | "config" => Language::Toml,
+            // HTML / 模板 / 类 XML 标记
+            "html" | "htm" | "xhtml" | "vue" | "svelte" | "wxml" | "axml" | "ftl" | "jinja"
+            | "j2" | "njk" | "mustache" | "handlebars" | "hbs" | "ejs" | "erb" | "haml"
+            | "pug" | "jade" | "liquid" | "razor" | "cshtml" => Language::Html,
+            // CSS / 样式
+            "css" | "scss" | "sass" | "less" | "styl" | "stylus" | "wxss" | "acss" => {
+                Language::Css
+            }
+            // 图片（仅用于文件树图标/路由，不用于lexer）
+            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "svg" | "tiff"
+            | "tif" | "raw" | "psd" => Language::Image,
             _ => Language::PlainText,
         }
     }
@@ -131,14 +148,33 @@ impl Language {
             Language::Markdown => Box::new(markdown_lexer::MarkdownLexer::new()),
             Language::Toml => Box::new(toml_lexer::TomlLexer::new()),
             Language::Html => Box::new(html_lexer::HtmlLexer::new()),
-            Language::Css => Box::new(PlainTextLexer::new()),
+            // CSS 暂时没有独立 lexer，复用 HTML lexer 至少能高亮注释、字符串、标签等公共结构
+            Language::Css => Box::new(html_lexer::HtmlLexer::new()),
             Language::PlainText => Box::new(PlainTextLexer::new()),
             Language::Image => Box::new(PlainTextLexer::new()),
+        }
+    }
+
+    /// 直接对指定语言的文本进行词法分析，使用静态分发，无 Box 分配与动态分发开销。
+    pub fn lex_full(&self, text: &str) -> Vec<LexemeSpan> {
+        match self {
+            Language::C => c_lexer::CLexer::new().lex_full(text),
+            Language::Rust => rust_lexer::RustLexer::new().lex_full(text),
+            Language::Python => python_lexer::PythonLexer::new().lex_full(text),
+            Language::JavaScript | Language::TypeScript => js_lexer::JsLexer::new().lex_full(text),
+            Language::Json => json_lexer::JsonLexer::new().lex_full(text),
+            Language::Markdown => markdown_lexer::MarkdownLexer::new().lex_full(text),
+            Language::Toml => toml_lexer::TomlLexer::new().lex_full(text),
+            Language::Html => html_lexer::HtmlLexer::new().lex_full(text),
+            Language::Css => html_lexer::HtmlLexer::new().lex_full(text),
+            Language::PlainText => PlainTextLexer::new().lex_full(text),
+            Language::Image => PlainTextLexer::new().lex_full(text),
         }
     }
 }
 
 pub mod c_lexer;
+pub mod common;
 pub mod html_lexer;
 pub mod js_lexer;
 pub mod json_lexer;
@@ -173,5 +209,17 @@ impl Lexer for PlainTextLexer {
 impl Default for PlainTextLexer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// 根据 UTF-8 首字节推断字符的字节长度。
+/// 非法或 ASCII 字节返回 1，保证 lexer 至少能前进一步。
+pub(crate) fn utf8_char_len(first_byte: u8) -> usize {
+    match first_byte {
+        0x00..=0x7F => 1,
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF7 => 4,
+        _ => 1,
     }
 }

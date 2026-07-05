@@ -9,7 +9,7 @@ impl HtmlLexer {
 
 impl super::Lexer for HtmlLexer {
     fn lex_full(&self, text: &str) -> Vec<super::LexemeSpan> {
-        let mut spans = Vec::new();
+        let mut spans = Vec::with_capacity(text.len() / 4 + 1);
         let bytes = text.as_bytes();
         let mut i = 0;
 

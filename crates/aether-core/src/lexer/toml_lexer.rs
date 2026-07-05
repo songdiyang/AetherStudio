@@ -1,3 +1,4 @@
+use super::common::{skip_quoted, skip_whitespace};
 use super::{LexemeSpan, Lexer, TokenKind};
 
 /// TOML 词法分析器
@@ -84,7 +85,7 @@ impl TomlLexer {
                 )
             }
             b'"' => {
-                let end = skip_string(bytes, pos);
+                let end = skip_quoted(bytes, pos, b'"');
                 (
                     LexemeSpan {
                         start: pos,
@@ -168,22 +169,25 @@ impl TomlLexer {
                 },
                 pos + 1,
             ),
-            _ => (
-                LexemeSpan {
-                    start: pos,
-                    len: 1,
-                    kind: TokenKind::Unknown,
-                    flags: 0,
-                },
-                pos + 1,
-            ),
+            _ => {
+                let len = crate::lexer::utf8_char_len(bytes[pos]);
+                (
+                    LexemeSpan {
+                        start: pos,
+                        len,
+                        kind: TokenKind::Unknown,
+                        flags: 0,
+                    },
+                    pos + len,
+                )
+            }
         }
     }
 }
 
 impl Lexer for TomlLexer {
     fn lex_full(&self, text: &str) -> Vec<LexemeSpan> {
-        let mut tokens = Vec::new();
+        let mut tokens = Vec::with_capacity(text.len() / 4 + 1);
         let bytes = text.as_bytes();
         let mut pos = 0;
 
@@ -203,34 +207,12 @@ impl Default for TomlLexer {
     }
 }
 
-fn skip_whitespace(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos;
-    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r') {
-        i += 1;
-    }
-    i
-}
-
 fn skip_line_comment(bytes: &[u8], pos: usize) -> usize {
     let mut i = pos + 1;
     while i < bytes.len() && bytes[i] != b'\n' {
         i += 1;
     }
     i
-}
-
-fn skip_string(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos + 1;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' {
-            i += 2;
-        } else if bytes[i] == b'"' {
-            return i + 1;
-        } else {
-            i += 1;
-        }
-    }
-    bytes.len()
 }
 
 fn skip_literal_string(bytes: &[u8], pos: usize) -> usize {

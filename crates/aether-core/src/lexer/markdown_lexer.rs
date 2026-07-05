@@ -194,7 +194,7 @@ impl MarkdownLexer {
 
 impl Lexer for MarkdownLexer {
     fn lex_full(&self, text: &str) -> Vec<LexemeSpan> {
-        let mut tokens = Vec::new();
+        let mut tokens = Vec::with_capacity(text.len() / 4 + 1);
         let bytes = text.as_bytes();
         let mut pos = 0;
 

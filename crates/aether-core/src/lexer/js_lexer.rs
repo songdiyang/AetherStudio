@@ -1,3 +1,6 @@
+use super::common::{
+    skip_block_comment, skip_line_comment, skip_quoted, skip_whitespace,
+};
 use super::{LexemeSpan, Lexer, TokenKind};
 
 /// JavaScript/TypeScript 词法分析器
@@ -163,7 +166,7 @@ impl JsLexer {
                 )
             }
             b'"' => {
-                let end = skip_string(bytes, pos, b'"');
+                let end = skip_quoted(bytes, pos, b'"');
                 (
                     LexemeSpan {
                         start: pos,
@@ -175,7 +178,7 @@ impl JsLexer {
                 )
             }
             b'\'' => {
-                let end = skip_string(bytes, pos, b'\'');
+                let end = skip_quoted(bytes, pos, b'\'');
                 (
                     LexemeSpan {
                         start: pos,
@@ -200,10 +203,10 @@ impl JsLexer {
             }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$' => {
                 let end = skip_identifier(bytes, pos);
-                let text = std::str::from_utf8(&bytes[pos..end]).unwrap_or("");
-                let kind = if is_keyword(text) {
+                let ident = &bytes[pos..end];
+                let kind = if is_keyword_bytes(ident) {
                     TokenKind::Keyword
-                } else if is_builtin(text) {
+                } else if is_builtin_bytes(ident) {
                     TokenKind::TypeName
                 } else {
                     TokenKind::Identifier
@@ -239,22 +242,26 @@ impl JsLexer {
                 },
                 pos + 1,
             ),
-            _ => (
-                LexemeSpan {
-                    start: pos,
-                    len: 1,
-                    kind: TokenKind::Unknown,
-                    flags: 0,
-                },
-                pos + 1,
-            ),
+            _ => {
+                // 按完整 UTF-8 字符推进，避免中文/emoji 被拆散导致高亮错位
+                let len = crate::lexer::utf8_char_len(bytes[pos]);
+                (
+                    LexemeSpan {
+                        start: pos,
+                        len,
+                        kind: TokenKind::Unknown,
+                        flags: 0,
+                    },
+                    pos + len,
+                )
+            }
         }
     }
 }
 
 impl Lexer for JsLexer {
     fn lex_full(&self, text: &str) -> Vec<LexemeSpan> {
-        let mut tokens = Vec::new();
+        let mut tokens = Vec::with_capacity(text.len() / 4 + 1);
         let bytes = text.as_bytes();
         let mut pos = 0;
 
@@ -274,177 +281,47 @@ impl Default for JsLexer {
     }
 }
 
-fn is_keyword(text: &str) -> bool {
-    matches!(
-        text,
-        "break"
-            | "case"
-            | "catch"
-            | "class"
-            | "const"
-            | "continue"
-            | "debugger"
-            | "default"
-            | "delete"
-            | "do"
-            | "else"
-            | "export"
-            | "extends"
-            | "finally"
-            | "for"
-            | "function"
-            | "if"
-            | "import"
-            | "in"
-            | "instanceof"
-            | "let"
-            | "new"
-            | "return"
-            | "super"
-            | "switch"
-            | "this"
-            | "throw"
-            | "try"
-            | "typeof"
-            | "var"
-            | "void"
-            | "while"
-            | "with"
-            | "yield"
-            | "async"
-            | "await"
-            | "static"
-            | "get"
-            | "set"
-            | "of"
-            | "from"
-            | "as"
-            | "enum"
-            | "implements"
-            | "interface"
-            | "package"
-            | "private"
-            | "protected"
-            | "public"
-            | "abstract"
-            | "boolean"
-            | "byte"
-            | "char"
-            | "double"
-            | "final"
-            | "float"
-            | "goto"
-            | "int"
-            | "long"
-            | "native"
-            | "short"
-            | "synchronized"
-            | "throws"
-            | "transient"
-            | "volatile"
-            | "null"
-            | "true"
-            | "false"
-            | "undefined"
-    )
-}
-
-fn is_builtin(text: &str) -> bool {
-    matches!(
-        text,
-        "Array"
-            | "Object"
-            | "String"
-            | "Number"
-            | "Boolean"
-            | "Date"
-            | "RegExp"
-            | "Function"
-            | "Symbol"
-            | "Error"
-            | "Map"
-            | "Set"
-            | "WeakMap"
-            | "WeakSet"
-            | "Promise"
-            | "Proxy"
-            | "Reflect"
-            | "JSON"
-            | "Math"
-            | "console"
-            | "window"
-            | "document"
-            | "globalThis"
-            | "require"
-            | "module"
-            | "exports"
-            | "Buffer"
-            | "process"
-            | "EventEmitter"
-            | "string"
-            | "number"
-            | "boolean"
-            | "any"
-            | "unknown"
-            | "never"
-            | "void"
-            | "object"
-            | "Record"
-            | "Partial"
-            | "Required"
-            | "Pick"
-            | "Omit"
-            | "Exclude"
-            | "Extract"
-            | "ReturnType"
-            | "Parameters"
-            | "Readonly"
-            | "interface"
-            | "type"
-            | "namespace"
-            | "declare"
-            | "global"
-            | "infer"
-            | "keyof"
-            | "unique"
-            | "symbol"
-            | "bigint"
-            | "asserts"
-    )
-}
-
-fn skip_whitespace(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos;
-    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r') {
-        i += 1;
+fn is_keyword_bytes(bytes: &[u8]) -> bool {
+    match bytes {
+        b"break" | b"case" | b"catch" | b"class" | b"const" | b"continue"
+        | b"debugger" | b"default" | b"delete" | b"do" | b"else" | b"export"
+        | b"extends" | b"finally" | b"for" | b"function" | b"if" | b"import"
+        | b"in" | b"instanceof" | b"let" | b"new" | b"return" | b"super"
+        | b"switch" | b"this" | b"throw" | b"try" | b"typeof" | b"var"
+        | b"void" | b"while" | b"with" | b"yield" | b"async" | b"await"
+        | b"static" | b"get" | b"set" | b"of" | b"from" | b"as" | b"enum"
+        | b"implements" | b"interface" | b"package" | b"private" | b"protected"
+        | b"public" | b"abstract" | b"boolean" | b"byte" | b"char" | b"double"
+        | b"final" | b"float" | b"goto" | b"int" | b"long" | b"native"
+        | b"short" | b"synchronized" | b"throws" | b"transient" | b"volatile"
+        | b"null" | b"true" | b"false" | b"undefined" => true,
+        _ => false,
     }
-    i
 }
 
-fn skip_line_comment(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos + 2;
-    while i < bytes.len() && bytes[i] != b'\n' {
-        i += 1;
+fn is_builtin_bytes(bytes: &[u8]) -> bool {
+    match bytes {
+        b"Array" | b"Object" | b"String" | b"Number" | b"Boolean" | b"Date"
+        | b"RegExp" | b"Function" | b"Symbol" | b"Error" | b"Map" | b"Set"
+        | b"WeakMap" | b"WeakSet" | b"Promise" | b"Proxy" | b"Reflect" | b"JSON"
+        | b"Math" | b"console" | b"window" | b"document" | b"globalThis"
+        | b"require" | b"module" | b"exports" | b"Buffer" | b"process"
+        | b"EventEmitter" | b"string" | b"number" | b"boolean" | b"any"
+        | b"unknown" | b"never" | b"void" | b"object" | b"Record" | b"Partial"
+        | b"Required" | b"Pick" | b"Omit" | b"Exclude" | b"Extract" | b"ReturnType"
+        | b"Parameters" | b"Readonly" | b"interface" | b"type" | b"namespace"
+        | b"declare" | b"global" | b"infer" | b"keyof" | b"unique" | b"symbol"
+        | b"bigint" | b"asserts" => true,
+        _ => false,
     }
-    i
-}
-
-fn skip_block_comment(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos + 2;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-            return i + 2;
-        }
-        i += 1;
-    }
-    bytes.len()
 }
 
 fn skip_template_string(bytes: &[u8], pos: usize) -> usize {
     let mut i = pos + 1;
     while i < bytes.len() {
         if bytes[i] == b'\\' {
-            i += 2;
+            // 安全跳过转义：反斜杠在末尾时只前进 1，避免越界
+            i += if i + 1 < bytes.len() { 2 } else { 1 };
         } else if bytes[i] == b'`' {
             return i + 1;
         } else if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
@@ -466,26 +343,13 @@ fn skip_template_string(bytes: &[u8], pos: usize) -> usize {
     bytes.len()
 }
 
-fn skip_string(bytes: &[u8], pos: usize, quote: u8) -> usize {
-    let mut i = pos + 1;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' {
-            i += 2;
-        } else if bytes[i] == quote {
-            return i + 1;
-        } else {
-            i += 1;
-        }
-    }
-    bytes.len()
-}
-
 fn skip_regex(bytes: &[u8], pos: usize) -> usize {
     let mut i = pos + 1;
     let mut in_class = false;
     while i < bytes.len() {
         if bytes[i] == b'\\' {
-            i += 2;
+            // 安全跳过转义
+            i += if i + 1 < bytes.len() { 2 } else { 1 };
         } else if bytes[i] == b'[' {
             in_class = true;
             i += 1;
@@ -508,23 +372,52 @@ fn skip_regex(bytes: &[u8], pos: usize) -> usize {
 
 fn skip_number(bytes: &[u8], pos: usize) -> usize {
     let mut i = pos;
-    while i < bytes.len()
-        && (bytes[i].is_ascii_digit()
-            || bytes[i] == b'.'
-            || bytes[i] == b'e'
-            || bytes[i] == b'E'
-            || bytes[i] == b'+'
-            || bytes[i] == b'-'
-            || bytes[i] == b'x'
-            || bytes[i] == b'X'
-            || bytes[i] == b'o'
-            || bytes[i] == b'O'
-            || bytes[i] == b'b'
-            || bytes[i] == b'B'
-            || bytes[i] == b'n'
-            || bytes[i] == b'_')
+
+    // 前缀：0x / 0X / 0o / 0O / 0b / 0B
+    if i + 1 < bytes.len()
+        && bytes[i] == b'0'
+        && matches!(bytes[i + 1], b'x' | b'X' | b'o' | b'O' | b'b' | b'B')
     {
-        i += 1;
+        let base = bytes[i + 1].to_ascii_lowercase();
+        i += 2;
+        while i < bytes.len() {
+            let ch = bytes[i];
+            let valid = ch == b'_'
+                || ch.is_ascii_digit()
+                || (base == b'x' && ch.is_ascii_hexdigit());
+            if !valid {
+                break;
+            }
+            i += 1;
+        }
+        return i;
+    }
+
+    let mut dot_count = 0;
+    let mut exponent_seen = false;
+    while i < bytes.len() {
+        let ch = bytes[i];
+        if ch.is_ascii_digit() || ch == b'_' {
+            i += 1;
+        } else if ch == b'.' {
+            // 阻止 1..2 被合并
+            if dot_count > 0 || (i + 1 < bytes.len() && bytes[i + 1] == b'.') {
+                break;
+            }
+            dot_count += 1;
+            i += 1;
+        } else if matches!(ch, b'e' | b'E') && !exponent_seen {
+            exponent_seen = true;
+            i += 1;
+            if i < bytes.len() && matches!(bytes[i], b'+' | b'-') {
+                i += 1;
+            }
+        } else if ch == b'n' && i > pos && bytes[i - 1].is_ascii_digit() {
+            // BigInt 后缀 n
+            i += 1;
+        } else {
+            break;
+        }
     }
     i
 }

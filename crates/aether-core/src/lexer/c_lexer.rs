@@ -1,3 +1,6 @@
+use super::common::{
+    skip_block_comment, skip_line_comment, skip_quoted, skip_whitespace,
+};
 use super::{LexemeSpan, Lexer, TokenKind};
 
 /// C语言词法分析器 — 基于确定性有限自动机(DFA)
@@ -123,7 +126,7 @@ impl CLexer {
                 )
             }
             b'"' => {
-                let end = skip_string(bytes, pos);
+                let end = skip_quoted(bytes, pos, b'"');
                 (
                     LexemeSpan {
                         start: pos,
@@ -135,7 +138,7 @@ impl CLexer {
                 )
             }
             b'\'' => {
-                let end = skip_char(bytes, pos);
+                let end = skip_quoted(bytes, pos, b'\'');
                 (
                     LexemeSpan {
                         start: pos,
@@ -160,8 +163,7 @@ impl CLexer {
             }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 let end = skip_identifier(bytes, pos);
-                let text = std::str::from_utf8(&bytes[pos..end]).unwrap_or("");
-                let kind = if is_keyword(text) {
+                let kind = if is_keyword_bytes(&bytes[pos..end]) {
                     TokenKind::Keyword
                 } else {
                     TokenKind::Identifier
@@ -197,22 +199,25 @@ impl CLexer {
                 },
                 pos + 1,
             ),
-            _ => (
-                LexemeSpan {
-                    start: pos,
-                    len: 1,
-                    kind: TokenKind::Unknown,
-                    flags: 0,
-                },
-                pos + 1,
-            ),
+            _ => {
+                let len = crate::lexer::utf8_char_len(bytes[pos]);
+                (
+                    LexemeSpan {
+                        start: pos,
+                        len,
+                        kind: TokenKind::Unknown,
+                        flags: 0,
+                    },
+                    pos + len,
+                )
+            }
         }
     }
 }
 
 impl Lexer for CLexer {
     fn lex_full(&self, text: &str) -> Vec<LexemeSpan> {
-        let mut tokens = Vec::new();
+        let mut tokens = Vec::with_capacity(text.len() / 4 + 1);
         let bytes = text.as_bytes();
         let mut pos = 0;
 
@@ -232,81 +237,18 @@ impl Default for CLexer {
     }
 }
 
-fn is_keyword(text: &str) -> bool {
-    matches!(
-        text,
-        "auto"
-            | "break"
-            | "case"
-            | "char"
-            | "const"
-            | "continue"
-            | "default"
-            | "do"
-            | "double"
-            | "else"
-            | "enum"
-            | "extern"
-            | "float"
-            | "for"
-            | "goto"
-            | "if"
-            | "inline"
-            | "int"
-            | "long"
-            | "register"
-            | "restrict"
-            | "return"
-            | "short"
-            | "signed"
-            | "sizeof"
-            | "static"
-            | "struct"
-            | "switch"
-            | "typedef"
-            | "union"
-            | "unsigned"
-            | "void"
-            | "volatile"
-            | "while"
-            | "_Alignas"
-            | "_Alignof"
-            | "_Atomic"
-            | "_Bool"
-            | "_Complex"
-            | "_Generic"
-            | "_Imaginary"
-            | "_Noreturn"
-            | "_Static_assert"
-            | "_Thread_local"
-    )
-}
-
-fn skip_whitespace(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos;
-    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r') {
-        i += 1;
+fn is_keyword_bytes(bytes: &[u8]) -> bool {
+    match bytes {
+        b"auto" | b"break" | b"case" | b"char" | b"const" | b"continue" | b"default"
+        | b"do" | b"double" | b"else" | b"enum" | b"extern" | b"float" | b"for"
+        | b"goto" | b"if" | b"inline" | b"int" | b"long" | b"register" | b"restrict"
+        | b"return" | b"short" | b"signed" | b"sizeof" | b"static" | b"struct"
+        | b"switch" | b"typedef" | b"union" | b"unsigned" | b"void" | b"volatile"
+        | b"while" | b"_Alignas" | b"_Alignof" | b"_Atomic" | b"_Bool" | b"_Complex"
+        | b"_Generic" | b"_Imaginary" | b"_Noreturn" | b"_Static_assert"
+        | b"_Thread_local" => true,
+        _ => false,
     }
-    i
-}
-
-fn skip_line_comment(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos + 2;
-    while i < bytes.len() && bytes[i] != b'\n' {
-        i += 1;
-    }
-    i
-}
-
-fn skip_block_comment(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos + 2;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-            return i + 2;
-        }
-        i += 1;
-    }
-    bytes.len()
 }
 
 fn skip_preprocessor(bytes: &[u8], pos: usize) -> usize {
@@ -323,61 +265,50 @@ fn skip_preprocessor(bytes: &[u8], pos: usize) -> usize {
     bytes.len()
 }
 
-fn skip_string(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos + 1;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' {
-            i += 2; // 转义字符
-        } else if bytes[i] == b'"' {
-            return i + 1;
-        } else {
-            i += 1;
-        }
-    }
-    bytes.len()
-}
-
-fn skip_char(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos + 1;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' {
-            i += 2;
-        } else if bytes[i] == b'\'' {
-            return i + 1;
-        } else {
-            i += 1;
-        }
-    }
-    bytes.len()
-}
-
 fn skip_number(bytes: &[u8], pos: usize) -> usize {
     let mut i = pos;
-    while i < bytes.len()
-        && (bytes[i].is_ascii_digit()
-            || bytes[i] == b'.'
-            || bytes[i] == b'e'
-            || bytes[i] == b'E'
-            || bytes[i] == b'+'
-            || bytes[i] == b'-'
-            || bytes[i] == b'x'
-            || bytes[i] == b'X'
-            || bytes[i] == b'a'
-            || bytes[i] == b'A'
-            || bytes[i] == b'b'
-            || bytes[i] == b'B'
-            || bytes[i] == b'c'
-            || bytes[i] == b'C'
-            || bytes[i] == b'd'
-            || bytes[i] == b'D'
-            || bytes[i] == b'f'
-            || bytes[i] == b'F'
-            || bytes[i] == b'l'
-            || bytes[i] == b'L'
-            || bytes[i] == b'u'
-            || bytes[i] == b'U')
-    {
-        i += 1;
+    let mut dot_count = 0;
+    let mut exponent_seen = false;
+
+    // 前缀：0x / 0X / 0b / 0B
+    if i + 1 < bytes.len() && bytes[i] == b'0' && matches!(bytes[i + 1], b'x' | b'X' | b'b' | b'B') {
+        i += 2;
+        while i < bytes.len() && bytes[i].is_ascii_hexdigit() {
+            i += 1;
+        }
+        // 整数后缀
+        while i < bytes.len() && matches!(bytes[i], b'u' | b'U' | b'l' | b'L') {
+            i += 1;
+        }
+        return i;
+    }
+
+    while i < bytes.len() {
+        let ch = bytes[i];
+        if ch.is_ascii_digit() {
+            i += 1;
+        } else if ch == b'.' {
+            // 阻止 1..2 被合并为一个数字：第二个 . 或 后无数字时停止
+            if dot_count > 0 || (i + 1 < bytes.len() && bytes[i + 1] == b'.') {
+                break;
+            }
+            dot_count += 1;
+            i += 1;
+        } else if matches!(ch, b'e' | b'E') && !exponent_seen {
+            exponent_seen = true;
+            i += 1;
+            if i < bytes.len() && matches!(bytes[i], b'+' | b'-') {
+                i += 1;
+            }
+        } else if matches!(ch, b'+' | b'-') {
+            // 只允许作为指数符号出现；若不在指数上下文中则停止
+            break;
+        } else if matches!(ch, b'f' | b'F' | b'l' | b'L' | b'u' | b'U') {
+            // 浮点/整数后缀
+            i += 1;
+        } else {
+            break;
+        }
     }
     i
 }
