@@ -1,6 +1,8 @@
 use lsp_types::*;
 use std::collections::HashMap;
 
+use crate::incremental_sync::{FastLineIndex, LineIndexProvider};
+
 /// 文档同步管理器
 /// 跟踪所有已打开文档的状态和版本
 pub struct DocumentSync {
@@ -77,11 +79,16 @@ pub struct DocumentState {
     pub text: String,
 }
 
-/// 计算增量变更（简化版：整行替换）
-/// 实际生产环境应使用差异算法（如 Myers diff）
+/// 计算增量变更（基于共同前缀/后缀的字符级 diff）
+///
+/// 相比原行级启发式，本实现：
+/// - 精确到字节级别的变更范围，不再按整行替换
+/// - 使用 FastLineIndex 将字节偏移转换为 LSP Position，且 character 按 UTF-16 码元计数
+/// - 大文件或变更范围过大时回退为全文替换
 pub fn compute_changes(old_text: &str, new_text: &str) -> Vec<TextDocumentContentChangeEvent> {
-    // 如果文本差异很大，直接发送完整内容
-    if old_text.len() > 10000 || new_text.len() > 10000 {
+    // 如果文本差异很大，直接发送完整内容更高效
+    const LARGE_FILE_THRESHOLD: usize = 100_000; // 100KB
+    if old_text.len() > LARGE_FILE_THRESHOLD || new_text.len() > LARGE_FILE_THRESHOLD {
         return vec![TextDocumentContentChangeEvent {
             range: None,
             range_length: None,
@@ -89,63 +96,53 @@ pub fn compute_changes(old_text: &str, new_text: &str) -> Vec<TextDocumentConten
         }];
     }
 
-    // 简单启发式：如果文本差异小，尝试找到变更范围
-    let old_lines: Vec<&str> = old_text.lines().collect();
-    let new_lines: Vec<&str> = new_text.lines().collect();
+    // 找到共同前缀长度
+    let prefix_len = old_text
+        .bytes()
+        .zip(new_text.bytes())
+        .take_while(|(a, b)| a == b)
+        .count();
 
-    // 找到第一个不同的行
-    let mut first_diff = 0;
-    while first_diff < old_lines.len()
-        && first_diff < new_lines.len()
-        && old_lines[first_diff] == new_lines[first_diff]
-    {
-        first_diff += 1;
-    }
+    // 找到共同后缀长度（不得超过剩余长度）
+    let suffix_len = old_text[prefix_len..]
+        .bytes()
+        .rev()
+        .zip(new_text[prefix_len..].bytes().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
 
-    // 找到最后一个不同的行
-    let mut old_last = old_lines.len();
-    let mut new_last = new_lines.len();
-    while old_last > first_diff
-        && new_last > first_diff
-        && old_lines[old_last - 1] == new_lines[new_last - 1]
-    {
-        old_last -= 1;
-        new_last -= 1;
-    }
+    let old_start = prefix_len;
+    let old_end = old_text.len() - suffix_len;
+    let new_start = prefix_len;
+    let new_end = new_text.len() - suffix_len;
 
-    if first_diff == old_lines.len() && first_diff == new_lines.len() {
-        // 没有变化
+    // 没有变化
+    if old_start == old_end && new_start == new_end {
         return vec![];
     }
 
-    // 构建变更范围
-    let start_line = first_diff;
-    let start_char = 0;
-    let end_line = old_last.saturating_sub(1);
-    let end_char = if end_line < old_lines.len() {
-        old_lines[end_line].len()
-    } else {
-        0
-    };
+    // 如果变更范围超过原文本50%，发送全文替换
+    if old_text.len() > 0 && (old_end - old_start) > old_text.len() / 2 {
+        return vec![TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: new_text.to_string(),
+        }];
+    }
 
-    let replacement: String = if new_last > first_diff {
-        new_lines[first_diff..new_last].join("\n")
-    } else {
-        String::new()
-    };
+    // 使用 FastLineIndex 将字节偏移转换为 LSP Position（UTF-16 码元）
+    let old_index = FastLineIndex::from_text(old_text);
+    let start_pos = old_index.byte_to_position(old_start);
+    let end_pos = old_index.byte_to_position(old_end);
+
+    let replacement = new_text[new_start..new_end].to_string();
 
     vec![TextDocumentContentChangeEvent {
         range: Some(Range {
-            start: Position {
-                line: start_line as u32,
-                character: start_char as u32,
-            },
-            end: Position {
-                line: end_line as u32,
-                character: end_char as u32,
-            },
+            start: start_pos,
+            end: end_pos,
         }),
-        range_length: None,
+        range_length: Some((old_end - old_start) as u32),
         text: replacement,
     }]
 }

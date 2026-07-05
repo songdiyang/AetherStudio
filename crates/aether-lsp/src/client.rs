@@ -1,7 +1,7 @@
 use lsp_types::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, RwLock};
 
 use crate::server::LanguageServer;
@@ -15,9 +15,8 @@ pub struct LspClient {
     servers: Arc<RwLock<HashMap<String, LanguageServer>>>,
     /// 文档同步管理器
     document_sync: Arc<RwLock<DocumentSync>>,
-    /// 诊断集合
-    #[allow(dead_code)]
-    diagnostics: Arc<RwLock<DiagnosticCollection>>,
+    /// 诊断集合（使用 std Mutex 以便 UI 主线程同步读取/更新）
+    diagnostics: Arc<Mutex<DiagnosticCollection>>,
     /// 事件发送器（向UI层推送事件）
     event_tx: mpsc::UnboundedSender<LspEvent>,
     /// 工作区根目录
@@ -77,7 +76,7 @@ impl LspClient {
         let client = Self {
             servers: Arc::new(RwLock::new(HashMap::new())),
             document_sync: Arc::new(RwLock::new(DocumentSync::new())),
-            diagnostics: Arc::new(RwLock::new(DiagnosticCollection::default())),
+            diagnostics: Arc::new(Mutex::new(DiagnosticCollection::default())),
             event_tx,
             root_uri,
         };
@@ -150,11 +149,89 @@ impl LspClient {
             sync.close_document(uri);
         }
 
+        // 文档关闭时清理对应诊断缓存
+        self.remove_diagnostics(uri);
+
         Ok(())
     }
 
+    /// 更新或插入某 URI 的诊断缓存
+    pub fn update_diagnostics(&self, uri: &Url, diagnostics: Vec<Diagnostic>) {
+        if let Ok(mut coll) = self.diagnostics.lock() {
+            if diagnostics.is_empty() {
+                coll.by_uri.remove(uri);
+            } else {
+                coll.by_uri.insert(uri.clone(), diagnostics);
+            }
+        }
+    }
+
+    /// 移除某 URI 的诊断缓存
+    pub fn remove_diagnostics(&self, uri: &Url) {
+        if let Ok(mut coll) = self.diagnostics.lock() {
+            coll.by_uri.remove(uri);
+        }
+    }
+
+    /// 获取某 URI 的诊断快照（返回克隆，避免长期持有锁）
+    pub fn diagnostics_for(&self, uri: &Url) -> Option<Vec<Diagnostic>> {
+        self.diagnostics
+            .lock()
+            .ok()
+            .and_then(|coll| coll.by_uri.get(uri).cloned())
+    }
+
+    /// 获取所有诊断的快照
+    pub fn all_diagnostics(&self) -> HashMap<Url, Vec<Diagnostic>> {
+        self.diagnostics
+            .lock()
+            .map(|coll| coll.by_uri.clone())
+            .unwrap_or_default()
+    }
+
+    /// 清空所有诊断缓存
+    pub fn clear_diagnostics(&self) {
+        if let Ok(mut coll) = self.diagnostics.lock() {
+            coll.by_uri.clear();
+        }
+    }
+
     /// 通知文档变更（增量同步）
-    pub async fn notify_change(
+    ///
+    /// 传入新全文，内部基于 DocumentSync 保存的旧文本计算精确增量变更，
+    /// 然后更新缓存文本并发送到语言服务器。
+    pub async fn notify_change(&self, uri: &Url, new_text: &str) -> std::io::Result<()> {
+        let (language_id, new_version, changes) = {
+            let mut sync = self.document_sync.write().await;
+            let lang_id = sync.get_language_id(uri).cloned();
+            let version = sync.increment_version(uri);
+            let old_text = sync
+                .get_document(uri)
+                .map(|d| d.text.clone())
+                .unwrap_or_default();
+            let changes = crate::sync::compute_changes(&old_text, new_text);
+            sync.update_text(uri, new_text.to_string());
+            (lang_id, version, changes)
+        };
+
+        if changes.is_empty() {
+            return Ok(());
+        }
+
+        if let Some(lang_id) = language_id {
+            if let Some(version) = new_version {
+                let mut servers = self.servers.write().await;
+                if let Some(server) = servers.get_mut(&lang_id) {
+                    server.change_document(uri, version, changes).await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 直接发送预计算的文档变更事件（高级用法）
+    pub async fn notify_change_raw(
         &self,
         uri: &Url,
         changes: Vec<TextDocumentContentChangeEvent>,
@@ -422,6 +499,8 @@ impl LspClient {
             let _ = server.shutdown().await;
         }
         servers.clear();
+        // 服务器关闭时清空所有诊断缓存，避免显示过期诊断
+        self.clear_diagnostics();
         Ok(())
     }
 

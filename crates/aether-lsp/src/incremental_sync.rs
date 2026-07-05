@@ -89,15 +89,18 @@ pub trait LineIndexProvider {
 
 /// 高效的行索引实现
 ///
-/// 基于预计算的行起始位置数组，支持O(1)转换
+/// 基于预计算的行起始位置数组，支持 O(log n) 行查找；character 按 LSP 标准使用 UTF-16 码元计数。
 pub struct FastLineIndex {
+    /// 保存完整文本，用于在行内计算 UTF-16 码元偏移
+    text: String,
     line_starts: Vec<usize>,
     total_bytes: usize,
 }
 
 impl FastLineIndex {
-    pub fn new(line_starts: Vec<usize>, total_bytes: usize) -> Self {
+    pub fn new(text: String, line_starts: Vec<usize>, total_bytes: usize) -> Self {
         Self {
+            text,
             line_starts,
             total_bytes,
         }
@@ -105,13 +108,15 @@ impl FastLineIndex {
 
     /// 从文本创建行索引
     pub fn from_text(text: &str) -> Self {
+        let owned = text.to_string();
         let mut line_starts = vec![0];
-        for (i, byte) in text.bytes().enumerate() {
+        for (i, byte) in owned.bytes().enumerate() {
             if byte == b'\n' {
                 line_starts.push(i + 1);
             }
         }
         Self {
+            text: owned,
             line_starts,
             total_bytes: text.len(),
         }
@@ -131,10 +136,20 @@ impl LineIndexProvider for FastLineIndex {
             Err(line) => {
                 let line = line.saturating_sub(1);
                 let line_start = self.line_starts.get(line).copied().unwrap_or(0);
-                let character = byte_offset - line_start;
+                let col_byte = byte_offset - line_start;
+                // LSP 标准位置使用 UTF-16 码元计数
+                let line_end = self
+                    .line_starts
+                    .get(line + 1)
+                    .copied()
+                    .unwrap_or(self.total_bytes);
+                let line_text = &self.text[line_start..line_end.min(self.total_bytes)];
+                let character = line_text[..col_byte.min(line_text.len())]
+                    .encode_utf16()
+                    .count() as u32;
                 Position {
                     line: line as u32,
-                    character: character as u32,
+                    character,
                 }
             }
         }
@@ -147,8 +162,23 @@ impl LineIndexProvider for FastLineIndex {
             .get(line)
             .copied()
             .unwrap_or(self.total_bytes);
-        let character = position.character as usize;
-        line_start + character
+        let line_end = self
+            .line_starts
+            .get(line + 1)
+            .copied()
+            .unwrap_or(self.total_bytes);
+        let line_text = &self.text[line_start..line_end.min(self.total_bytes)];
+        // 将 UTF-16 码元偏移转换为字节偏移
+        let mut utf16_count = 0;
+        let mut byte_offset = 0;
+        for ch in line_text.chars() {
+            if utf16_count >= position.character as usize {
+                break;
+            }
+            utf16_count += ch.len_utf16();
+            byte_offset += ch.len_utf8();
+        }
+        line_start + byte_offset
     }
 }
 

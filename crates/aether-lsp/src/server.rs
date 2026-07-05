@@ -153,9 +153,10 @@ impl LanguageServer {
                         self.handle_notification(notif);
                     }
                     LspMessage::Request(req) => {
-                        // 服务器发起的反向请求（如 workspace/configuration）
-                        // 当前未实现处理，回 error 避免服务器卡死
-                        tracing::debug!("Unhandled server->client request: {}", req.method);
+                        // 处理服务器发起的反向请求，避免服务器因等不到响应而卡死
+                        if let Err(e) = self.handle_server_request(req).await {
+                            tracing::warn!("Failed to handle server->client request: {}", e);
+                        }
                     }
                 }
             }
@@ -164,6 +165,80 @@ impl LanguageServer {
         timeout(request_timeout, fut).await.map_err(|_| {
             std::io::Error::new(std::io::ErrorKind::TimedOut, "LSP request timed out")
         })?
+    }
+
+    /// 处理服务器发起的反向请求（server -> client），并发送 JSON-RPC 响应。
+    ///
+    /// 目前实现常见请求的最小可用响应，避免服务器因等待响应而超时/卡死：
+    /// - `workspace/configuration`：返回与请求项数对应的空配置
+    /// - `client/registerCapability` / `client/unregisterCapability`：返回空结果
+    /// - `workspace/applyEdit`：返回 `{ applied: false }`（UI 层尚未支持自动应用）
+    /// - `workspace/workspaceFolders`：返回当前 root_uri 作为唯一工作区
+    /// - 其他：返回 MethodNotFound 错误
+    async fn handle_server_request(&mut self, req: LspRequest) -> std::io::Result<()> {
+        let result: Result<serde_json::Value, LspError> = match req.method.as_str() {
+            "workspace/configuration" => {
+                let count = req
+                    .params
+                    .as_ref()
+                    .and_then(|p| serde_json::from_value::<ConfigurationParams>(p.clone()).ok())
+                    .map(|p| p.items.len())
+                    .unwrap_or(0);
+                let configs: Vec<serde_json::Value> = vec![serde_json::Value::Null; count];
+                Ok(serde_json::to_value(configs).unwrap_or(serde_json::Value::Array(vec![])))
+            }
+            "client/registerCapability" | "client/unregisterCapability" => {
+                Ok(serde_json::Value::Null)
+            }
+            "workspace/applyEdit" => {
+                // 先通过事件通道通知 UI 层（如果有监听器可应用），但默认标记为未应用
+                if let Some(tx) = &self.event_tx {
+                    // 未来可扩展 LspEvent::ApplyEdit
+                    let _ = tx.send(LspEvent::Log {
+                        language_id: self.language_id.clone(),
+                        message: "Server requested workspace/applyEdit (not yet applied)"
+                            .to_string(),
+                    });
+                }
+                Ok(serde_json::to_value(ApplyWorkspaceEditResponse {
+                    applied: false,
+                    failure_reason: Some("Aether does not yet auto-apply workspace edits".to_string()),
+                    failed_change: None,
+                })
+                .unwrap_or(serde_json::Value::Null))
+            }
+            "workspace/workspaceFolders" => {
+                let folders = self.config.root_uri.as_ref().map(|uri| {
+                    vec![WorkspaceFolder {
+                        uri: uri.clone(),
+                        name: uri.path().to_string(),
+                    }]
+                });
+                Ok(serde_json::to_value(folders).unwrap_or(serde_json::Value::Null))
+            }
+            _ => Err(LspError {
+                code: -32601,
+                message: format!("Method not found: {}", req.method),
+                data: None,
+            }),
+        };
+
+        let response = match result {
+            Ok(res) => LspMessage::Response(LspResponse {
+                jsonrpc: "2.0".to_string(),
+                id: req.id,
+                result: Some(res),
+                error: None,
+            }),
+            Err(err) => LspMessage::Response(LspResponse {
+                jsonrpc: "2.0".to_string(),
+                id: req.id,
+                result: None,
+                error: Some(err),
+            }),
+        };
+
+        self.transport.send(&response).await
     }
 
     /// 处理服务器推送的 notification，转发到 UI 层。
