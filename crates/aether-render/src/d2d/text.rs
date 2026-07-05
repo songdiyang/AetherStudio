@@ -136,6 +136,7 @@ impl TextRenderer {
     }
 
     /// 渲染单行文本
+    #[allow(clippy::too_many_arguments)]
     pub fn render_line(
         &self,
         target: &ID2D1HwndRenderTarget,

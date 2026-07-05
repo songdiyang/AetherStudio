@@ -610,11 +610,10 @@ fn skip_operator(bytes: &[u8], pos: usize) -> usize {
                     i += 1;
                 }
             }
-            b'|' => {
-                if next == b'|' || next == b'=' {
-                    i += 1;
-                }
-            }
+            b'|' => match next {
+                b'|' | b'=' => i += 1,
+                _ => {}
+            },
             _ => {}
         }
     }

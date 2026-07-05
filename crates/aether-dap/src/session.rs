@@ -31,11 +31,10 @@ impl DebugSession {
     ) -> std::io::Result<Self> {
         let mut process = spawn_adapter(&config).await?;
         let stdin = process.stdin.take().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::Other, "Failed to capture adapter stdin")
+            std::io::Error::other("Failed to capture adapter stdin")
         })?;
         let stdout = process.stdout.take().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
+            std::io::Error::other(
                 "Failed to capture adapter stdout",
             )
         })?;
@@ -91,8 +90,7 @@ impl DebugSession {
                         if resp.success {
                             break Ok(());
                         } else {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
+                            return Err(std::io::Error::other(
                                 format!("initialize failed: {}", resp.message.unwrap_or_default()),
                             ));
                         }
@@ -149,8 +147,7 @@ impl DebugSession {
                             self.state = DebugSessionState::Running;
                             break;
                         } else {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
+                            return Err(std::io::Error::other(
                                 format!("launch failed: {}", resp.message.unwrap_or_default()),
                             ));
                         }
@@ -203,8 +200,7 @@ impl DebugSession {
                 match message {
                     DapMessage::Response(resp) if resp.command == "setBreakpoints" => {
                         if !resp.success {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
+                            return Err(std::io::Error::other(
                                 format!(
                                     "setBreakpoints failed: {}",
                                     resp.message.unwrap_or_default()
@@ -283,8 +279,7 @@ impl DebugSession {
                 match message {
                     DapMessage::Response(resp) if resp.command == "stackTrace" => {
                         if !resp.success {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
+                            return Err(std::io::Error::other(
                                 format!("stackTrace failed: {}", resp.message.unwrap_or_default()),
                             ));
                         }
@@ -330,8 +325,7 @@ impl DebugSession {
                 match message {
                     DapMessage::Response(resp) if resp.command == "scopes" => {
                         if !resp.success {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
+                            return Err(std::io::Error::other(
                                 format!("scopes failed: {}", resp.message.unwrap_or_default()),
                             ));
                         }
@@ -377,8 +371,7 @@ impl DebugSession {
                 match message {
                     DapMessage::Response(resp) if resp.command == "variables" => {
                         if !resp.success {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
+                            return Err(std::io::Error::other(
                                 format!("variables failed: {}", resp.message.unwrap_or_default()),
                             ));
                         }
@@ -435,8 +428,7 @@ impl DebugSession {
                 match message {
                     DapMessage::Response(resp) if resp.command == "evaluate" => {
                         if !resp.success {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
+                            return Err(std::io::Error::other(
                                 format!("evaluate failed: {}", resp.message.unwrap_or_default()),
                             ));
                         }
@@ -518,8 +510,7 @@ impl DebugSession {
                         if resp.success {
                             break;
                         } else {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
+                            return Err(std::io::Error::other(
                                 format!("{} failed: {}", command, resp.message.unwrap_or_default()),
                             ));
                         }

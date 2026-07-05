@@ -112,16 +112,11 @@ impl MarkdownLexer {
             if count <= 3 {
                 let end = skip_emphasis(bytes, pos, ch, count);
                 if end > pos + count * 2 {
-                    let kind = if count >= 2 {
-                        TokenKind::MdEmphasis
-                    } else {
-                        TokenKind::MdEmphasis
-                    };
                     return (
                         LexemeSpan {
                             start: pos,
                             len: end - pos,
-                            kind,
+                            kind: TokenKind::MdEmphasis,
                             flags: count as u8,
                         },
                         end,

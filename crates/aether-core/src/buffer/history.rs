@@ -153,13 +153,13 @@ impl History {
         current_cursor: CursorPosition,
     ) -> Option<(Vec<Piece>, usize, CursorPosition)> {
         let record = self.undos.pop_back()?;
-        let cursor = record.cursor_before.clone();
+        let cursor = record.cursor_before;
 
         // 保存当前状态到redo栈
         self.redos.push_back(EditRecord {
             prev_pieces: current_pieces,
             prev_add_len: current_add_len,
-            cursor_before: cursor.clone(),
+            cursor_before: cursor,
             cursor_after: current_cursor,
             timestamp: record.timestamp,
             op_type: record.op_type,
@@ -177,14 +177,14 @@ impl History {
         current_cursor: CursorPosition,
     ) -> Option<(Vec<Piece>, usize, CursorPosition)> {
         let record = self.redos.pop_back()?;
-        let cursor = record.cursor_after.clone();
+        let cursor = record.cursor_after;
 
         // 保存当前状态到undo栈
         self.undos.push_back(EditRecord {
             prev_pieces: current_pieces,
             prev_add_len: current_add_len,
             cursor_before: current_cursor,
-            cursor_after: cursor.clone(),
+            cursor_after: cursor,
             timestamp: record.timestamp,
             op_type: record.op_type,
         });

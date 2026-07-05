@@ -7,6 +7,12 @@ pub struct DocumentSync {
     documents: HashMap<Url, DocumentState>,
 }
 
+impl Default for DocumentSync {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DocumentSync {
     pub fn new() -> Self {
         Self {

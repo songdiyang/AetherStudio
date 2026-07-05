@@ -109,7 +109,7 @@ pub struct RemoteSettings {
 
 impl AppSettings {
     pub fn settings_path() -> PathBuf {
-        let config_dir = dirs::config_dir().unwrap_or_else(|| std::env::temp_dir());
+        let config_dir = dirs::config_dir().unwrap_or_else(std::env::temp_dir);
         let aether_dir = config_dir.join("Aether");
         if let Err(e) = std::fs::create_dir_all(&aether_dir) {
             eprintln!("警告: 无法创建配置目录 {}: {}", aether_dir.display(), e);
@@ -197,10 +197,9 @@ impl AppSettings {
         }
 
         // 原子 rename：旧文件被整体替换，要么成功要么原文件不变
-        std::fs::rename(&tmp_path, &path).map_err(|e| {
+        std::fs::rename(&tmp_path, &path).inspect_err(|_e| {
             // rename 失败时清理临时文件，避免残留
             let _ = std::fs::remove_file(&tmp_path);
-            e
         })?;
         Ok(())
     }

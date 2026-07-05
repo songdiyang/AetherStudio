@@ -51,10 +51,10 @@ impl LanguageServer {
     ) -> std::io::Result<Self> {
         let mut process = spawn_server(&config).await?;
         let stdin = process.stdin.take().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::Other, "Failed to capture stdin")
+            std::io::Error::other("Failed to capture stdin")
         })?;
         let stdout = process.stdout.take().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::Other, "Failed to capture stdout")
+            std::io::Error::other("Failed to capture stdout")
         })?;
         let transport = LspTransport::new(stdin, stdout);
 
@@ -126,8 +126,7 @@ impl LanguageServer {
                     LspMessage::Response(resp) if resp.id == *id => {
                         self.pending_requests.remove(&resp.id);
                         if let Some(err) = resp.error {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
+                            return Err(std::io::Error::other(
                                 format!("LSP error {}: {}", err.code, err.message),
                             ));
                         }

@@ -145,8 +145,7 @@ impl RenderTarget {
                 right: x + width,
                 bottom: y + height,
             };
-            let _ = self
-                .target
+            self.target
                 .PushAxisAlignedClip(&rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         }
     }

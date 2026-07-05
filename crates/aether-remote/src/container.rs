@@ -80,7 +80,7 @@ impl RemoteFs for ContainerRemoteFs {
             "gunzip",
         ];
         let cmd_name = trimmed.split_whitespace().next().unwrap_or("");
-        if !ALLOWED_COMMANDS.iter().any(|&allowed| allowed == cmd_name) {
+        if !ALLOWED_COMMANDS.contains(&cmd_name) {
             return Err(format!("命令被拒绝（不在白名单中）: {}", command));
         }
 

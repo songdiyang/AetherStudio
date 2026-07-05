@@ -365,6 +365,7 @@ fn skip_identifier(bytes: &[u8], pos: usize) -> usize {
     i
 }
 
+#[allow(clippy::collapsible_match)]
 fn skip_operator(bytes: &[u8], pos: usize) -> usize {
     let mut i = pos;
     let ch = bytes[pos];
@@ -425,12 +426,7 @@ fn skip_operator(bytes: &[u8], pos: usize) -> usize {
                     i += 1;
                 }
             }
-            b'|' => {
-                if next == b'=' {
-                    i += 1;
-                }
-            }
-            b'^' => {
+            b'|' | b'^' => {
                 if next == b'=' {
                     i += 1;
                 }

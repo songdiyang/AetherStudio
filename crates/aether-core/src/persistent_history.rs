@@ -187,6 +187,11 @@ impl PersistentHistory {
         self.history.len()
     }
 
+    /// 历史是否为空
+    pub fn is_empty(&self) -> bool {
+        self.history.is_empty()
+    }
+
     /// 获取撤销栈深度
     pub fn undo_depth(&self) -> usize {
         self.current_index
@@ -313,11 +318,7 @@ impl PersistentPieceTable {
         // CORE-H04: 使用绝对值差，修复删除操作 edit_size 始终为 0 的问题
         let edit_size = if let Some(current) = self.history.current() {
             let new_len = self.table.len_bytes();
-            if new_len >= current.total_bytes {
-                new_len - current.total_bytes
-            } else {
-                current.total_bytes - new_len
-            }
+            new_len.abs_diff(current.total_bytes)
         } else {
             0
         };

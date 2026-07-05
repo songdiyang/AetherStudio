@@ -32,12 +32,18 @@ pub struct BrushCache {
     brushes: HashMap<u32, ID2D1SolidColorBrush>,
 }
 
-impl BrushCache {
-    pub fn new() -> Self {
+impl Default for BrushCache {
+    fn default() -> Self {
         Self {
             precomputed: Vec::with_capacity(PRECOMPUTED_BRUSH_SLOTS),
             brushes: HashMap::new(),
         }
+    }
+}
+
+impl BrushCache {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// 预初始化常用颜色画笔（在渲染目标就绪后调用一次）

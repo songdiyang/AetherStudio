@@ -193,36 +193,32 @@ impl TreeSitterHighlighter {
         let mut current_kind = TokenKind::Unknown;
         let mut in_highlight = false;
 
-        match self
+        if let Ok(events) = self
             .highlighter
-            .highlight(config, text.as_bytes(), None, |_| None)
-        {
-            Ok(events) => {
-                for event in events {
-                    match event {
-                        Ok(HighlightEvent::Source { start, end: _ }) => {
-                            if in_highlight && start > current_start {
-                                spans.push(LexemeSpan {
-                                    start: current_start,
-                                    len: start - current_start,
-                                    kind: current_kind,
-                                    flags: 0,
-                                });
-                            }
-                            current_start = start;
+            .highlight(config, text.as_bytes(), None, |_| None) {
+            for event in events {
+                match event {
+                    Ok(HighlightEvent::Source { start, end: _ }) => {
+                        if in_highlight && start > current_start {
+                            spans.push(LexemeSpan {
+                                start: current_start,
+                                len: start - current_start,
+                                kind: current_kind,
+                                flags: 0,
+                            });
                         }
-                        Ok(HighlightEvent::HighlightStart(s)) => {
-                            current_kind = capture_to_token_kind(s.0);
-                            in_highlight = true;
-                        }
-                        Ok(HighlightEvent::HighlightEnd) => {
-                            in_highlight = false;
-                        }
-                        Err(_) => {}
+                        current_start = start;
                     }
+                    Ok(HighlightEvent::HighlightStart(s)) => {
+                        current_kind = capture_to_token_kind(s.0);
+                        in_highlight = true;
+                    }
+                    Ok(HighlightEvent::HighlightEnd) => {
+                        in_highlight = false;
+                    }
+                    Err(_) => {}
                 }
             }
-            Err(_) => {}
         }
 
         spans

@@ -79,7 +79,7 @@ fn parse_goto_position(s: &str) -> Result<GotoPosition, String> {
     }
 
     let parts: Vec<&str> = s.split(':').collect();
-    if parts.len() < 1 || parts.len() > 2 {
+    if parts.is_empty() || parts.len() > 2 {
         return Err("goto 位置格式错误，应为 line 或 line:column".to_string());
     }
 

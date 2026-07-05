@@ -10,6 +10,17 @@ pub struct FileTree {
     root_last_child: u32,
 }
 
+impl Default for FileTree {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            names: StringPool::default(),
+            root_first_child: u32::MAX,
+            root_last_child: u32::MAX,
+        }
+    }
+}
+
 /// 单个节点（紧凑内存布局）
 #[derive(Clone, Debug)]
 pub struct FileNode {
@@ -39,16 +50,14 @@ pub enum FileKind {
 }
 
 /// 字符串池
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct StringPool {
     data: String,
 }
 
 impl StringPool {
     pub fn new() -> Self {
-        Self {
-            data: String::new(),
-        }
+        Self::default()
     }
 
     pub fn add(&mut self, s: &str) -> (u32, u16) {
@@ -68,12 +77,7 @@ impl StringPool {
 
 impl FileTree {
     pub fn new() -> Self {
-        Self {
-            nodes: Vec::new(),
-            names: StringPool::new(),
-            root_first_child: u32::MAX,
-            root_last_child: u32::MAX,
-        }
+        Self::default()
     }
 
     pub fn add_node(&mut self, name: &str, kind: FileKind, parent_idx: u32, depth: u8) -> u32 {

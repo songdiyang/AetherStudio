@@ -49,7 +49,7 @@ impl PluginRuntime {
         file.read_exact(&mut header)
             .map_err(|e| format!("无法读取插件文件头: {}", e))?;
 
-        if &header != WASM_MAGIC {
+        if header != *WASM_MAGIC {
             return Err("插件文件不是有效的 WASM 格式".to_string());
         }
 

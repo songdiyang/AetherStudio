@@ -215,7 +215,7 @@ pub fn benchmark_piece_table_edit_throughput() -> BenchmarkResult {
         let pos = pt.len_bytes() / 2;
         pt.insert(pos, &format!("edit{}", counter));
         counter += 1;
-        if counter % 10 == 0 {
+        if counter.is_multiple_of(10) {
             let del_pos = pt.len_bytes() / 3;
             let len = pt.len_bytes();
             if del_pos + 5 < len {
