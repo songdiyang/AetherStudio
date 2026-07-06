@@ -223,3 +223,65 @@ pub(crate) fn utf8_char_len(first_byte: u8) -> usize {
         _ => 1,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_language_from_extension() {
+        assert_eq!(Language::from_extension("rs"), Language::Rust);
+        assert_eq!(Language::from_extension("JS"), Language::JavaScript);
+        assert_eq!(Language::from_extension("TSX"), Language::TypeScript);
+        assert_eq!(Language::from_extension("json"), Language::Json);
+        assert_eq!(Language::from_extension("md"), Language::Markdown);
+        assert_eq!(Language::from_extension("toml"), Language::Toml);
+        assert_eq!(Language::from_extension("html"), Language::Html);
+        assert_eq!(Language::from_extension("css"), Language::Css);
+        assert_eq!(Language::from_extension("png"), Language::Image);
+        assert_eq!(Language::from_extension("unknown"), Language::PlainText);
+    }
+
+    #[test]
+    fn test_language_from_path() {
+        let path = std::path::Path::new("src/main.rs");
+        assert_eq!(Language::from_path(path), Language::Rust);
+        let no_ext = std::path::Path::new("Makefile");
+        assert_eq!(Language::from_path(no_ext), Language::PlainText);
+    }
+
+    #[test]
+    fn test_create_lexer() {
+        let lexer = Language::Rust.create_lexer();
+        let tokens = lexer.lex_full("fn main() {}");
+        assert!(!tokens.is_empty());
+    }
+
+    #[test]
+    fn test_lex_full_static_dispatch() {
+        let tokens = Language::Rust.lex_full("let x = 42;");
+        assert!(!tokens.is_empty());
+        let plain = Language::PlainText.lex_full("hello world");
+        assert_eq!(plain.len(), 1);
+        assert_eq!(plain[0].kind, TokenKind::Unknown);
+    }
+
+    #[test]
+    fn test_plain_text_lexer() {
+        let lexer = PlainTextLexer::new();
+        assert!(lexer.lex_full("").is_empty());
+        let tokens = lexer.lex_full("hello");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].kind, TokenKind::Unknown);
+        assert_eq!(tokens[0].len, 5);
+    }
+
+    #[test]
+    fn test_utf8_char_len() {
+        assert_eq!(utf8_char_len(b'a'), 1);
+        assert_eq!(utf8_char_len(0xC0), 2);
+        assert_eq!(utf8_char_len(0xE4), 3);
+        assert_eq!(utf8_char_len(0xF0), 4);
+        assert_eq!(utf8_char_len(0x80), 1); // 非法首字节
+    }
+}

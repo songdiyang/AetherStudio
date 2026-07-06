@@ -266,4 +266,53 @@ mod tests {
         let parsed: GotoPosition = "7:3".parse().expect("应解析成功");
         assert_eq!(parsed, pos);
     }
+
+    #[test]
+    fn test_parse_goto_position_error_branches() {
+        // 空字符串
+        assert!(parse_goto_position("").is_err());
+        // 行号为 0
+        assert!(parse_goto_position("0:5").is_err());
+        // 非数字行号
+        assert!(parse_goto_position("abc:5").is_err());
+        // 非数字列号
+        assert!(parse_goto_position("10:abc").is_err());
+        // 段数过多
+        assert!(parse_goto_position("10:5:7").is_err());
+    }
+
+    #[test]
+    fn test_parse_goto_with_col_zero() {
+        // 在 parse_goto 中，line > 0 且 col 可以为 0
+        let (file, pos) = parse_goto("file.txt:10:0").unwrap();
+        assert_eq!(file, Some(PathBuf::from("file.txt")));
+        assert_eq!(pos, GotoPosition { line: 10, column: 0 });
+    }
+
+    #[test]
+    fn test_parse_goto_file_only_is_error() {
+        // 只有文件名没有行号/列号
+        assert!(parse_goto("file.txt").is_err());
+    }
+
+    #[test]
+    fn test_parse_goto_with_extra_colons_falls_back() {
+        // 无法从右侧识别出行号列号，应作为整体位置解析并失败
+        assert!(parse_goto("a:b:c:d").is_err());
+    }
+
+    #[test]
+    fn test_goto_position_zero_based_saturating() {
+        // 直接构造 line=0 时，saturating_sub 应保持 0
+        let pos = GotoPosition { line: 0, column: 0 };
+        assert_eq!(pos.zero_based_line(), 0);
+        assert_eq!(pos.zero_based_column(), 0);
+    }
+
+    #[test]
+    fn test_goto_position_from_str_error() {
+        assert!("abc".parse::<GotoPosition>().is_err());
+        assert!("0:1".parse::<GotoPosition>().is_err());
+        assert!("1:2:3".parse::<GotoPosition>().is_err());
+    }
 }

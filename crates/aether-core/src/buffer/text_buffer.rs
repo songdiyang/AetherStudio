@@ -256,3 +256,88 @@ impl MultiCursorState {
         self.cursors.len() > 1 && self.selections.iter().all(|s| s.is_none())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_buffer_state_empty() {
+        let state = BufferState::empty();
+        assert!(state.pieces_data.is_empty());
+        assert_eq!(state.line_count, 1);
+        assert_eq!(state.byte_len, 0);
+    }
+
+    #[test]
+    fn test_selection_normalized() {
+        let s = Selection::new(Cursor::new(1, 5), Cursor::new(2, 3));
+        assert_eq!(s.normalized(), s);
+
+        let reversed = Selection::new(Cursor::new(3, 10), Cursor::new(1, 2));
+        let normalized = reversed.normalized();
+        assert_eq!(normalized.start, Cursor::new(1, 2));
+        assert_eq!(normalized.end, Cursor::new(3, 10));
+
+        let same_line = Selection::new(Cursor::new(0, 5), Cursor::new(0, 2));
+        let normalized = same_line.normalized();
+        assert_eq!(normalized.start, Cursor::new(0, 2));
+        assert_eq!(normalized.end, Cursor::new(0, 5));
+    }
+
+    #[test]
+    fn test_selection_is_empty() {
+        assert!(Selection::new(Cursor::new(0, 0), Cursor::new(0, 0)).is_empty());
+        assert!(!Selection::new(Cursor::new(0, 0), Cursor::new(0, 1)).is_empty());
+    }
+
+    #[test]
+    fn test_edit_result_merge() {
+        let a = EditResult::new(2, 5, 1);
+        let b = EditResult::new(4, 7, -1);
+        let merged = a.merge(&b);
+        assert_eq!(merged.start_line, 2);
+        assert_eq!(merged.end_line, 7);
+        assert_eq!(merged.line_delta, 0);
+    }
+
+    #[test]
+    fn test_edit_result_end_line_clamped() {
+        let r = EditResult::new(5, 3, 0);
+        assert_eq!(r.end_line, 5);
+    }
+
+    #[test]
+    fn test_multi_cursor_primary_idx_clamped() {
+        let mut state = MultiCursorState::new();
+        assert_eq!(state.cursor_count(), 1);
+        state.add_cursor(Cursor::new(1, 0));
+        state.primary_cursor = 100;
+        assert_eq!(*state.primary_cursor(), Cursor::new(1, 0));
+        *state.primary_cursor_mut() = Cursor::new(2, 5);
+        assert_eq!(state.cursors[1], Cursor::new(2, 5));
+    }
+
+    #[test]
+    fn test_clear_secondary_cursors() {
+        let mut state = MultiCursorState::new();
+        state.add_cursor(Cursor::new(1, 0));
+        state.add_cursor(Cursor::new(2, 0));
+        state.primary_cursor = 1;
+        state.clear_secondary_cursors();
+        assert_eq!(state.cursor_count(), 1);
+        assert_eq!(*state.primary_cursor(), Cursor::new(1, 0));
+        assert_eq!(state.primary_cursor, 0);
+    }
+
+    #[test]
+    fn test_column_mode() {
+        let mut state = MultiCursorState::default();
+        assert!(!state.is_column_mode());
+        state.add_column_cursors(0, 2, 3, 5);
+        assert!(state.is_column_mode());
+        assert_eq!(state.cursor_count(), 4);
+        assert_eq!(state.cursors[0], Cursor::new(0, 2));
+        assert_eq!(state.cursors[3], Cursor::new(3, 2));
+    }
+}

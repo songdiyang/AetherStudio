@@ -355,28 +355,28 @@ impl Default for RustLexer {
 }
 
 fn is_keyword_bytes(bytes: &[u8]) -> bool {
-    match bytes {
+    matches!(
+        bytes,
         b"as" | b"async" | b"await" | b"break" | b"const" | b"continue" | b"crate"
-        | b"dyn" | b"else" | b"enum" | b"extern" | b"false" | b"fn" | b"for" | b"if"
-        | b"impl" | b"in" | b"let" | b"loop" | b"match" | b"mod" | b"move" | b"mut"
-        | b"pub" | b"ref" | b"return" | b"self" | b"Self" | b"static" | b"struct"
-        | b"super" | b"trait" | b"true" | b"type" | b"unsafe" | b"use" | b"where"
-        | b"while" | b"yield" | b"abstract" | b"become" | b"box" | b"do" | b"final"
-        | b"macro" | b"override" | b"priv" | b"typeof" | b"unsized" | b"virtual" | b"try"
-        | b"union" => true,
-        _ => false,
-    }
+            | b"dyn" | b"else" | b"enum" | b"extern" | b"false" | b"fn" | b"for" | b"if"
+            | b"impl" | b"in" | b"let" | b"loop" | b"match" | b"mod" | b"move" | b"mut"
+            | b"pub" | b"ref" | b"return" | b"self" | b"Self" | b"static" | b"struct"
+            | b"super" | b"trait" | b"true" | b"type" | b"unsafe" | b"use" | b"where"
+            | b"while" | b"yield" | b"abstract" | b"become" | b"box" | b"do" | b"final"
+            | b"macro" | b"override" | b"priv" | b"typeof" | b"unsized" | b"virtual" | b"try"
+            | b"union"
+    )
 }
 
 fn is_builtin_type_bytes(bytes: &[u8]) -> bool {
-    match bytes {
+    matches!(
+        bytes,
         b"i8" | b"i16" | b"i32" | b"i64" | b"i128" | b"isize" | b"u8" | b"u16" | b"u32"
-        | b"u64" | b"u128" | b"usize" | b"f32" | b"f64" | b"bool" | b"char" | b"str"
-        | b"String" | b"Vec" | b"Option" | b"Result" | b"Box" | b"Rc" | b"Arc" | b"HashMap"
-        | b"BTreeMap" | b"HashSet" | b"BTreeSet" | b"VecDeque" | b"LinkedList"
-        | b"BinaryHeap" | b"Cow" => true,
-        _ => false,
-    }
+            | b"u64" | b"u128" | b"usize" | b"f32" | b"f64" | b"bool" | b"char" | b"str"
+            | b"String" | b"Vec" | b"Option" | b"Result" | b"Box" | b"Rc" | b"Arc" | b"HashMap"
+            | b"BTreeMap" | b"HashSet" | b"BTreeSet" | b"VecDeque" | b"LinkedList"
+            | b"BinaryHeap" | b"Cow"
+    )
 }
 
 fn is_macro_name(bytes: &[u8]) -> bool {
@@ -580,5 +580,71 @@ mod tests {
         let lexer = RustLexer::new();
         let tokens = lexer.lex_full("/// doc comment\n//! module doc\n/** block doc */");
         assert!(tokens.iter().any(|t| t.kind == TokenKind::DocComment));
+    }
+
+    #[test]
+    fn test_rust_empty() {
+        assert!(RustLexer::new().lex_full("").is_empty());
+    }
+
+    #[test]
+    fn test_rust_comments() {
+        let tokens = RustLexer::new().lex_full("// line\n/* block */");
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::LineComment));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::BlockComment));
+    }
+
+    #[test]
+    fn test_rust_strings_and_chars() {
+        let tokens = RustLexer::new().lex_full(r#""s" 'c' "#);
+        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::StringLiteral).count(), 1);
+        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::CharLiteral).count(), 1);
+    }
+
+    #[test]
+    fn test_rust_lifetime_vs_char() {
+        let tokens = RustLexer::new().lex_full("'a '\n' '\\n'");
+        let lifetimes = tokens.iter().filter(|t| t.kind == TokenKind::Lifetime).count();
+        let chars = tokens.iter().filter(|t| t.kind == TokenKind::CharLiteral).count();
+        assert_eq!(lifetimes, 1);
+        assert_eq!(chars, 2);
+    }
+
+    #[test]
+    fn test_rust_numbers() {
+        let tokens = RustLexer::new().lex_full("0x1F 0b10 0o7 1.5e2 1_000");
+        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::NumberLiteral).count(), 5);
+    }
+
+    #[test]
+    fn test_rust_operators() {
+        let tokens = RustLexer::new().lex_full("+ - * / % == != <= >= << >> && || .. ..=");
+        assert!(tokens.iter().filter(|t| t.kind == TokenKind::Operator).count() >= 10);
+    }
+
+    #[test]
+    fn test_rust_macro() {
+        let tokens = RustLexer::new().lex_full("println!(\"hi\");");
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Macro));
+    }
+
+    #[test]
+    fn test_rust_builtins_and_keywords() {
+        let tokens = RustLexer::new().lex_full("fn Vec::new() -> i32 {}");
+        let ks: Vec<_> = tokens.iter().map(|t| t.kind).collect();
+        assert!(ks.contains(&TokenKind::Keyword));
+        assert!(ks.contains(&TokenKind::TypeName));
+    }
+
+    #[test]
+    fn test_rust_attribute_inner() {
+        let tokens = RustLexer::new().lex_full("#![allow(dead_code)]");
+        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::Attribute).count(), 1);
+    }
+
+    #[test]
+    fn test_rust_unknown_utf8() {
+        let tokens = RustLexer::new().lex_full("中文");
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Unknown && t.len == 3));
     }
 }

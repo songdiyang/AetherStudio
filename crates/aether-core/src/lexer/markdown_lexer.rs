@@ -367,4 +367,73 @@ mod tests {
         let tokens = lexer.lex_full("[link](https://example.com)");
         assert!(tokens.iter().any(|t| t.kind == TokenKind::MdLink));
     }
+
+    #[test]
+    fn test_md_empty() {
+        assert!(MarkdownLexer::new().lex_full("").is_empty());
+    }
+
+    #[test]
+    fn test_md_headings_levels() {
+        let tokens = MarkdownLexer::new().lex_full("# H1\n## H2\n### H3");
+        let headings: Vec<_> = tokens.iter().filter(|t| t.kind == TokenKind::MdHeading).collect();
+        assert_eq!(headings.len(), 3);
+        assert_eq!(headings[0].flags, 1);
+        assert_eq!(headings[1].flags, 2);
+        assert_eq!(headings[2].flags, 3);
+    }
+
+    #[test]
+    fn test_md_heading_not_too_many_hashes() {
+        // 7 个 # 后接空格：当前实现仍按标题处理（level 为 7）
+        let tokens = MarkdownLexer::new().lex_full("####### TooMany");
+        let headings: Vec<_> = tokens.iter().filter(|t| t.kind == TokenKind::MdHeading).collect();
+        assert!(!headings.is_empty());
+    }
+
+    #[test]
+    fn test_md_code_block_and_inline() {
+        let tokens = MarkdownLexer::new().lex_full("```rust\ncode\n```\n`inline`");
+        let codes = tokens.iter().filter(|t| t.kind == TokenKind::MdCode).count();
+        assert_eq!(codes, 3);
+    }
+
+    #[test]
+    fn test_md_emphasis() {
+        let tokens = MarkdownLexer::new().lex_full("*it* **bold** _under_ __u__ ~~strike~~");
+        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::MdEmphasis).count(), 4);
+    }
+
+    #[test]
+    fn test_md_lists() {
+        let tokens = MarkdownLexer::new().lex_full("- item\n+ item\n* item\n1. ordered");
+        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::Punctuation).count(), 4);
+    }
+
+    #[test]
+    fn test_md_html_tag() {
+        let tokens = MarkdownLexer::new().lex_full("<br>text</br>");
+        let codes = tokens.iter().filter(|t| t.kind == TokenKind::MdCode).count();
+        assert_eq!(codes, 2);
+    }
+
+    #[test]
+    fn test_md_plain_text() {
+        let tokens = MarkdownLexer::new().lex_full("plain text");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].kind, TokenKind::Unknown);
+    }
+
+    #[test]
+    fn test_md_unclosed_emphasis() {
+        let tokens = MarkdownLexer::new().lex_full("*open");
+        assert_eq!(tokens.len(), 2); // open marker + plain text
+    }
+
+    #[test]
+    fn test_md_newlines() {
+        // Markdown 中普通文本会吞掉换行，只有显式独立换行才产生 Newline token
+        let tokens = MarkdownLexer::new().lex_full("# H1\n# H2");
+        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::Newline).count(), 1);
+    }
 }

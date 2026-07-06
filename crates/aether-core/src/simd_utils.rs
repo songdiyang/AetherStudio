@@ -115,8 +115,12 @@ pub fn find_byte_simd(data: &[u8], target: u8) -> Option<usize> {
         let is_zero = has_zero_byte_u128(xor_result);
 
         if is_zero != 0 {
-            let tz = is_zero.trailing_zeros();
-            return Some(i + (tz / 8) as usize);
+            // C-01: SWAR 对高字节可能产生假阳性，必须逐字节验证
+            for j in 0..16 {
+                if data[i + j] == target {
+                    return Some(i + j);
+                }
+            }
         }
 
         i += 16;
@@ -141,8 +145,12 @@ pub fn find_byte_simd(data: &[u8], target: u8) -> Option<usize> {
         let is_zero = has_zero_byte(xor_result);
 
         if is_zero != 0 {
-            let tz = is_zero.trailing_zeros();
-            return Some(i + (tz / 8) as usize);
+            // C-01: SWAR 对高字节可能产生假阳性，必须逐字节验证
+            for j in 0..8 {
+                if data[i + j] == target {
+                    return Some(i + j);
+                }
+            }
         }
 
         i += 8;
@@ -400,6 +408,22 @@ mod tests {
     }
 
     #[test]
+    fn test_find_byte_simd_non_ascii() {
+        // C-01: 验证高字节（CJK、带音标字符）不会触发 SWAR 假阳性
+        // 中(3)文(3)测(3)试(3)内(3)容(3) = 18 字节，\n 位于索引 18
+        let data = "中文测试内容\n下一行".as_bytes();
+        assert_eq!(find_byte_simd(data, b'\n'), Some(18));
+
+        // café(5) space(1) résumé(8) space(1) naïve(6) \n(1) = 22 字节，\n 位于索引 21
+        let data2 = "café résumé naïve\n".as_bytes();
+        assert_eq!(find_byte_simd(data2, b'\n'), Some(21));
+
+        // 全高字节无目标字节时应返回 None
+        let data3 = "🎉 emoji 测试 🚀".as_bytes();
+        assert_eq!(find_byte_simd(data3, b'\n'), None);
+    }
+
+    #[test]
     fn test_skip_whitespace_simd() {
         let data = b"   \t\t  hello";
         assert_eq!(skip_whitespace_simd(data, 0), 7);
@@ -450,5 +474,76 @@ mod tests {
         data[63] = b'\n';
         data[127] = b'\n';
         assert_eq!(count_newlines_simd(&data), 4);
+    }
+
+    #[test]
+    fn test_count_newlines_empty_and_small() {
+        assert_eq!(count_newlines_simd(b""), 0);
+        assert_eq!(count_newlines_simd(b"\n"), 1);
+        assert_eq!(count_newlines_simd(b"abc"), 0);
+    }
+
+    #[test]
+    fn test_count_newlines_8byte_boundary() {
+        // 8 字节路径：长度 8-15
+        let data = b"abcdefg\n";
+        assert_eq!(count_newlines_simd(data), 1);
+        let data2 = b"abc\ndef\n";
+        assert_eq!(count_newlines_simd(data2), 2);
+    }
+
+    #[test]
+    fn test_find_byte_simd_boundaries() {
+        assert_eq!(find_byte_simd(b"", b'x'), None);
+        assert_eq!(find_byte_simd(b"x", b'x'), Some(0));
+        assert_eq!(find_byte_simd(b"abcdefghijklmnopq", b'q'), Some(16));
+        assert_eq!(find_byte_simd(b"abcdefghijklmnop", b'x'), None);
+    }
+
+    #[test]
+    fn test_skip_whitespace_simd_boundaries() {
+        assert_eq!(skip_whitespace_simd(b"", 0), 0);
+        assert_eq!(skip_whitespace_simd(b"hello", 0), 0);
+        assert_eq!(skip_whitespace_simd(b"   hello", 3), 3);
+        assert_eq!(skip_whitespace_simd(b"            x", 0), 12); // 12 个空白
+        assert_eq!(skip_whitespace_simd(b"                x", 0), 16); // 16 个空白
+    }
+
+    #[test]
+    fn test_starts_with_simd_boundaries() {
+        assert!(starts_with_simd(b"hello", b""));
+        assert!(starts_with_simd(b"hello", b"hello"));
+        assert!(!starts_with_simd(b"hi", b"hello"));
+        assert!(starts_with_simd(b"hello world", b"hello wo"));
+        assert!(starts_with_simd(b"longer prefix here", b"longer prefix"));
+    }
+
+    #[test]
+    fn test_line_length_simd() {
+        assert_eq!(line_length_simd(b"hello\nworld", 0), 5);
+        assert_eq!(line_length_simd(b"hello world", 0), 11);
+        assert_eq!(line_length_simd(b"a\nb", 2), 1);
+    }
+
+    #[test]
+    fn test_classify_chars_simd() {
+        let data = b"a1 _\n";
+        let mut out = [0u8; 5];
+        classify_chars_simd(data, 0, &mut out);
+        assert_eq!(out[0], 1); // letter
+        assert_eq!(out[1], 2); // digit
+        assert_eq!(out[2], 3); // whitespace
+        assert_eq!(out[3], 1); // underscore -> letter
+        assert_eq!(out[4], 3); // newline -> whitespace
+    }
+
+    #[test]
+    fn test_classify_chars_simd_offset() {
+        let data = b"xx123";
+        let mut out = [0u8; 3];
+        classify_chars_simd(data, 2, &mut out);
+        assert_eq!(out[0], 2);
+        assert_eq!(out[1], 2);
+        assert_eq!(out[2], 2);
     }
 }

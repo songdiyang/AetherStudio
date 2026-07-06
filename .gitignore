@@ -36,3 +36,11 @@ tests/gui_smoke_report.json
 
 # Runtime user data
 crates/aether-win32/recent_projects.json
+
+# Coverage artifacts
+*.profraw
+tests/coverage/
+crates/*/tests/coverage/
+
+# AI assistant workspace memory
+.workbuddy/

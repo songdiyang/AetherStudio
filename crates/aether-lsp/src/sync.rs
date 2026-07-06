@@ -122,7 +122,7 @@ pub fn compute_changes(old_text: &str, new_text: &str) -> Vec<TextDocumentConten
     }
 
     // 如果变更范围超过原文本50%，发送全文替换
-    if old_text.len() > 0 && (old_end - old_start) > old_text.len() / 2 {
+    if !old_text.is_empty() && (old_end - old_start) > old_text.len() / 2 {
         return vec![TextDocumentContentChangeEvent {
             range: None,
             range_length: None,
@@ -145,4 +145,129 @@ pub fn compute_changes(old_text: &str, new_text: &str) -> Vec<TextDocumentConten
         range_length: Some((old_end - old_start) as u32),
         text: replacement,
     }]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pos(line: u32, character: u32) -> Position {
+        Position { line, character }
+    }
+
+    #[test]
+    fn test_document_sync_open_close() {
+        let mut sync = DocumentSync::new();
+        let uri = Url::parse("file:///test.rs").unwrap();
+        sync.open_document(uri.clone(), "rust".to_string(), 1, "fn main() {}".to_string());
+        assert!(sync.is_open(&uri));
+        assert_eq!(sync.get_language_id(&uri).unwrap(), "rust");
+        assert_eq!(sync.get_version(&uri).unwrap(), 1);
+
+        sync.close_document(&uri);
+        assert!(!sync.is_open(&uri));
+        assert!(sync.get_document(&uri).is_none());
+    }
+
+    #[test]
+    fn test_document_sync_version_and_text() {
+        let mut sync = DocumentSync::new();
+        let uri = Url::parse("file:///test.rs").unwrap();
+        sync.open_document(uri.clone(), "rust".to_string(), 1, "a".to_string());
+        assert_eq!(sync.increment_version(&uri).unwrap(), 2);
+        assert_eq!(sync.get_version(&uri).unwrap(), 2);
+
+        sync.update_text(&uri, "b".to_string());
+        assert_eq!(sync.get_document(&uri).unwrap().text, "b");
+
+        // 不存在的文档
+        let missing = Url::parse("file:///missing.rs").unwrap();
+        assert!(sync.increment_version(&missing).is_none());
+        assert!(sync.get_version(&missing).is_none());
+    }
+
+    #[test]
+    fn test_compute_changes_no_change() {
+        let changes = compute_changes("hello", "hello");
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn test_compute_changes_insert() {
+        let changes = compute_changes("hello", "hello world");
+        assert_eq!(changes.len(), 1);
+        let change = &changes[0];
+        assert_eq!(change.range, Some(Range { start: pos(0, 5), end: pos(0, 5) }));
+        assert_eq!(change.text, " world");
+    }
+
+    #[test]
+    fn test_compute_changes_delete() {
+        // 删除部分不超过原文 50%,应生成增量变更
+        let changes = compute_changes("hello beautiful world", "hello world");
+        assert_eq!(changes.len(), 1);
+        let change = &changes[0];
+        // 共同前缀 "hello ",共同后缀 "world",删除中间 "beautiful "
+        assert_eq!(change.range, Some(Range { start: pos(0, 6), end: pos(0, 16) }));
+        assert_eq!(change.text, "");
+    }
+
+    #[test]
+    fn test_compute_changes_replace() {
+        let changes = compute_changes("hello world", "hello rust");
+        assert_eq!(changes.len(), 1);
+        let change = &changes[0];
+        assert_eq!(change.range, Some(Range { start: pos(0, 6), end: pos(0, 11) }));
+        assert_eq!(change.text, "rust");
+    }
+
+    #[test]
+    fn test_compute_changes_large_file_fallback() {
+        let old_text = "a".repeat(100_001);
+        let new_text = old_text.clone() + "b";
+        let changes = compute_changes(&old_text, &new_text);
+        assert_eq!(changes.len(), 1);
+        assert!(changes[0].range.is_none());
+        assert_eq!(changes[0].text, new_text);
+    }
+
+    #[test]
+    fn test_compute_changes_major_change_fallback() {
+        // 变更超过 50% 时回退为全文替换
+        let old_text = "abcdef";
+        let new_text = "xyz";
+        let changes = compute_changes(old_text, new_text);
+        assert_eq!(changes.len(), 1);
+        assert!(changes[0].range.is_none());
+        assert_eq!(changes[0].text, new_text);
+    }
+
+    #[test]
+    fn test_compute_changes_multiline() {
+        let old_text = "line1\nline2\nline3";
+        let new_text = "line1\nmodified\nline3";
+        let changes = compute_changes(old_text, new_text);
+        assert_eq!(changes.len(), 1);
+        let change = &changes[0];
+        assert_eq!(
+            change.range,
+            Some(Range {
+                start: pos(1, 0),
+                end: pos(1, 5),
+            })
+        );
+        assert_eq!(change.text, "modified");
+    }
+
+    #[test]
+    fn test_compute_changes_utf16_character_count() {
+        // "𐍈" 是一个 UTF-16 代理对,占用 2 个 UTF-16 码元
+        let old_text = "a";
+        let new_text = "a𐍈";
+        let changes = compute_changes(old_text, new_text);
+        assert_eq!(changes.len(), 1);
+        let change = &changes[0];
+        assert_eq!(change.range, Some(Range { start: pos(0, 1), end: pos(0, 1) }));
+        assert_eq!(change.text, "𐍈");
+    }
 }

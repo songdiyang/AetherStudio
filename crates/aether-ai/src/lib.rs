@@ -849,3 +849,488 @@ impl AiClient {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== AiProvider ====================
+
+    #[test]
+    fn provider_from_str_openai_variants() {
+        for s in ["openai", "gpt", "gpt-4", "gpt-3.5-turbo", "OPENAI", "Gpt"] {
+            assert_eq!(AiProvider::from_str(s), AiProvider::OpenAi, "failed for {}", s);
+        }
+    }
+
+    #[test]
+    fn provider_from_str_claude_variants() {
+        for s in ["claude", "anthropic", "Claude", "ANTHROPIC"] {
+            assert_eq!(AiProvider::from_str(s), AiProvider::Claude, "failed for {}", s);
+        }
+    }
+
+    #[test]
+    fn provider_from_str_kimi_variants() {
+        for s in ["kimi", "moonshot", "KIMI", "Moonshot"] {
+            assert_eq!(AiProvider::from_str(s), AiProvider::Kimi, "failed for {}", s);
+        }
+    }
+
+    #[test]
+    fn provider_from_str_azure_variants() {
+        for s in ["azure", "azure_openai", "azure-openai", "Azure"] {
+            assert_eq!(AiProvider::from_str(s), AiProvider::Azure, "failed for {}", s);
+        }
+    }
+
+    #[test]
+    fn provider_from_str_custom_and_unknown() {
+        for s in ["custom", "foo", "", "llama", "unknown"] {
+            assert_eq!(AiProvider::from_str(s), AiProvider::Custom, "failed for {:?}", s);
+        }
+    }
+
+    #[test]
+    fn provider_default_base_url() {
+        assert_eq!(AiProvider::OpenAi.default_base_url(), "https://api.openai.com/v1");
+        assert_eq!(AiProvider::Claude.default_base_url(), "https://api.anthropic.com/v1");
+        assert_eq!(AiProvider::Kimi.default_base_url(), "https://api.moonshot.cn/v1");
+        assert_eq!(AiProvider::Azure.default_base_url(), "");
+        assert_eq!(AiProvider::Custom.default_base_url(), "");
+    }
+
+    #[test]
+    fn provider_default_model() {
+        assert_eq!(AiProvider::OpenAi.default_model(), "gpt-4");
+        assert_eq!(AiProvider::Claude.default_model(), "claude-3-sonnet-20240229");
+        assert_eq!(AiProvider::Kimi.default_model(), "moonshot-v1-8k");
+        assert_eq!(AiProvider::Azure.default_model(), "gpt-4");
+        assert_eq!(AiProvider::Custom.default_model(), "");
+    }
+
+    #[test]
+    fn provider_as_str() {
+        assert_eq!(AiProvider::OpenAi.as_str(), "openai");
+        assert_eq!(AiProvider::Claude.as_str(), "claude");
+        assert_eq!(AiProvider::Kimi.as_str(), "kimi");
+        assert_eq!(AiProvider::Azure.as_str(), "azure");
+        assert_eq!(AiProvider::Custom.as_str(), "custom");
+    }
+
+    #[test]
+    fn provider_debug_and_clone_eq() {
+        let p = AiProvider::Kimi;
+        assert_eq!(format!("{:?}", p), "Kimi");
+        assert_eq!(p.clone(), p);
+    }
+
+    // ==================== AiError ====================
+
+    #[test]
+    fn ai_error_display() {
+        assert_eq!(
+            format!("{}", AiError::Http("timeout".to_string())),
+            "HTTP error: timeout"
+        );
+        assert_eq!(
+            format!("{}", AiError::Parse("bad json".to_string())),
+            "Parse error: bad json"
+        );
+        assert_eq!(
+            format!("{}", AiError::Config("missing key".to_string())),
+            "Config error: missing key"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                AiError::Api {
+                    code: 500,
+                    message: "boom".to_string()
+                }
+            ),
+            "API error 500: boom"
+        );
+    }
+
+    // ==================== AiConfig ====================
+
+    fn settings_with(
+        provider: &str,
+        api_key: &str,
+        base_url: Option<&str>,
+        model: &str,
+    ) -> AiSettings {
+        AiSettings {
+            provider: provider.to_string(),
+            api_key: api_key.to_string(),
+            base_url: base_url.map(|s| s.to_string()),
+            model: model.to_string(),
+            temperature: None,
+            max_tokens: None,
+            system_prompt: None,
+        }
+    }
+
+    #[test]
+    fn config_from_settings_defaults() {
+        let settings = settings_with("openai", "key", None, "");
+        let config = AiConfig::from_settings(&settings);
+        assert_eq!(config.provider, AiProvider::OpenAi);
+        assert_eq!(config.api_key, "key");
+        assert_eq!(config.base_url, Some("https://api.openai.com/v1".to_string()));
+        assert_eq!(config.model, "gpt-4");
+    }
+
+    #[test]
+    fn config_from_settings_custom_base_url_and_model() {
+        let settings = settings_with("claude", "secret", Some("https://example.com/v1"), "model-x");
+        let config = AiConfig::from_settings(&settings);
+        assert_eq!(config.provider, AiProvider::Claude);
+        assert_eq!(config.base_url, Some("https://example.com/v1".to_string()));
+        assert_eq!(config.model, "model-x");
+    }
+
+    #[test]
+    fn config_from_settings_empty_base_url_for_custom_provider() {
+        // Custom provider has empty default base_url, so result should be None.
+        let settings = settings_with("custom", "key", None, "");
+        let config = AiConfig::from_settings(&settings);
+        assert_eq!(config.provider, AiProvider::Custom);
+        assert_eq!(config.base_url, None);
+        assert_eq!(config.model, "");
+    }
+
+    #[test]
+    fn config_from_settings_explicit_empty_base_url() {
+        let settings = settings_with("openai", "key", Some(""), "");
+        let config = AiConfig::from_settings(&settings);
+        // An explicitly empty base_url is preserved as Some("") rather than falling back.
+        assert_eq!(config.base_url, Some("".to_string()));
+    }
+
+    #[test]
+    fn config_debug_hides_api_key_and_shows_system_prompt_presence() {
+        let config = AiConfig {
+            provider: AiProvider::OpenAi,
+            api_key: "super-secret".to_string(),
+            base_url: Some("https://api.openai.com/v1".to_string()),
+            model: "gpt-4".to_string(),
+            temperature: Some(0.7),
+            max_tokens: Some(100),
+            system_prompt: Some("you are helpful".to_string()),
+        };
+        let out = format!("{:?}", config);
+        assert!(!out.contains("super-secret"), "api_key leaked in Debug");
+        assert!(out.contains("[REDACTED]"), "api_key not marked redacted");
+        assert!(out.contains("[PRESENT]"), "system_prompt presence not indicated");
+        assert!(out.contains("gpt-4"));
+    }
+
+    // ==================== ChatMessage ====================
+
+    #[test]
+    fn chat_message_user_and_assistant() {
+        let u = ChatMessage::user("hello");
+        assert_eq!(u.role, "user");
+        assert_eq!(u.content, "hello");
+
+        let a = ChatMessage::assistant(String::from("hi there"));
+        assert_eq!(a.role, "assistant");
+        assert_eq!(a.content, "hi there");
+    }
+
+    // ==================== AiClient ====================
+
+    #[test]
+    fn client_new_preserves_config() {
+        let settings = AiSettings {
+            provider: "kimi".to_string(),
+            api_key: "mk".to_string(),
+            base_url: Some("https://api.moonshot.cn/v1".to_string()),
+            model: "moonshot-v1-8k".to_string(),
+            temperature: Some(0.5),
+            max_tokens: Some(512),
+            system_prompt: Some("sys".to_string()),
+        };
+        let client = AiClient::new(&settings);
+        assert_eq!(client.config.provider, AiProvider::Kimi);
+        assert_eq!(client.config.api_key, "mk");
+        assert_eq!(client.config.base_url, Some("https://api.moonshot.cn/v1".to_string()));
+        assert_eq!(client.config.model, "moonshot-v1-8k");
+        assert_eq!(client.config.temperature, Some(0.5));
+        assert_eq!(client.config.max_tokens, Some(512));
+        assert_eq!(client.config.system_prompt, Some("sys".to_string()));
+    }
+
+    #[test]
+    fn validate_https_rejects_http_and_accepts_https() {
+        assert!(AiClient::validate_https("http://api.openai.com").is_err());
+        assert!(AiClient::validate_https("https://").is_ok());
+        assert!(AiClient::validate_https("https://api.openai.com/v1").is_ok());
+        assert!(AiClient::validate_https("ftp://api.openai.com").is_err());
+        assert!(AiClient::validate_https("").is_err());
+    }
+
+    #[test]
+    fn check_ip_private_ipv4() {
+        assert!(AiClient::check_ip_private("10.0.0.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("172.16.0.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("192.168.1.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("127.0.0.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("169.254.1.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("224.0.0.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("192.0.2.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("255.255.255.255".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("0.0.0.0".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("1.1.1.1".parse().unwrap(), "h").is_ok());
+        assert!(AiClient::check_ip_private("8.8.8.8".parse().unwrap(), "h").is_ok());
+    }
+
+    #[test]
+    fn check_ip_private_ipv6() {
+        assert!(AiClient::check_ip_private("::1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("::".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("ff02::1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("::ffff:10.0.0.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("::ffff:127.0.0.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("::ffff:192.168.1.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("2001:4860:4860::8888".parse().unwrap(), "h").is_ok());
+    }
+
+    #[test]
+    fn validate_not_private_ip_public_ip_passes() {
+        assert!(AiClient::validate_not_private_ip("https://1.1.1.1").is_ok());
+    }
+
+    #[test]
+    fn validate_not_private_ip_public_domain_passes() {
+        // example.com is not blocked; if DNS is unavailable the function still returns Ok.
+        assert!(AiClient::validate_not_private_ip("https://example.com").is_ok());
+    }
+
+    #[test]
+    fn validate_not_private_ip_rejects_private_and_local() {
+        assert!(AiClient::validate_not_private_ip("https://192.168.1.1").is_err());
+        assert!(AiClient::validate_not_private_ip("https://127.0.0.1").is_err());
+        assert!(AiClient::validate_not_private_ip("https://10.0.0.1").is_err());
+        assert!(AiClient::validate_not_private_ip("https://[::1]").is_err());
+        assert!(AiClient::validate_not_private_ip("https://[::ffff:192.168.1.1]").is_err());
+    }
+
+    #[test]
+    fn validate_not_private_ip_rejects_metadata_endpoints() {
+        assert!(AiClient::validate_not_private_ip("https://169.254.169.254").is_err());
+        assert!(AiClient::validate_not_private_ip("https://metadata.google.internal").is_err());
+        assert!(AiClient::validate_not_private_ip("https://metadata.google").is_err());
+        assert!(AiClient::validate_not_private_ip("https://metadata.azure.internal").is_err());
+        assert!(AiClient::validate_not_private_ip("https://100.100.100.200").is_err());
+        assert!(AiClient::validate_not_private_ip("https://metadata.tencentyun.com").is_err());
+    }
+
+    #[test]
+    fn validate_not_private_ip_rejects_bad_urls() {
+        assert!(AiClient::validate_not_private_ip("not a url").is_err());
+        assert!(AiClient::validate_not_private_ip("https://").is_err());
+    }
+
+    #[test]
+    fn resolve_and_lock_public_ip_ok() {
+        let ep = AiClient::resolve_and_lock("https://1.1.1.1").unwrap();
+        assert_eq!(ep.host, "1.1.1.1");
+        assert_eq!(ep.port, 443);
+    }
+
+    #[test]
+    fn resolve_and_lock_custom_port() {
+        let ep = AiClient::resolve_and_lock("https://8.8.8.8:8443").unwrap();
+        assert_eq!(ep.host, "8.8.8.8");
+        assert_eq!(ep.port, 8443);
+    }
+
+    #[test]
+    fn resolve_and_lock_rejects_private_ip() {
+        assert!(AiClient::resolve_and_lock("https://192.168.1.1").is_err());
+        assert!(AiClient::resolve_and_lock("https://127.0.0.1:8080").is_err());
+    }
+
+    #[test]
+    fn resolve_and_lock_rejects_bad_url() {
+        assert!(AiClient::resolve_and_lock("not a url").is_err());
+        assert!(AiClient::resolve_and_lock("https://").is_err());
+    }
+
+    #[test]
+    fn validate_tcp_connect_target_matches_resolve_and_lock() {
+        assert!(AiClient::validate_tcp_connect_target("https://1.1.1.1").is_ok());
+        assert!(AiClient::validate_tcp_connect_target("https://127.0.0.1").is_err());
+        assert!(AiClient::validate_tcp_connect_target("https://[::1]").is_err());
+    }
+
+    #[test]
+    fn read_limited_response_empty() {
+        let resp = ureq::Response::new(200, "OK", "").unwrap();
+        let text = AiClient::read_limited_response(resp).unwrap();
+        assert_eq!(text, "");
+    }
+
+    #[test]
+    fn read_limited_response_normal_body() {
+        let body = r#"{"choices":[{"message":{"content":"hi"}}]}"#;
+        let resp = ureq::Response::new(200, "OK", body).unwrap();
+        let text = AiClient::read_limited_response(resp).unwrap();
+        assert_eq!(text, body);
+    }
+
+    fn client_with_empty_key(provider: AiProvider, base_url: &str) -> AiClient {
+        let settings = AiSettings {
+            provider: provider.as_str().to_string(),
+            api_key: "".to_string(),
+            base_url: Some(base_url.to_string()),
+            model: "model".to_string(),
+            temperature: None,
+            max_tokens: None,
+            system_prompt: None,
+        };
+        AiClient::new(&settings)
+    }
+
+    #[test]
+    fn complete_rejects_empty_api_key_openai_compatible() {
+        let client = client_with_empty_key(AiProvider::OpenAi, "https://1.1.1.1");
+        let err = client.complete("prompt").unwrap_err();
+        match err {
+            AiError::Config(msg) => assert_eq!(msg, "API Key 未设置"),
+            other => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complete_rejects_empty_api_key_claude() {
+        let client = client_with_empty_key(AiProvider::Claude, "https://1.1.1.1");
+        let err = client.complete("prompt").unwrap_err();
+        match err {
+            AiError::Config(msg) => assert_eq!(msg, "API Key 未设置"),
+            other => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn chat_completion_rejects_empty_api_key_openai_compatible() {
+        let client = client_with_empty_key(AiProvider::Kimi, "https://1.1.1.1");
+        let err = client.chat_completion(&[ChatMessage::user("hi")]).unwrap_err();
+        match err {
+            AiError::Config(msg) => assert_eq!(msg, "API Key 未设置"),
+            other => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn chat_completion_rejects_empty_api_key_claude() {
+        let client = client_with_empty_key(AiProvider::Claude, "https://1.1.1.1");
+        let err = client.chat_completion(&[ChatMessage::user("hi")]).unwrap_err();
+        match err {
+            AiError::Config(msg) => assert_eq!(msg, "API Key 未设置"),
+            other => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn chat_completion_stream_rejects_empty_api_key_openai_compatible() {
+        let client = client_with_empty_key(AiProvider::Azure, "https://1.1.1.1");
+        let err = client
+            .chat_completion_stream(&[ChatMessage::user("hi")])
+            .unwrap_err();
+        match err {
+            AiError::Config(msg) => assert_eq!(msg, "API Key 未设置"),
+            other => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn chat_completion_stream_rejects_empty_api_key_claude() {
+        let client = client_with_empty_key(AiProvider::Claude, "https://1.1.1.1");
+        let err = client
+            .chat_completion_stream(&[ChatMessage::user("hi")])
+            .unwrap_err();
+        match err {
+            AiError::Config(msg) => assert_eq!(msg, "API Key 未设置"),
+            other => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn chat_completion_stream_rejects_empty_api_key_custom() {
+        let client = client_with_empty_key(AiProvider::Custom, "https://1.1.1.1");
+        let err = client
+            .chat_completion_stream(&[ChatMessage::user("hi")])
+            .unwrap_err();
+        match err {
+            AiError::Config(msg) => assert_eq!(msg, "API Key 未设置"),
+            other => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    // ==================== extract_stream_token ====================
+
+    #[test]
+    fn extract_stream_token_openai() {
+        let json = serde_json::json!({
+            "choices": [{"delta": {"content": "hello"}}]
+        });
+        assert_eq!(AiClient::extract_stream_token(&json), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn extract_stream_token_openai_empty_content() {
+        let json = serde_json::json!({
+            "choices": [{"delta": {"content": ""}}]
+        });
+        assert_eq!(AiClient::extract_stream_token(&json), Some("".to_string()));
+    }
+
+    #[test]
+    fn extract_stream_token_openai_null_content() {
+        let json = serde_json::json!({
+            "choices": [{"delta": {"content": null}}]
+        });
+        assert_eq!(AiClient::extract_stream_token(&json), None);
+    }
+
+    #[test]
+    fn extract_stream_token_anthropic() {
+        let json = serde_json::json!({
+            "delta": {"text": "world"}
+        });
+        assert_eq!(AiClient::extract_stream_token(&json), Some("world".to_string()));
+    }
+
+    #[test]
+    fn extract_stream_token_unrelated() {
+        let json = serde_json::json!({"foo": "bar"});
+        assert_eq!(AiClient::extract_stream_token(&json), None);
+    }
+
+    // ==================== AiStreamEvent ====================
+
+    #[test]
+    fn ai_stream_event_clone_and_debug() {
+        let e = AiStreamEvent::Token("tok".to_string());
+        assert_eq!(format!("{:?}", e.clone()), format!("{:?}", e));
+
+        let done = AiStreamEvent::Done;
+        match done.clone() {
+            AiStreamEvent::Done => {}
+            _ => panic!("clone of Done should be Done"),
+        }
+
+        let err = AiStreamEvent::Error("oops".to_string());
+        match err.clone() {
+            AiStreamEvent::Error(msg) => assert_eq!(msg, "oops"),
+            _ => panic!("clone of Error should be Error"),
+        }
+
+        let dbg = format!("{:?}", AiStreamEvent::Token("x".to_string()));
+        assert!(dbg.contains("Token") && dbg.contains("x"));
+    }
+}

@@ -368,6 +368,8 @@ impl DirtyRectTracker {
 /// 渲染命令类型，用于优化渲染管线
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RenderCommand {
+    /// REQ-P0-06: 无需重绘（无状态变化时跳过渲染）
+    None,
     /// 只重绘编辑器内容（光标闪烁、输入字符等）
     EditorOnly,
     /// 重绘编辑器 + 状态栏（光标移动、选择变化等）
@@ -384,6 +386,7 @@ pub enum RenderCommand {
 
 impl RenderCommand {
     /// 根据当前状态推断最优渲染命令
+    /// REQ-P0-06: 无状态变化时返回 None 而非 FullRedraw
     #[allow(clippy::too_many_arguments)]
     pub fn infer_from_state(
         cursor_moved: bool,
@@ -417,6 +420,287 @@ impl RenderCommand {
         if status_changed {
             return RenderCommand::EditorAndStatus;
         }
-        RenderCommand::FullRedraw
+        // REQ-P0-06: 无状态变化时不触发重绘
+        RenderCommand::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dirty_rect_intersects() {
+        let a = DirtyRect::new(0.0, 0.0, 10.0, 10.0, DirtyRegionType::EditorContent);
+        let b = DirtyRect::new(5.0, 5.0, 10.0, 10.0, DirtyRegionType::EditorContent);
+        assert!(a.intersects(&b));
+        assert!(b.intersects(&a));
+
+        // 相切不算重叠
+        let c = DirtyRect::new(10.0, 0.0, 10.0, 10.0, DirtyRegionType::EditorContent);
+        assert!(!a.intersects(&c));
+
+        // 完全不相交
+        let d = DirtyRect::new(20.0, 20.0, 5.0, 5.0, DirtyRegionType::EditorContent);
+        assert!(!a.intersects(&d));
+    }
+
+    #[test]
+    fn test_dirty_rect_contains() {
+        let r = DirtyRect::new(2.0, 2.0, 6.0, 6.0, DirtyRegionType::EditorContent);
+        assert!(r.contains(2.0, 2.0));
+        assert!(r.contains(7.9, 7.9));
+        assert!(!r.contains(8.0, 5.0));
+        assert!(!r.contains(5.0, 1.9));
+        assert!(!r.contains(1.9, 5.0));
+    }
+
+    #[test]
+    fn test_dirty_rect_merge() {
+        let a = DirtyRect::new(0.0, 0.0, 10.0, 10.0, DirtyRegionType::EditorContent);
+        let b = DirtyRect::new(5.0, 5.0, 10.0, 10.0, DirtyRegionType::EditorContent);
+        let merged = a.merge(&b);
+        assert_eq!(merged.x, 0.0);
+        assert_eq!(merged.y, 0.0);
+        assert_eq!(merged.width, 15.0);
+        assert_eq!(merged.height, 15.0);
+        assert_eq!(merged.region_type, DirtyRegionType::EditorContent);
+    }
+
+    #[test]
+    fn test_tracker_initially_full_window() {
+        let tracker = DirtyRectTracker::new(800.0, 600.0);
+        assert!(tracker.is_full_window());
+        assert!(tracker.has_dirty());
+        assert_eq!(tracker.dirty_count(), 1);
+    }
+
+    #[test]
+    fn test_tracker_mark_region_and_clear() {
+        let mut tracker = DirtyRectTracker::new(800.0, 600.0);
+        tracker.clear();
+        assert!(!tracker.is_full_window());
+        assert!(!tracker.has_dirty());
+
+        tracker.mark_region(10.0, 10.0, 50.0, 20.0, DirtyRegionType::EditorContent);
+        assert!(tracker.has_dirty());
+        assert_eq!(tracker.rects().len(), 1);
+
+        tracker.clear();
+        assert!(!tracker.has_dirty());
+        assert!(tracker.rects().is_empty());
+    }
+
+    #[test]
+    fn test_tracker_ignores_zero_or_negative_size() {
+        let mut tracker = DirtyRectTracker::new(800.0, 600.0);
+        tracker.clear();
+        tracker.mark_region(0.0, 0.0, 0.0, 10.0, DirtyRegionType::EditorContent);
+        tracker.mark_region(0.0, 0.0, 10.0, 0.0, DirtyRegionType::EditorContent);
+        tracker.mark_region(0.0, 0.0, -5.0, 10.0, DirtyRegionType::EditorContent);
+        assert!(!tracker.has_dirty());
+    }
+
+    #[test]
+    fn test_tracker_merge_overlapping_same_region() {
+        let mut tracker = DirtyRectTracker::new(800.0, 600.0);
+        tracker.clear();
+        tracker.mark_region(0.0, 0.0, 10.0, 10.0, DirtyRegionType::EditorContent);
+        tracker.mark_region(5.0, 5.0, 10.0, 10.0, DirtyRegionType::EditorContent);
+        assert_eq!(tracker.rects().len(), 1);
+        let r = &tracker.rects()[0];
+        assert_eq!(r.x, 0.0);
+        assert_eq!(r.y, 0.0);
+        assert_eq!(r.width, 15.0);
+        assert_eq!(r.height, 15.0);
+    }
+
+    #[test]
+    fn test_tracker_does_not_merge_different_regions() {
+        let mut tracker = DirtyRectTracker::new(800.0, 600.0);
+        tracker.clear();
+        tracker.mark_region(0.0, 0.0, 10.0, 10.0, DirtyRegionType::EditorContent);
+        tracker.mark_region(5.0, 5.0, 10.0, 10.0, DirtyRegionType::StatusBar);
+        assert_eq!(tracker.rects().len(), 2);
+    }
+
+    #[test]
+    fn test_tracker_full_window_clears_rects() {
+        let mut tracker = DirtyRectTracker::new(800.0, 600.0);
+        tracker.clear();
+        tracker.mark_region(10.0, 10.0, 50.0, 50.0, DirtyRegionType::EditorContent);
+        tracker.mark_full_window();
+        assert!(tracker.is_full_window());
+        assert!(tracker.rects().is_empty());
+        assert!(tracker.is_region_dirty(DirtyRegionType::StatusBar));
+    }
+
+    #[test]
+    fn test_tracker_local_mark_ignored_when_full_window() {
+        let mut tracker = DirtyRectTracker::new(800.0, 600.0);
+        tracker.mark_full_window();
+        tracker.mark_region(10.0, 10.0, 50.0, 50.0, DirtyRegionType::EditorContent);
+        assert!(tracker.rects().is_empty());
+        assert!(tracker.is_full_window());
+    }
+
+    #[test]
+    fn test_tracker_resize_marks_full_window() {
+        let mut tracker = DirtyRectTracker::new(800.0, 600.0);
+        tracker.clear();
+        tracker.resize(1024.0, 768.0);
+        assert!(tracker.is_full_window());
+        assert_eq!(tracker.full_window_rect().width, 1024.0);
+        assert_eq!(tracker.full_window_rect().height, 768.0);
+    }
+
+    #[test]
+    fn test_tracker_region_dirty_flags() {
+        let mut tracker = DirtyRectTracker::new(800.0, 600.0);
+        tracker.clear();
+        tracker.mark_region(0.0, 0.0, 10.0, 10.0, DirtyRegionType::EditorContent);
+        assert!(tracker.is_editor_dirty());
+        assert!(tracker.is_region_dirty(DirtyRegionType::EditorContent));
+        assert!(!tracker.is_status_bar_dirty());
+        assert!(!tracker.is_sidebar_dirty());
+
+        tracker.clear();
+        tracker.mark_region(0.0, 0.0, 10.0, 10.0, DirtyRegionType::StatusBar);
+        assert!(tracker.is_status_bar_dirty());
+        assert!(!tracker.is_editor_dirty());
+
+        tracker.clear();
+        tracker.mark_region(0.0, 0.0, 10.0, 10.0, DirtyRegionType::Sidebar);
+        assert!(tracker.is_sidebar_dirty());
+
+        tracker.clear();
+        tracker.mark_region(0.0, 0.0, 10.0, 10.0, DirtyRegionType::RightPanel);
+        assert!(tracker.is_right_panel_dirty());
+
+        tracker.clear();
+        tracker.mark_region(0.0, 0.0, 10.0, 10.0, DirtyRegionType::BottomPanel);
+        assert!(tracker.is_bottom_panel_dirty());
+
+        tracker.clear();
+        tracker.mark_region(0.0, 0.0, 10.0, 10.0, DirtyRegionType::TitleBar);
+        assert!(tracker.is_title_bar_dirty());
+    }
+
+    #[test]
+    fn test_tracker_merge_all_rects() {
+        let mut tracker = DirtyRectTracker::new(800.0, 600.0);
+        tracker.clear();
+        tracker.mark_region(0.0, 0.0, 10.0, 10.0, DirtyRegionType::EditorContent);
+        tracker.mark_region(20.0, 0.0, 10.0, 10.0, DirtyRegionType::EditorContent);
+        tracker.mark_region(40.0, 0.0, 10.0, 10.0, DirtyRegionType::EditorContent);
+        assert_eq!(tracker.rects().len(), 3);
+        tracker.merge_all_rects();
+        // 三个不相交的矩形不会被合并
+        assert_eq!(tracker.rects().len(), 3);
+
+        tracker.clear();
+        tracker.mark_region(0.0, 0.0, 10.0, 10.0, DirtyRegionType::EditorContent);
+        tracker.mark_region(5.0, 0.0, 10.0, 10.0, DirtyRegionType::EditorContent);
+        tracker.mark_region(12.0, 0.0, 10.0, 10.0, DirtyRegionType::EditorContent);
+        tracker.merge_all_rects();
+        // 0-10 与 5-15 相交合并为 0-15；12-22 与 0-15 也相交（12 < 15），最终全部合并为 1 个
+        assert_eq!(tracker.rects().len(), 1);
+    }
+
+    #[test]
+    fn test_tracker_mark_editor_line_and_cursor() {
+        let mut tracker = DirtyRectTracker::new(800.0, 600.0);
+        tracker.clear();
+        tracker.mark_editor_line(3, 20.0, 50.0, 80.0, 700.0);
+        assert_eq!(tracker.rects().len(), 1);
+        let r = &tracker.rects()[0];
+        assert_eq!(r.y, 80.0 + 3.0 * 20.0);
+        assert_eq!(r.height, 20.0);
+
+        tracker.clear();
+        tracker.mark_cursor(100.0, 200.0, 2.0, 24.0);
+        assert_eq!(tracker.rects().len(), 1);
+        assert_eq!(tracker.rects()[0].width, 2.0);
+    }
+
+    #[test]
+    fn test_tracker_exceeds_max_rects_becomes_full_window() {
+        let mut tracker = DirtyRectTracker::new(800.0, 600.0);
+        tracker.clear();
+        // max_rects = 16，创建 17 个不相交矩形
+        for i in 0..17 {
+            tracker.mark_region(
+                i as f32 * 10.0,
+                0.0,
+                5.0,
+                5.0,
+                DirtyRegionType::EditorContent,
+            );
+        }
+        assert!(tracker.is_full_window());
+    }
+
+    #[test]
+    fn test_render_command_infer_from_state() {
+        assert_eq!(
+            RenderCommand::infer_from_state(
+                false, false, false, false, false, false, false, false, true
+            ),
+            RenderCommand::FullRedraw
+        );
+        assert_eq!(
+            RenderCommand::infer_from_state(
+                false, false, true, false, false, false, false, false, false
+            ),
+            RenderCommand::EditorAndStatus
+        );
+        assert_eq!(
+            RenderCommand::infer_from_state(
+                false, false, false, true, false, false, false, false, false
+            ),
+            RenderCommand::EditorAndStatus
+        );
+        assert_eq!(
+            RenderCommand::infer_from_state(
+                true, false, false, false, false, false, false, false, false
+            ),
+            RenderCommand::EditorAndStatus
+        );
+        assert_eq!(
+            RenderCommand::infer_from_state(
+                false, true, false, false, false, false, false, false, false
+            ),
+            RenderCommand::EditorAndStatus
+        );
+        assert_eq!(
+            RenderCommand::infer_from_state(
+                false, false, false, false, true, false, false, false, false
+            ),
+            RenderCommand::SidebarOnly
+        );
+        assert_eq!(
+            RenderCommand::infer_from_state(
+                false, false, false, false, false, true, false, false, false
+            ),
+            RenderCommand::RightPanelOnly
+        );
+        assert_eq!(
+            RenderCommand::infer_from_state(
+                false, false, false, false, false, false, true, false, false
+            ),
+            RenderCommand::BottomPanelOnly
+        );
+        assert_eq!(
+            RenderCommand::infer_from_state(
+                false, false, false, false, false, false, false, true, false
+            ),
+            RenderCommand::EditorAndStatus
+        );
+        assert_eq!(
+            RenderCommand::infer_from_state(
+                false, false, false, false, false, false, false, false, false
+            ),
+            RenderCommand::None
+        );
     }
 }

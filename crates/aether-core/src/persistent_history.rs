@@ -114,10 +114,17 @@ impl PersistentHistory {
         self.history.push_back(snapshot);
 
         // 限制历史大小
+        // C-02: 溢出时若 current_index 在最前端，优先删除中间旧版本，
+        // 以保留用户当前所在的版本，避免索引跳到最新条目。
         while self.history.len() > self.max_history {
-            self.history.pop_front();
-            if self.current_index > 0 {
-                self.current_index -= 1;
+            if self.current_index == 0 && self.history.len() > 2 {
+                // 保留最旧的当前版本和最新的新版本，删除中间的旧版本
+                self.history.remove(1);
+            } else {
+                self.history.pop_front();
+                if self.current_index > 0 {
+                    self.current_index -= 1;
+                }
             }
         }
 
@@ -470,6 +477,37 @@ mod tests {
         // 大编辑不合并
         history.record_version(pieces, 100, 1, "大编辑", 100);
         assert_eq!(history.len(), 3);
+    }
+
+    #[test]
+    fn test_overflow_normal() {
+        // C-02: 正常溢出时保留可撤销能力
+        let mut history = PersistentHistory::new(2);
+        history.coalesce_threshold = 0; // 禁用合并以便测试
+
+        let pieces = vec![];
+        history.record_version(pieces.clone(), 0, 1, "v0", 0);
+        history.record_version(pieces.clone(), 1, 1, "v1", 1);
+        history.record_version(pieces.clone(), 2, 1, "v2", 1);
+
+        // 容量为 2，记录第三个版本后应只保留 v1、v2
+        assert_eq!(history.len(), 2);
+        assert_eq!(history.current().map(|v| v.version_id), Some(2));
+        assert!(history.can_undo());
+        history.undo();
+        assert_eq!(history.current().map(|v| v.version_id), Some(1));
+    }
+
+    #[test]
+    fn test_overflow_min_capacity() {
+        // C-02: 最小容量时不应 panic，且保留最新版本
+        let mut history = PersistentHistory::new(1);
+        let pieces = vec![];
+        history.record_version(pieces.clone(), 0, 1, "v0", 0);
+        history.record_version(pieces.clone(), 1, 1, "v1", 1);
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.current().map(|v| v.version_id), Some(1));
     }
 
     #[test]

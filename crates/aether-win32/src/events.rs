@@ -231,4 +231,119 @@ mod tests {
             panic!("expected TextChanged");
         }
     }
+
+    #[test]
+    fn event_region_type_mapping() {
+        assert_eq!(
+            EditorEvent::TextChanged { start_line: 0, end_line: 1 }.region_type(),
+            DirtyRegionType::EditorContent
+        );
+        assert_eq!(EditorEvent::CursorMoved.region_type(), DirtyRegionType::EditorContent);
+        assert_eq!(EditorEvent::SelectionChanged.region_type(), DirtyRegionType::EditorContent);
+        assert_eq!(EditorEvent::Scrolled.region_type(), DirtyRegionType::EditorContent);
+        assert_eq!(EditorEvent::TabChanged.region_type(), DirtyRegionType::TabBar);
+        assert_eq!(EditorEvent::SidebarChanged.region_type(), DirtyRegionType::Sidebar);
+        assert_eq!(EditorEvent::RightPanelChanged.region_type(), DirtyRegionType::RightPanel);
+        assert_eq!(EditorEvent::BottomPanelChanged.region_type(), DirtyRegionType::BottomPanel);
+        assert_eq!(EditorEvent::StatusBarChanged.region_type(), DirtyRegionType::StatusBar);
+        assert_eq!(EditorEvent::WindowResized.region_type(), DirtyRegionType::FullWindow);
+        assert_eq!(EditorEvent::FindReplaceChanged.region_type(), DirtyRegionType::FindReplace);
+        assert_eq!(
+            EditorEvent::DialogVisibilityChanged.region_type(),
+            DirtyRegionType::FullWindow
+        );
+    }
+
+    #[test]
+    fn event_is_full_window() {
+        assert!(EditorEvent::WindowResized.is_full_window());
+        assert!(EditorEvent::DialogVisibilityChanged.is_full_window());
+        assert!(!EditorEvent::CursorMoved.is_full_window());
+        assert!(!EditorEvent::TextChanged { start_line: 0, end_line: 1 }.is_full_window());
+    }
+
+    #[test]
+    fn queue_extend_and_len() {
+        let mut q = EventQueue::new();
+        q.extend([
+            EditorEvent::CursorMoved,
+            EditorEvent::CursorMoved,
+            EditorEvent::SelectionChanged,
+        ]);
+        assert_eq!(q.len(), 2); // 两个连续的 CursorMoved 合并为一个
+        assert!(!q.is_empty());
+    }
+
+    #[test]
+    fn queue_local_events_ignored_after_full_window() {
+        let mut q = EventQueue::new();
+        q.push(EditorEvent::CursorMoved);
+        q.push(EditorEvent::WindowResized);
+        q.push(EditorEvent::CursorMoved);
+        assert_eq!(q.len(), 1);
+        assert!(!q.is_empty()); // 全窗口事件仍在队列中
+        assert!(q.has_full_window);
+    }
+
+    #[test]
+    fn queue_drain_to_dirty_tracker() {
+        let mut q = EventQueue::new();
+        q.push(EditorEvent::CursorMoved);
+        q.push(EditorEvent::TextChanged { start_line: 1, end_line: 3 });
+        q.push(EditorEvent::StatusBarChanged);
+
+        let mut tracker = DirtyRectTracker::new(800.0, 600.0);
+        tracker.clear();
+        q.drain_to_dirty_tracker(&mut tracker, |event| match event {
+            // 使用不相交的矩形，避免被 DirtyRectTracker 自动合并
+            EditorEvent::CursorMoved => Some((500.0, 500.0, 2.0, 24.0)),
+            EditorEvent::TextChanged { .. } => Some((0.0, 0.0, 100.0, 50.0)),
+            EditorEvent::StatusBarChanged => Some((0.0, 580.0, 800.0, 20.0)),
+            _ => None,
+        });
+
+        assert!(q.is_empty());
+        assert!(!tracker.is_full_window());
+        assert!(tracker.is_editor_dirty());
+        assert!(tracker.is_status_bar_dirty());
+        assert_eq!(tracker.rects().len(), 3);
+    }
+
+    #[test]
+    fn queue_drain_full_window_event() {
+        let mut q = EventQueue::new();
+        q.push(EditorEvent::WindowResized);
+
+        let mut tracker = DirtyRectTracker::new(800.0, 600.0);
+        tracker.clear();
+        q.drain_to_dirty_tracker(&mut tracker, |_event| unreachable!("全窗口事件不应调用转换回调"));
+        assert!(tracker.is_full_window());
+    }
+
+    #[test]
+    fn queue_clear() {
+        let mut q = EventQueue::new();
+        q.push(EditorEvent::WindowResized);
+        q.clear();
+        assert!(q.is_empty());
+        assert!(!q.has_full_window);
+    }
+
+    #[test]
+    fn queue_no_merge_different_events() {
+        let mut q = EventQueue::new();
+        q.push(EditorEvent::CursorMoved);
+        q.push(EditorEvent::SelectionChanged);
+        q.push(EditorEvent::Scrolled);
+        assert_eq!(q.len(), 3);
+    }
+
+    #[test]
+    fn queue_merge_selection_changed() {
+        let mut q = EventQueue::new();
+        q.push(EditorEvent::SelectionChanged);
+        q.push(EditorEvent::SelectionChanged);
+        q.push(EditorEvent::SelectionChanged);
+        assert_eq!(q.len(), 1);
+    }
 }

@@ -295,4 +295,46 @@ mod tests {
         let tokens = lexer.lex_full("# This is a comment\nkey = \"value\"");
         assert!(tokens.iter().any(|t| t.kind == TokenKind::LineComment));
     }
+
+    #[test]
+    fn test_toml_empty() {
+        assert!(TomlLexer::new().lex_full("").is_empty());
+    }
+
+    #[test]
+    fn test_toml_array_table() {
+        let tokens = TomlLexer::new().lex_full("[[array]]\nkey = 1");
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::TomlTable));
+    }
+
+    #[test]
+    fn test_toml_strings() {
+        let tokens = TomlLexer::new().lex_full(r#""double" 'single'"#);
+        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::StringLiteral).count(), 2);
+    }
+
+    #[test]
+    fn test_toml_numbers_and_bools() {
+        let tokens = TomlLexer::new().lex_full("key = -123.45\nflag = true\ndate = 1979-05-27T07:32:00Z");
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::NumberLiteral));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Keyword));
+    }
+
+    #[test]
+    fn test_toml_punctuation() {
+        let tokens = TomlLexer::new().lex_full("{ a = 1, b = 2 }");
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Punctuation));
+    }
+
+    #[test]
+    fn test_toml_unknown() {
+        let tokens = TomlLexer::new().lex_full("@");
+        assert_eq!(tokens[0].kind, TokenKind::Unknown);
+    }
+
+    #[test]
+    fn test_toml_unclosed_table() {
+        let tokens = TomlLexer::new().lex_full("[table");
+        assert_eq!(tokens[0].kind, TokenKind::TomlTable);
+    }
 }

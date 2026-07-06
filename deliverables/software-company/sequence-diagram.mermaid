@@ -1,0 +1,194 @@
+# Aether Studio UX 优化 — 时序图
+
+## 1. 键盘输入 → 焦点路由 → 编辑器操作 → 事件触发 → 脏矩形标记 → WM_PAINT 渲染
+
+```mermaid
+sequenceDiagram
+    participant User as 用户按键
+    participant WP as window_proc
+    participant KH as keyboard_handler
+    participant FM as FocusManager
+    participant ES as EditorState
+    participant EQ as EventQueue
+    participant DT as DirtyRectTracker
+    participant Win32 as Win32 API
+    participant PH as paint_handler
+    participant R as render()
+
+    User->>WP: WM_KEYDOWN (wparam=VK_LEFT)
+    WP->>KH: on_keydown(hwnd, msg, wparam, lparam)
+    
+    KH->>FM: current()
+    FM-->>KH: FocusTarget::Editor
+    
+    Note over KH: 焦点在编辑器，处理方向键
+    KH->>ES: move_cursor_left()
+    
+    ES->>ES: cursor_col -= char_width (unicode-width)
+    ES->>EQ: push(CursorMoved)
+    ES->>ES: ensure_cursor_visible()
+    ES->>EQ: push(Scrolled)
+    
+    ES-->>KH: 返回
+    KH->>Win32: InvalidateRect(hwnd, NULL, FALSE)
+    
+    Note over Win32: 消息循环调度 WM_PAINT
+    
+    Win32->>WP: WM_PAINT
+    WP->>PH: on_paint(hwnd, msg, wparam, lparam)
+    
+    PH->>ES: flush_events_to_dirty_tracker()
+    ES->>EQ: drain_to_dirty_tracker(DT, callback)
+    EQ->>DT: mark_region(cursor_x, cursor_y, 2.0, line_height, EditorContent)
+    EQ->>DT: mark_region(editor_x, editor_y, w, h, EditorContent)
+    
+    PH->>ES: render()
+    ES->>DT: has_dirty()
+    DT-->>ES: true
+    
+    ES->>ES: rebuild_cache()
+    ES->>ES: 根据 DT 选择渲染范围
+    ES->>Win32: Direct2D 绘制调用
+    ES->>DT: clear()
+    
+    PH->>Win32: EndPaint()
+```
+
+## 2. 替换全部（replace_all）完整流程
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant ES as EditorState
+    participant H as History
+    participant PT as PieceTable
+    participant EQ as EventQueue
+    participant SB as StatusBar
+    participant Win32 as Win32 API
+
+    User->>ES: replace_all()
+    
+    ES->>ES: find_all() 搜索匹配
+    ES->>PT: 记录 before_pieces (快照)
+    
+    Note over ES,H: begin_group() — 原子撤销组开始
+    ES->>H: begin_group()
+    
+    loop 从后往前遍历匹配
+        ES->>PT: delete(pos, end_pos)
+        ES->>PT: insert(pos, replace_text)
+        ES->>H: record(before_pieces, cursor, OpType::Replace)
+    end
+    
+    Note over ES,H: end_group() — 撤销组合并
+    ES->>H: end_group()
+    
+    ES->>ES: is_dirty = true
+    ES->>ES: buffer_version += 1
+    ES->>EQ: push(TextChanged { start_line, end_line })
+    ES->>EQ: push(CursorMoved)
+    ES->>SB: update_status("已替换 N 处")
+    ES->>EQ: push(StatusBarChanged)
+    
+    ES->>Win32: InvalidateRect(hwnd, NULL, FALSE)
+    
+    ES-->>User: count
+```
+
+## 3. 标签页切换流程（重构后）
+
+```mermaid
+sequenceDiagram
+    participant User as 用户点击标签
+    participant WP as window_proc
+    participant MH as mouse_handler
+    participant ES as EditorState
+    participant EQ as EventQueue
+    participant DT as DirtyRectTracker
+
+    User->>WP: WM_LBUTTONDOWN
+    WP->>MH: on_lbutton_down(hwnd, msg, wparam, lparam)
+    
+    MH->>ES: hit_test_tab(x, y)
+    ES-->>MH: Some(tab_index)
+    
+    Note over MH,ES: 重构后：只需更新索引，无需字段搬移
+    MH->>ES: switch_to_tab(tab_index)
+    
+    ES->>ES: active_tab = tab_index
+    Note over ES: 不再调用 sync_to_tab / sync_from_tab
+    Note over ES: EditorState 通过 active_tab() 直接读取 Tab 字段
+    
+    ES->>EQ: push(TabChanged)
+    ES->>DT: mark_full_window() (标签切换需全量重绘)
+    
+    MH->>WP: InvalidateRect(hwnd, NULL, FALSE)
+```
+
+## 4. 焦点切换流程（打开命令面板）
+
+```mermaid
+sequenceDiagram
+    participant User as Ctrl+Shift+P
+    participant KH as keyboard_handler
+    participant FM as FocusManager
+    participant ES as EditorState
+    participant CP as CommandPalette
+    participant Win32 as Win32 API
+
+    User->>KH: WM_KEYDOWN (Ctrl+Shift+P)
+    KH->>FM: current()
+    FM-->>KH: FocusTarget::Editor
+    
+    KH->>ES: toggle_command_palette()
+    ES->>CP: visible = true
+    ES->>FM: push(FocusTarget::CommandPalette)
+    Note over FM: history 栈: [Editor]
+    
+    KH->>Win32: InvalidateRect(hwnd, NULL, FALSE)
+    
+    Note over User: 用户按 Esc
+    User->>KH: WM_KEYDOWN (VK_ESCAPE)
+    KH->>FM: current()
+    FM-->>KH: FocusTarget::CommandPalette
+    
+    KH->>CP: visible = false
+    KH->>FM: pop()
+    Note over FM: 恢复为 Editor
+    FM-->>KH: FocusTarget::Editor
+    
+    KH->>Win32: InvalidateRect(hwnd, NULL, FALSE)
+```
+
+## 5. 窗口初始化与渲染目标创建
+
+```mermaid
+sequenceDiagram
+    participant Main as main()
+    participant WS as window_setup
+    participant Win32 as Win32 API
+    participant ES as EditorState
+    participant R as RenderContext
+    participant D2D as Direct2D
+
+    Main->>WS: create_window()
+    WS->>Win32: RegisterClassExW(...)
+    WS->>Win32: CreateWindowExW(...)
+    Win32-->>WS: HWND
+    
+    WS->>ES: EditorState::new(hwnd)
+    ES->>R: RenderContext::new()
+    R->>D2D: D2D1CreateFactory(...)
+    D2D-->>R: ID2D1Factory
+    ES->>ES: init_render_target()
+    ES->>D2D: CreateHwndRenderTarget(...)
+    D2D-->>ES: ID2D1HwndRenderTarget
+    ES->>ES: brush_cache.init_common_brushes()
+    ES->>ES: text_format_cache.init_common_formats()
+    
+    WS->>Win32: ShowWindow(hwnd, SW_SHOW)
+    WS->>Win32: UpdateWindow(hwnd)
+    
+    Note over Win32: WM_PAINT 触发首次渲染
+    Win32->>ES: render() (首次全量渲染)
+```

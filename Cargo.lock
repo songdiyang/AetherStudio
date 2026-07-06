@@ -113,6 +113,7 @@ dependencies = [
  "dirs",
  "serde",
  "serde_json",
+ "windows",
 ]
 
 [[package]]

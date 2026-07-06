@@ -185,3 +185,336 @@ impl Default for PluginRuntime {
         Self::new().expect("Failed to create PluginRuntime")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::time::{Duration, SystemTime};
+
+    fn temp_wasm_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("aether_plugin_runtime_test_{}.wasm", name))
+    }
+
+    fn write_valid_wasm(path: &PathBuf, extra: &[u8]) {
+        let mut data = WASM_MAGIC.to_vec();
+        data.extend_from_slice(extra);
+        fs::write(path, &data).unwrap();
+    }
+
+    fn cleanup(path: &PathBuf) {
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn plugin_runtime_new_succeeds() {
+        let runtime = PluginRuntime::new();
+        assert!(runtime.is_ok());
+    }
+
+    #[test]
+    fn plugin_runtime_default_succeeds() {
+        let runtime = PluginRuntime::default();
+        assert_eq!(runtime.plugin_count(), 0);
+    }
+
+    #[test]
+    fn plugin_id_traits() {
+        let a = PluginId(1);
+        let b = PluginId(1);
+        let c = PluginId(2);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(a.clone(), a);
+        assert_eq!(format!("{:?}", a), "PluginId(1)");
+
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h1 = DefaultHasher::new();
+        a.hash(&mut h1);
+        let mut h2 = DefaultHasher::new();
+        b.hash(&mut h2);
+        assert_eq!(h1.finish(), h2.finish());
+    }
+
+    #[test]
+    fn load_plugin_with_valid_wasm_succeeds() {
+        let path = temp_wasm_path("valid");
+        cleanup(&path);
+        write_valid_wasm(&path, b"\x01\x00\x00\x00");
+
+        let mut runtime = PluginRuntime::new().unwrap();
+        let id = runtime.load_plugin(&path).expect("应能加载有效 WASM 文件");
+        assert_eq!(runtime.plugin_count(), 1);
+        assert!(runtime._plugins.contains_key(&id));
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn load_plugin_missing_file_fails() {
+        let path = temp_wasm_path("missing");
+        cleanup(&path);
+
+        let mut runtime = PluginRuntime::new().unwrap();
+        let err = runtime.load_plugin(&path).unwrap_err();
+        assert!(err.contains("不存在"), "错误应提示文件不存在: {}", err);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn load_plugin_invalid_magic_fails() {
+        let path = temp_wasm_path("invalid_magic");
+        cleanup(&path);
+        fs::write(&path, b"NOTWASM").unwrap();
+
+        let mut runtime = PluginRuntime::new().unwrap();
+        let err = runtime.load_plugin(&path).unwrap_err();
+        assert!(err.contains("不是有效的 WASM 格式"), "错误应提示 WASM 格式无效: {}", err);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn load_plugin_too_large_fails() {
+        let path = temp_wasm_path("too_large");
+        cleanup(&path);
+
+        {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path)
+                .unwrap();
+            file.write_all(WASM_MAGIC).unwrap();
+            file.set_len(MAX_PLUGIN_SIZE + 1).unwrap();
+        }
+
+        let mut runtime = PluginRuntime::new().unwrap();
+        let err = runtime.load_plugin(&path).unwrap_err();
+        assert!(err.contains("过大"), "错误应提示文件过大: {}", err);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn load_plugin_id_exhaustion_fails() {
+        let path = temp_wasm_path("exhaust");
+        cleanup(&path);
+        write_valid_wasm(&path, b"\x01\x00\x00\x00");
+
+        let mut runtime = PluginRuntime::new().unwrap();
+        runtime._next_id = u32::MAX;
+        let err = runtime.load_plugin(&path).unwrap_err();
+        assert!(err.contains("ID 已耗尽"), "错误应提示 ID 耗尽: {}", err);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn unload_plugin_removes_plugin_and_permissions() {
+        let path = temp_wasm_path("unload");
+        cleanup(&path);
+        write_valid_wasm(&path, b"\x01\x00\x00\x00");
+
+        let mut runtime = PluginRuntime::new().unwrap();
+        let id = runtime.load_plugin(&path).unwrap();
+        assert_eq!(runtime.plugin_count(), 1);
+        runtime.unload_plugin(id);
+        assert_eq!(runtime.plugin_count(), 0);
+        assert!(!runtime._plugins.contains_key(&id));
+        assert!(!runtime.permissions.contains_key(&id));
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn grant_permission_success() {
+        let path = temp_wasm_path("grant_ok");
+        cleanup(&path);
+        write_valid_wasm(&path, b"\x01\x00\x00\x00");
+
+        let mut runtime = PluginRuntime::new().unwrap();
+        let id = runtime.load_plugin(&path).unwrap();
+        let future = SystemTime::now() + Duration::from_secs(3600);
+        let result = runtime.grant_permission(id, PermissionLevel::L3_Network, "network", Some(future));
+        assert!(result.is_ok());
+
+        let perm_mgr = runtime.permissions.get(&id).unwrap();
+        assert!(perm_mgr.is_granted(PermissionLevel::L3_Network));
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn grant_permission_past_expiry_fails() {
+        let path = temp_wasm_path("grant_past");
+        cleanup(&path);
+        write_valid_wasm(&path, b"\x01\x00\x00\x00");
+
+        let mut runtime = PluginRuntime::new().unwrap();
+        let id = runtime.load_plugin(&path).unwrap();
+        let past = SystemTime::now() - Duration::from_secs(1);
+        let err = runtime
+            .grant_permission(id, PermissionLevel::L2_FileIO, "file", Some(past))
+            .unwrap_err();
+        assert!(err.contains("过去时间"), "错误应提示过期时间不能是过去时间: {}", err);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn grant_permission_unknown_plugin_fails() {
+        let mut runtime = PluginRuntime::new().unwrap();
+        let err = runtime
+            .grant_permission(PluginId(999), PermissionLevel::L1_ReadOnly, "x", None)
+            .unwrap_err();
+        assert!(err.contains("未加载"), "错误应提示插件未加载: {}", err);
+    }
+
+    #[test]
+    fn revoke_all_permissions_clears_them() {
+        let path = temp_wasm_path("revoke");
+        cleanup(&path);
+        write_valid_wasm(&path, b"\x01\x00\x00\x00");
+
+        let mut runtime = PluginRuntime::new().unwrap();
+        let id = runtime.load_plugin(&path).unwrap();
+        runtime
+            .grant_permission(id, PermissionLevel::L4_System, "admin", None)
+            .unwrap();
+        assert!(runtime.permissions.get(&id).unwrap().is_granted(PermissionLevel::L4_System));
+        runtime.revoke_all_permissions(id);
+        assert!(!runtime.permissions.get(&id).unwrap().is_granted(PermissionLevel::L1_ReadOnly));
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn call_hook_plugin_not_loaded_fails() {
+        let mut runtime = PluginRuntime::new().unwrap();
+        let err = runtime.call_hook(PluginId(42), "on_activate", serde_json::Value::Null).unwrap_err();
+        assert!(err.contains("未加载"), "错误应提示插件未加载: {}", err);
+    }
+
+    #[test]
+    fn call_hook_permission_denied_for_l2() {
+        let path = temp_wasm_path("hook_denied");
+        cleanup(&path);
+        write_valid_wasm(&path, b"\x01\x00\x00\x00");
+
+        let mut runtime = PluginRuntime::new().unwrap();
+        let id = runtime.load_plugin(&path).unwrap();
+        let err = runtime.call_hook(id, "write_file", serde_json::Value::Null).unwrap_err();
+        assert!(err.contains("缺少执行"), "错误应提示缺少权限: {}", err);
+        assert!(err.contains("L2_FileIO"), "错误应包含所需权限级别: {}", err);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn call_hook_permission_allowed_returns_not_integrated() {
+        let path = temp_wasm_path("hook_allowed");
+        cleanup(&path);
+        write_valid_wasm(&path, b"\x01\x00\x00\x00");
+
+        let mut runtime = PluginRuntime::new().unwrap();
+        let id = runtime.load_plugin(&path).unwrap();
+        let err = runtime.call_hook(id, "on_activate", serde_json::Value::Null).unwrap_err();
+        assert!(err.contains("无法执行"), "错误应提示钩子无法执行: {}", err);
+        assert!(err.contains("WASM 运行时尚未集成"), "错误应说明 WASM 未集成: {}", err);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn call_hook_with_granted_l2_succeeds_permission_check() {
+        let path = temp_wasm_path("hook_granted");
+        cleanup(&path);
+        write_valid_wasm(&path, b"\x01\x00\x00\x00");
+
+        let mut runtime = PluginRuntime::new().unwrap();
+        let id = runtime.load_plugin(&path).unwrap();
+        runtime.grant_permission(id, PermissionLevel::L2_FileIO, "file", None).unwrap();
+
+        let err = runtime.call_hook(id, "write_file", serde_json::Value::Null).unwrap_err();
+        // 权限通过，但 WASM 未集成
+        assert!(err.contains("WASM 运行时尚未集成"), "应通过权限检查并返回未集成错误: {}", err);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn call_hook_unknown_hook_defaults_to_l1() {
+        let path = temp_wasm_path("hook_unknown");
+        cleanup(&path);
+        write_valid_wasm(&path, b"\x01\x00\x00\x00");
+
+        let mut runtime = PluginRuntime::new().unwrap();
+        let id = runtime.load_plugin(&path).unwrap();
+        // 默认拥有 L1，因此权限检查通过，但 WASM 未集成
+        let err = runtime.call_hook(id, "unknown_hook", serde_json::Value::Null).unwrap_err();
+        assert!(err.contains("WASM 运行时尚未集成"), "未知 hook 默认 L1，应通过权限检查: {}", err);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn required_permission_for_hook_mapping() {
+        let runtime = PluginRuntime::new().unwrap();
+        let cases: Vec<(&str, PermissionLevel)> = vec![
+            ("on_activate", PermissionLevel::L1_ReadOnly),
+            ("on_deactivate", PermissionLevel::L1_ReadOnly),
+            ("get_theme", PermissionLevel::L1_ReadOnly),
+            ("get_language", PermissionLevel::L1_ReadOnly),
+            ("on_save", PermissionLevel::L2_FileIO),
+            ("on_open", PermissionLevel::L2_FileIO),
+            ("read_file", PermissionLevel::L2_FileIO),
+            ("write_file", PermissionLevel::L2_FileIO),
+            ("fetch", PermissionLevel::L3_Network),
+            ("http_request", PermissionLevel::L3_Network),
+            ("websocket", PermissionLevel::L3_Network),
+            ("exec", PermissionLevel::L4_System),
+            ("spawn", PermissionLevel::L4_System),
+            ("shell", PermissionLevel::L4_System),
+            ("run_command", PermissionLevel::L4_System),
+            ("totally_unknown", PermissionLevel::L1_ReadOnly),
+        ];
+        for (hook, expected) in cases {
+            assert_eq!(
+                runtime.required_permission_for_hook(hook),
+                expected,
+                "hook '{}' 权限映射错误",
+                hook
+            );
+        }
+    }
+
+    #[test]
+    fn plugin_count_tracks_load_and_unload() {
+        let path1 = temp_wasm_path("count1");
+        let path2 = temp_wasm_path("count2");
+        cleanup(&path1);
+        cleanup(&path2);
+        write_valid_wasm(&path1, b"\x01\x00\x00\x00");
+        write_valid_wasm(&path2, b"\x02\x00\x00\x00");
+
+        let mut runtime = PluginRuntime::new().unwrap();
+        assert_eq!(runtime.plugin_count(), 0);
+        let id1 = runtime.load_plugin(&path1).unwrap();
+        assert_eq!(runtime.plugin_count(), 1);
+        let id2 = runtime.load_plugin(&path2).unwrap();
+        assert_eq!(runtime.plugin_count(), 2);
+        runtime.unload_plugin(id1);
+        assert_eq!(runtime.plugin_count(), 1);
+        runtime.unload_plugin(id2);
+        assert_eq!(runtime.plugin_count(), 0);
+
+        cleanup(&path1);
+        cleanup(&path2);
+    }
+}

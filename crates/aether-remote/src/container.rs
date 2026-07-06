@@ -29,7 +29,7 @@ impl ContainerRemoteFs {
         Self { _config: config }
     }
 
-    fn backend_cmd(&self) -> &'static str {
+    pub(crate) fn backend_cmd(&self) -> &'static str {
         match self._config.backend {
             ContainerBackend::Docker => "docker",
             ContainerBackend::Podman => "podman",

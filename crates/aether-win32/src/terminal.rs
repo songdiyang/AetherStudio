@@ -1,3 +1,5 @@
+#![allow(clippy::items_after_test_module)]
+
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
@@ -5,6 +7,16 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+/// 终端启动结果（由后台线程产生，传回主线程）
+type TerminalStartupResult = Result<
+    (
+        Arc<Mutex<std::process::ChildStdin>>,
+        std::process::Child,
+        mpsc::Receiver<String>,
+    ),
+    String,
+>;
 
 /// 终端面板状态
 /// 使用 std::process 实现跨平台终端模拟
@@ -23,15 +35,13 @@ pub struct TerminalPanel {
     pub cursor_pos: usize,
     /// 子进程stdin（用于发送输入）
     child_stdin: Option<Arc<Mutex<std::process::ChildStdin>>>,
-    /// 子进程stdout（用于读取输出）
-    child_stdout: Option<Arc<Mutex<std::process::ChildStdout>>>,
-    /// 子进程stderr（用于读取错误输出）
-    child_stderr: Option<Arc<Mutex<std::process::ChildStderr>>>,
     /// 子进程句柄（用于终止进程）
     child_process: Option<std::process::Child>,
     /// 输出接收器（从读取线程接收终端输出）
     output_receiver: Option<mpsc::Receiver<String>>,
-    /// 是否运行中
+    /// 启动结果接收器：后台线程启动 shell 后通过此通道返回结果
+    startup_receiver: Option<mpsc::Receiver<TerminalStartupResult>>,
+    /// 是否运行中（包含正在启动的状态）
     pub running: bool,
     /// 工作目录
     pub cwd: String,
@@ -51,10 +61,9 @@ impl TerminalPanel {
             input_line: String::new(),
             cursor_pos: 0,
             child_stdin: None,
-            child_stdout: None,
-            child_stderr: None,
             child_process: None,
             output_receiver: None,
+            startup_receiver: None,
             running: false,
             cwd: std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
@@ -69,37 +78,73 @@ impl TerminalPanel {
         self.visible = !self.visible;
     }
 
-    /// 启动终端会话
+    /// 启动终端会话（异步，不阻塞 UI 线程）
     pub fn start(&mut self) -> Result<(), String> {
+        if self.running || self.startup_receiver.is_some() {
+            return Ok(());
+        }
+
         let shell = detect_default_shell();
-
-        let mut child = Command::new(&shell)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .current_dir(&self.cwd)
-            .creation_flags(0x00000200) // CREATE_NEW_PROCESS_GROUP
-            .spawn()
-            .map_err(|e| format!("启动终端失败: {}", e))?;
-
-        let stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
-
-        self.child_stdin = Some(Arc::new(Mutex::new(stdin)));
-        self.child_stdout = Some(Arc::new(Mutex::new(stdout)));
-        self.child_stderr = Some(Arc::new(Mutex::new(stderr)));
-        self.child_process = Some(child);
+        let cwd = self.cwd.clone();
+        let (tx, rx) = mpsc::channel();
+        self.startup_receiver = Some(rx);
         self.running = true;
 
-        // 启动读取线程，使用 channel 传递输出到主线程
-        let (tx, rx) = mpsc::channel();
-        self.output_receiver = Some(rx);
-        self.spawn_stdout_reader(tx.clone());
-        self.spawn_stderr_reader(tx);
+        self.push_output(&format!("正在启动终端: {}...", shell));
 
-        self.push_output(&format!("终端已启动: {}\n", shell));
+        thread::spawn(move || {
+            match Command::new(&shell)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .current_dir(&cwd)
+                .creation_flags(0x00000200) // CREATE_NEW_PROCESS_GROUP
+                .spawn()
+            {
+                Ok(mut child) => {
+                    let stdin = Arc::new(Mutex::new(child.stdin.take().unwrap()));
+                    let stdout = child.stdout.take().unwrap();
+                    let stderr = child.stderr.take().unwrap();
+
+                    // 启动读取线程
+                    let (out_tx, out_rx) = mpsc::channel();
+                    spawn_reader(stdout, out_tx.clone());
+                    spawn_reader(stderr, out_tx);
+
+                    let _ = tx.send(Ok((stdin, child, out_rx)));
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(format!("启动终端失败: {}", e)));
+                }
+            }
+        });
+
         Ok(())
+    }
+
+    /// 轮询终端启动结果（应在主线程每帧调用）
+    pub fn poll_startup(&mut self) {
+        if let Some(rx) = self.startup_receiver.take() {
+            match rx.try_recv() {
+                Ok(Ok((stdin, child, output_rx))) => {
+                    self.child_stdin = Some(stdin);
+                    self.child_process = Some(child);
+                    self.output_receiver = Some(output_rx);
+                    self.push_output("终端已启动\n");
+                }
+                Ok(Err(e)) => {
+                    self.push_output(&e);
+                    self.running = false;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.startup_receiver = Some(rx);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.push_output("终端启动线程异常退出");
+                    self.running = false;
+                }
+            }
+        }
     }
 
     /// 向终端写入输入
@@ -128,9 +173,12 @@ impl TerminalPanel {
             {
                 use windows::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_C_EVENT};
                 unsafe {
-                    // SEC-W02: 向子进程组发送 Ctrl+C，而非当前进程组
-                    let pid = child.id();
-                    let _ = GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid);
+                    // C-07: GenerateConsoleCtrlEvent 的第二个参数是进程组 ID。
+                    // 子进程以 CREATE_NEW_PROCESS_GROUP 启动，因此其 PID 即为进程组 ID。
+                    let process_group_id = child.id();
+                    if let Err(e) = GenerateConsoleCtrlEvent(CTRL_C_EVENT, process_group_id) {
+                        eprintln!("发送 Ctrl+C 失败: {:?}", e);
+                    }
                 }
             }
         }
@@ -140,9 +188,8 @@ impl TerminalPanel {
     pub fn stop(&mut self) {
         self.running = false;
         self.child_stdin = None;
-        self.child_stdout = None;
-        self.child_stderr = None;
         self.output_receiver = None;
+        self.startup_receiver = None;
 
         // 显式终止子进程，避免孤儿进程泄漏
         if let Some(mut child) = self.child_process.take() {
@@ -187,57 +234,6 @@ impl TerminalPanel {
         }
     }
 
-    /// 启动 stdout 读取线程
-    fn spawn_stdout_reader(&mut self, tx: mpsc::Sender<String>) {
-        if let Some(stdout) = &self.child_stdout {
-            let stdout = Arc::clone(stdout);
-            thread::spawn(move || {
-                let mut buffer = [0u8; 1024];
-                loop {
-                    if let Ok(mut stdout) = stdout.lock() {
-                        match stdout.read(&mut buffer) {
-                            Ok(0) => break, // EOF
-                            Ok(n) => {
-                                let text = String::from_utf8_lossy(&buffer[..n]).to_string();
-                                if tx.send(text).is_err() {
-                                    break; // 接收端已关闭
-                                }
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                    // 增加轮询间隔，从 10ms 改为 50ms，减少 CPU 占用
-                    thread::sleep(std::time::Duration::from_millis(50));
-                }
-            });
-        }
-    }
-
-    /// 启动 stderr 读取线程
-    fn spawn_stderr_reader(&mut self, tx: mpsc::Sender<String>) {
-        if let Some(stderr) = &self.child_stderr {
-            let stderr = Arc::clone(stderr);
-            thread::spawn(move || {
-                let mut buffer = [0u8; 1024];
-                loop {
-                    if let Ok(mut stderr) = stderr.lock() {
-                        match stderr.read(&mut buffer) {
-                            Ok(0) => break, // EOF
-                            Ok(n) => {
-                                let text = String::from_utf8_lossy(&buffer[..n]).to_string();
-                                if tx.send(text).is_err() {
-                                    break; // 接收端已关闭
-                                }
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                    thread::sleep(std::time::Duration::from_millis(50));
-                }
-            });
-        }
-    }
-
     /// 获取可见的输出文本
     pub fn visible_output(&self) -> Vec<String> {
         self.output_lines.iter().cloned().collect()
@@ -278,6 +274,155 @@ impl TerminalPanel {
     pub fn clear(&mut self) {
         self.output_lines.clear();
         self.scroll_offset = 0;
+    }
+}
+
+/// 启动通用读取线程（stdout/stderr）
+fn spawn_reader<R>(reader: R, tx: mpsc::Sender<String>)
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut reader = reader;
+        let mut buffer = [0u8; 1024];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    let text = String::from_utf8_lossy(&buffer[..n]).to_string();
+                    if tx.send(text).is_err() {
+                        break; // 接收端已关闭
+                    }
+                }
+                Err(_) => break,
+            }
+            // 增加轮询间隔，减少 CPU 占用
+            thread::sleep(std::time::Duration::from_millis(50));
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_terminal_new() {
+        let panel = TerminalPanel::new();
+        assert!(!panel.visible);
+        assert_eq!(panel.height, 200.0);
+        assert!(panel.output_lines.is_empty());
+        assert_eq!(panel.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_terminal_push_output_and_visible() {
+        let mut panel = TerminalPanel::new();
+        panel.push_output("line1\nline2\nline3");
+        assert_eq!(panel.output_lines.len(), 3);
+        assert_eq!(panel.visible_output(), vec!["line1", "line2", "line3"]);
+    }
+
+    #[test]
+    fn test_terminal_visible_window() {
+        let mut panel = TerminalPanel::new();
+        panel.push_output("a\nb\nc\nd\ne");
+        // scroll_offset=1 表示从底部向上偏移 1 行
+        panel.scroll_offset = 1;
+        let window = panel.visible_window(2);
+        assert_eq!(window.len(), 2);
+        assert_eq!(window[0], "c");
+        assert_eq!(window[1], "d");
+
+        // 不偏移时应显示最底部两行
+        panel.scroll_offset = 0;
+        let window = panel.visible_window(2);
+        assert_eq!(window[0], "d");
+        assert_eq!(window[1], "e");
+    }
+
+    #[test]
+    fn test_terminal_scroll_up_down() {
+        let mut panel = TerminalPanel::new();
+        panel.push_output("a\nb\nc");
+        panel.scroll_up(1);
+        assert_eq!(panel.scroll_offset, 1);
+        panel.scroll_down(1);
+        assert_eq!(panel.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_terminal_scroll_does_not_exceed_total() {
+        let mut panel = TerminalPanel::new();
+        panel.push_output("a\nb");
+        panel.scroll_up(100);
+        assert_eq!(panel.scroll_offset, 2);
+    }
+
+    #[test]
+    fn test_terminal_clear() {
+        let mut panel = TerminalPanel::new();
+        panel.push_output("a\nb");
+        panel.scroll_up(1);
+        panel.clear();
+        assert!(panel.output_lines.is_empty());
+        assert_eq!(panel.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_terminal_toggle() {
+        let mut panel = TerminalPanel::new();
+        panel.toggle();
+        assert!(panel.visible);
+        panel.toggle();
+        assert!(!panel.visible);
+    }
+
+    #[test]
+    fn test_terminal_visible_window_edge_cases() {
+        let panel = TerminalPanel::new();
+        assert!(panel.visible_window(0).is_empty());
+        assert!(panel.visible_window(5).is_empty());
+    }
+
+    #[test]
+    fn test_terminal_scroll_up_clamps_and_down_saturates() {
+        let mut panel = TerminalPanel::new();
+        panel.push_output("a\nb");
+        panel.scroll_up(100);
+        assert_eq!(panel.scroll_offset, 2);
+        panel.scroll_down(100);
+        assert_eq!(panel.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_terminal_push_output_trims_and_resets_scroll() {
+        let mut panel = TerminalPanel::new();
+        panel.max_lines = 3;
+        panel.scroll_up(2);
+        panel.push_output("1\n2\n3\n4");
+        assert_eq!(panel.output_lines.len(), 3);
+        assert_eq!(panel.output_lines.front().unwrap(), "2");
+        assert_eq!(panel.output_lines.back().unwrap(), "4");
+        assert_eq!(panel.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_terminal_push_output_preserves_multi_line_text() {
+        let mut panel = TerminalPanel::new();
+        panel.push_output("line1\nline2\r\nline3");
+        assert_eq!(panel.visible_output().len(), 3);
+    }
+
+    #[test]
+    fn test_terminal_visible_window_with_scroll() {
+        let mut panel = TerminalPanel::new();
+        panel.push_output("1\n2\n3\n4\n5");
+        panel.scroll_offset = 2;
+        let window = panel.visible_window(2);
+        assert_eq!(window.len(), 2);
+        assert_eq!(window[0], "2");
+        assert_eq!(window[1], "3");
     }
 }
 

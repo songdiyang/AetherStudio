@@ -4,6 +4,7 @@
 pub mod diff_view;
 pub mod dirty_rect;
 pub mod events;
+pub mod focus_manager;
 pub mod render_context;
 pub mod launch;
 
@@ -24,6 +25,7 @@ pub mod input;
 pub mod layout;
 pub mod logging;
 pub mod menu_bar;
+pub mod new_project_dialog;
 pub mod open_tabs;
 pub mod recent_projects;
 pub mod render;

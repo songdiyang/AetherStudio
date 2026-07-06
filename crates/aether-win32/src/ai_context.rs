@@ -62,3 +62,38 @@ pub fn truncate_middle(s: &str, max_len: usize) -> String {
     let tail = &s[tail_start..];
     format!("{}\n...（已省略 {} 字符）...\n{}", head, s.len() - max_len, tail)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_attachment_labels() {
+        assert_eq!(AiContextAttachment::CurrentFile.label(), "当前文件");
+        assert_eq!(AiContextAttachment::Selection.short_label(), "🖱 选区");
+        assert_eq!(
+            AiContextAttachment::CustomText("日志".to_string()).label(),
+            "自定义文本"
+        );
+    }
+
+    #[test]
+    fn test_wrap_code_block() {
+        let wrapped = wrap_code_block("src/main.rs", "rust", "fn main() {}");
+        assert!(wrapped.contains("```"));
+        assert!(wrapped.contains("src/main.rs"));
+        assert!(wrapped.contains("fn main() {}"));
+    }
+
+    #[test]
+    fn test_truncate_middle() {
+        let short = "hello";
+        assert_eq!(truncate_middle(short, 10), "hello");
+
+        let long = "abcdefghijklmnopqrstuvwxyz";
+        let truncated = truncate_middle(long, 10);
+        assert!(truncated.contains("..."));
+        assert!(truncated.starts_with("abcde"));
+        assert!(truncated.ends_with("vwxyz"));
+    }
+}

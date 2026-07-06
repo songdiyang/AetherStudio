@@ -225,25 +225,25 @@ impl Default for PythonLexer {
 }
 
 fn is_keyword_bytes(bytes: &[u8]) -> bool {
-    match bytes {
+    matches!(
+        bytes,
         b"False" | b"None" | b"True" | b"and" | b"as" | b"assert" | b"async" | b"await"
-        | b"break" | b"class" | b"continue" | b"def" | b"del" | b"elif" | b"else"
-        | b"except" | b"finally" | b"for" | b"from" | b"global" | b"if" | b"import"
-        | b"in" | b"is" | b"lambda" | b"nonlocal" | b"not" | b"or" | b"pass" | b"raise"
-        | b"return" | b"try" | b"while" | b"with" | b"yield" => true,
-        _ => false,
-    }
+            | b"break" | b"class" | b"continue" | b"def" | b"del" | b"elif" | b"else"
+            | b"except" | b"finally" | b"for" | b"from" | b"global" | b"if" | b"import"
+            | b"in" | b"is" | b"lambda" | b"nonlocal" | b"not" | b"or" | b"pass" | b"raise"
+            | b"return" | b"try" | b"while" | b"with" | b"yield"
+    )
 }
 
 fn is_builtin_bytes(bytes: &[u8]) -> bool {
-    match bytes {
+    matches!(
+        bytes,
         b"int" | b"float" | b"str" | b"bool" | b"list" | b"dict" | b"tuple" | b"set"
-        | b"frozenset" | b"bytes" | b"bytearray" | b"memoryview" | b"object" | b"type"
-        | b"range" | b"enumerate" | b"zip" | b"map" | b"filter" | b"len" | b"print"
-        | b"input" | b"open" | b"super" | b"self" | b"Exception" | b"BaseException"
-        | b"ValueError" | b"TypeError" | b"KeyError" | b"IndexError" => true,
-        _ => false,
-    }
+            | b"frozenset" | b"bytes" | b"bytearray" | b"memoryview" | b"object" | b"type"
+            | b"range" | b"enumerate" | b"zip" | b"map" | b"filter" | b"len" | b"print"
+            | b"input" | b"open" | b"super" | b"self" | b"Exception" | b"BaseException"
+            | b"ValueError" | b"TypeError" | b"KeyError" | b"IndexError"
+    )
 }
 
 fn skip_line_comment(bytes: &[u8], pos: usize) -> usize {
@@ -408,5 +408,57 @@ mod tests {
         let tokens = lexer.lex_full("f'Hello {name}'");
         let kind = tokens.iter().find(|t| t.start == 0).map(|t| t.kind);
         assert_eq!(kind, Some(TokenKind::FormatString));
+    }
+
+    #[test]
+    fn test_python_empty() {
+        assert!(PythonLexer::new().lex_full("").is_empty());
+    }
+
+    #[test]
+    fn test_python_comments() {
+        let tokens = PythonLexer::new().lex_full("# comment\nx");
+        assert_eq!(tokens[0].kind, TokenKind::LineComment);
+        assert_eq!(tokens[1].kind, TokenKind::Newline);
+    }
+
+    #[test]
+    fn test_python_strings() {
+        let tokens = PythonLexer::new().lex_full("\"double\" 'single' \"\"\"triple\"\"\"");
+        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::StringLiteral).count(), 3);
+    }
+
+    #[test]
+    fn test_python_fstring_triple() {
+        let tokens = PythonLexer::new().lex_full("f\"\"\"x{y}\"\"\"");
+        assert_eq!(tokens[0].kind, TokenKind::FormatString);
+    }
+
+    #[test]
+    fn test_python_numbers() {
+        let tokens = PythonLexer::new().lex_full("1 2.3 4j 5e-2 1_000");
+        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::NumberLiteral).count(), 5);
+    }
+
+    #[test]
+    fn test_python_operators() {
+        let tokens = PythonLexer::new().lex_full("+ - * ** / // % == != <= >= ->");
+        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::Operator).count(), 12);
+    }
+
+    #[test]
+    fn test_python_punctuation_and_unknown() {
+        let tokens = PythonLexer::new().lex_full("(){}[],;:.@");
+        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::Punctuation).count(), 11);
+        let tokens = PythonLexer::new().lex_full("中文");
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Unknown));
+    }
+
+    #[test]
+    fn test_python_keywords_and_builtins() {
+        let tokens = PythonLexer::new().lex_full("def len(x): return True");
+        let ks: Vec<_> = tokens.iter().map(|t| t.kind).collect();
+        assert!(ks.contains(&TokenKind::Keyword));
+        assert!(ks.contains(&TokenKind::TypeName)); // len builtin
     }
 }

@@ -460,4 +460,230 @@ mod tests {
         assert!(!strategy.should_send_full(1000, 100));
         assert!(strategy.should_send_full(1000, 600));
     }
+
+    #[test]
+    fn test_fast_line_index_empty() {
+        let index = FastLineIndex::from_text("");
+        assert_eq!(
+            index.byte_to_position(0),
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(index.position_to_byte(Position { line: 0, character: 0 }), 0);
+    }
+
+    #[test]
+    fn test_fast_line_index_utf16_multibyte() {
+        // "中" 在 UTF-16 中占 1 个码元,UTF-8 中占 3 个字节
+        let text = "中a";
+        let index = FastLineIndex::from_text(text);
+        assert_eq!(
+            index.byte_to_position(3),
+            Position {
+                line: 0,
+                character: 1
+            }
+        );
+        assert_eq!(
+            index.byte_to_position(4),
+            Position {
+                line: 0,
+                character: 2
+            }
+        );
+
+        assert_eq!(index.position_to_byte(Position { line: 0, character: 1 }), 3);
+        assert_eq!(index.position_to_byte(Position { line: 0, character: 2 }), 4);
+    }
+
+    #[test]
+    fn test_fast_line_index_out_of_bounds() {
+        let index = FastLineIndex::from_text("line1\nline2");
+        assert_eq!(
+            index.byte_to_position(1000),
+            Position {
+                line: 1,
+                character: 5
+            }
+        );
+        assert_eq!(
+            index.position_to_byte(Position {
+                line: 100,
+                character: 0
+            }),
+            index.total_bytes
+        );
+    }
+
+    #[test]
+    fn test_incremental_change_calculator_from_edit_op() {
+        struct DummyIndex;
+        impl LineIndexProvider for DummyIndex {
+            fn byte_to_position(&self, byte_offset: usize) -> Position {
+                Position {
+                    line: byte_offset as u32,
+                    character: 0,
+                }
+            }
+            fn position_to_byte(&self, _position: Position) -> usize {
+                0
+            }
+        }
+
+        let changes = IncrementalChangeCalculator::from_edit_op(
+            EditKind::Replace,
+            2,
+            5,
+            "new",
+            &DummyIndex,
+        );
+        assert_eq!(changes.len(), 1);
+        let change = &changes[0];
+        assert_eq!(
+            change.range,
+            Some(Range {
+                start: Position { line: 2, character: 0 },
+                end: Position { line: 5, character: 0 },
+            })
+        );
+        assert_eq!(change.range_length, Some(3));
+        assert_eq!(change.text, "new");
+    }
+
+    #[test]
+    fn test_merge_edits_empty_and_single() {
+        assert!(IncrementalChangeCalculator::merge_edits(vec![]).is_empty());
+
+        let single = vec![TextDocumentContentChangeEvent {
+            range: Some(Range {
+                start: Position { line: 0, character: 0 },
+                end: Position { line: 0, character: 5 },
+            }),
+            range_length: None,
+            text: "hello".to_string(),
+        }];
+        assert_eq!(IncrementalChangeCalculator::merge_edits(single).len(), 1);
+    }
+
+    #[test]
+    fn test_merge_edits_non_adjacent() {
+        let edits = vec![
+            TextDocumentContentChangeEvent {
+                range: Some(Range {
+                    start: Position { line: 0, character: 0 },
+                    end: Position { line: 0, character: 5 },
+                }),
+                range_length: None,
+                text: "hello".to_string(),
+            },
+            TextDocumentContentChangeEvent {
+                range: Some(Range {
+                    start: Position { line: 5, character: 0 },
+                    end: Position { line: 5, character: 5 },
+                }),
+                range_length: None,
+                text: "world".to_string(),
+            },
+        ];
+        let merged = IncrementalChangeCalculator::merge_edits(edits);
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_edits_with_full_replacement() {
+        // 任一 edit 没有 range 时无法合并
+        let edits = vec![
+            TextDocumentContentChangeEvent {
+                range: Some(Range {
+                    start: Position { line: 0, character: 0 },
+                    end: Position { line: 0, character: 5 },
+                }),
+                range_length: None,
+                text: "hello".to_string(),
+            },
+            TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: "full".to_string(),
+            },
+        ];
+        let merged = IncrementalChangeCalculator::merge_edits(edits);
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn test_optimized_document_sync_queue_and_flush() {
+        let uri = Url::parse("file:///test.rs").unwrap();
+        let mut sync = OptimizedDocumentSync::new(uri.clone());
+
+        assert_eq!(sync.version(), 0);
+        assert!(!sync.should_flush());
+
+        sync.queue_change(TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: "a".to_string(),
+        });
+        assert!(!sync.should_flush());
+
+        for _ in 0..5 {
+            sync.queue_change(TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: "x".to_string(),
+            });
+        }
+        assert!(sync.should_flush());
+
+        let flushed = sync.flush_changes();
+        assert_eq!(flushed.len(), 6);
+        assert!(sync.pending_changes.is_empty());
+    }
+
+    #[test]
+    fn test_optimized_document_sync_generate_changes_since() {
+        let uri = Url::parse("file:///test.rs").unwrap();
+        let mut sync = OptimizedDocumentSync::new(uri.clone());
+        sync.record_edit(0, 3, "abc".to_string());
+        sync.record_edit(5, 5, "xyz".to_string());
+
+        let index = FastLineIndex::from_text("___abc___xyz___");
+        let changes = sync.generate_changes_since(0, &index);
+        assert_eq!(changes.len(), 2);
+
+        // 过滤掉过期记录
+        let changes = sync.generate_changes_since(1, &index);
+        assert_eq!(changes.len(), 1);
+    }
+
+    #[test]
+    fn test_optimized_document_sync_history_limit() {
+        let uri = Url::parse("file:///test.rs").unwrap();
+        let mut sync = OptimizedDocumentSync::new(uri);
+        for i in 0..60 {
+            sync.record_edit(i, i + 1, "x".to_string());
+        }
+        assert_eq!(sync.version(), 60);
+        // max_history = 50,应截断旧记录
+        assert_eq!(sync.edit_history.len(), 50);
+    }
+
+    #[test]
+    fn test_optimized_document_sync_cleanup_old_history() {
+        let uri = Url::parse("file:///test.rs").unwrap();
+        let mut sync = OptimizedDocumentSync::new(uri);
+        sync.record_edit(0, 1, "a".to_string());
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        sync.cleanup_old_history(std::time::Duration::from_millis(5));
+        assert!(sync.edit_history.is_empty());
+    }
+
+    #[test]
+    fn test_large_file_strategy_delay() {
+        let strategy = LargeFileSyncStrategy::new();
+        assert_eq!(strategy.sync_delay_ms(50_000), 0);
+        assert_eq!(strategy.sync_delay_ms(200_000), 500);
+    }
 }

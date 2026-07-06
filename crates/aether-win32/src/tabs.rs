@@ -129,3 +129,86 @@ impl Tab {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tab_new_is_unnamed() {
+        let tab = Tab::new();
+        assert!(tab.file_path.is_none());
+        assert_eq!(tab.file_name(), "未命名");
+        assert_eq!(tab.cursor_line, 0);
+        assert!(!tab.is_dirty);
+    }
+
+    #[test]
+    fn test_tab_file_name() {
+        let mut tab = Tab::new();
+        tab.file_path = Some(PathBuf::from("D:\\project\\src\\main.rs"));
+        assert_eq!(tab.file_name(), "main.rs");
+    }
+
+    #[test]
+    fn test_tab_mark_dirty() {
+        let mut tab = Tab::new();
+        assert_eq!(tab.buffer_version, 0);
+        tab.mark_dirty();
+        assert!(tab.is_dirty);
+        assert_eq!(tab.buffer_version, 1);
+    }
+
+    #[test]
+    fn test_tab_layout_fields() {
+        let layout = TabLayout {
+            index: 0,
+            x: 10.0,
+            width: 120.0,
+            close_x: 100.0,
+            close_width: 18.0,
+        };
+        assert_eq!(layout.close_x + layout.close_width, 118.0);
+    }
+
+    #[test]
+    fn test_tab_from_file_and_rebuild_cache() {
+        let dir = std::env::temp_dir().join(format!("aether_tab_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sample.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+
+        let mut tab = Tab::from_file(path.clone()).unwrap();
+        assert_eq!(tab.file_path, Some(path));
+        assert_eq!(tab.file_name(), "sample.rs");
+        assert_eq!(tab.language, Language::Rust);
+        assert_eq!(tab.buffer_version, 1);
+
+        tab.rebuild_cache();
+        assert!(!tab.cached_lines.is_empty());
+        assert_eq!(tab.cached_lines[0], "fn main() {}");
+        assert!(!tab.cached_tokens.is_empty());
+
+        tab.clear_dirty();
+        assert!(!tab.is_dirty);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_tab_file_name_fallback() {
+        let mut tab = Tab::new();
+        tab.file_path = Some(PathBuf::from("/"));
+        assert_eq!(tab.file_name(), "未命名");
+    }
+
+    #[test]
+    fn test_tab_mark_dirty_increments_version() {
+        let mut tab = Tab::new();
+        let v0 = tab.buffer_version;
+        tab.mark_dirty();
+        assert!(tab.is_dirty);
+        assert_eq!(tab.buffer_version, v0 + 1);
+    }
+}

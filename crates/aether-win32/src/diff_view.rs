@@ -237,6 +237,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_resolve_edit_path() {
+        let abs = PathBuf::from("D:\\workspace\\file.rs");
+        assert_eq!(resolve_edit_path(&abs, None), abs);
+
+        let rel = PathBuf::from("src/main.rs");
+        let root = Path::new("D:\\workspace");
+        assert_eq!(resolve_edit_path(&rel, Some(root)), PathBuf::from("D:\\workspace\\src/main.rs"));
+
+        assert_eq!(resolve_edit_path(&rel, None), rel);
+    }
+
+    #[test]
+    fn test_build_diff_lines_empty_and_identical() {
+        let lines = build_diff_lines("", "hello\n");
+        assert!(lines.iter().any(|l| matches!(l.kind, DiffLineKind::Insert)));
+
+        let lines = build_diff_lines("same\n", "same\n");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].kind, DiffLineKind::Context);
+        assert_eq!(lines[0].old_line_no, Some(1));
+        assert_eq!(lines[0].new_line_no, Some(1));
+
+        let lines = build_diff_lines("", "");
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn test_build_diff_lines_line_numbers() {
+        let old = "line1\nline2\nline3\n";
+        let new = "line1\nchanged\nline3\n";
+        let lines = build_diff_lines(old, new);
+        let delete = lines.iter().find(|l| l.kind == DiffLineKind::Delete).unwrap();
+        let insert = lines.iter().find(|l| l.kind == DiffLineKind::Insert).unwrap();
+        assert_eq!(delete.old_line_no, Some(2));
+        assert_eq!(delete.new_line_no, None);
+        assert_eq!(insert.old_line_no, None);
+        assert_eq!(insert.new_line_no, Some(2));
+    }
+
+    #[test]
     fn test_diff_lines() {
         let old = "fn main() {\n    println!(\"hello\");\n}\n";
         let new = "fn main() {\n    println!(\"world\");\n}\n";
@@ -253,5 +293,126 @@ mod tests {
             "a\nc\n".to_string(),
         );
         assert_eq!(df.change_count(), (1, 1));
+
+        let empty = DiffFile::new(PathBuf::from("empty.rs"), String::new(), String::new());
+        assert_eq!(empty.change_count(), (0, 0));
+    }
+
+    #[test]
+    fn test_diff_view_empty() {
+        let view = DiffView::new();
+        assert!(view.is_empty());
+        assert!(view.selected_file().is_none());
+        assert!(view.to_edits().is_empty());
+    }
+
+    #[test]
+    fn test_diff_view_from_edits_creates_files() {
+        let dir = std::env::temp_dir().join(format!("aether_diff_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("existing.txt");
+        std::fs::write(&file_path, "old content\n").unwrap();
+
+        let edits = vec![
+            AiEdit::new(file_path.clone(), "old content\n".to_string(), "new content\n".to_string()),
+            AiEdit::new(dir.join("new.txt"), String::new(), "created\n".to_string()),
+        ];
+        let view = DiffView::from_edits(&edits, Some(&dir));
+        assert_eq!(view.files.len(), 2);
+        assert_eq!(view.files[0].original, "old content\n");
+        assert_eq!(view.files[0].proposed, "new content\n");
+        assert_eq!(view.files[1].original, "");
+        assert_eq!(view.files[1].proposed, "created\n");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_diff_view_navigation() {
+        let mut view = DiffView::from_edits(
+            &[
+                AiEdit::new(PathBuf::from("a.txt"), String::new(), "a\n".to_string()),
+                AiEdit::new(PathBuf::from("b.txt"), String::new(), "b\n".to_string()),
+                AiEdit::new(PathBuf::from("c.txt"), String::new(), "c\n".to_string()),
+            ],
+            None,
+        );
+        assert_eq!(view.selected_index, 0);
+        view.next_file();
+        assert_eq!(view.selected_index, 1);
+        view.next_file();
+        view.next_file();
+        assert_eq!(view.selected_index, 0);
+        view.prev_file();
+        assert_eq!(view.selected_index, 2);
+    }
+
+    #[test]
+    fn test_diff_view_accept_reject_and_to_edits() {
+        let mut view = DiffView::from_edits(
+            &[
+                AiEdit::new(PathBuf::from("a.txt"), "old".to_string(), "new".to_string()),
+                AiEdit::new(PathBuf::from("b.txt"), "old".to_string(), "new".to_string()),
+            ],
+            None,
+        );
+
+        view.accept_all();
+        assert!(view.files[0].accepted);
+        assert!(view.files[1].accepted);
+        assert_eq!(view.accepted_files().len(), 2);
+        let edits = view.to_edits();
+        assert_eq!(edits.len(), 2);
+        assert_eq!(edits[0].path, PathBuf::from("a.txt"));
+
+        // 全部已接受时，reject_all 不会拒绝任何文件
+        view.reject_all();
+        assert!(!view.files[0].rejected);
+        assert!(!view.files[1].rejected);
+        assert_eq!(view.accepted_files().len(), 2);
+
+        // 重置状态：先全部拒绝，再接受其中一个
+        view.files[0].accepted = false;
+        view.files[0].rejected = false;
+        view.files[1].accepted = false;
+        view.files[1].rejected = false;
+        view.reject_all();
+        assert!(view.files[0].rejected);
+        assert!(view.files[1].rejected);
+        assert!(view.accepted_files().is_empty());
+
+        view.files[0].accepted = true;
+        view.files[0].rejected = false;
+        // 此时 accept_all 只接受未拒绝的 a.txt（已是 accepted），b.txt 已被拒绝故跳过
+        view.accept_all();
+        assert!(view.files[0].accepted);
+        assert!(view.files[1].rejected);
+        assert_eq!(view.to_edits().len(), 1);
+    }
+
+    #[test]
+    fn test_diff_view_search_not_found_leaves_original() {
+        let edit = AiEdit::new(
+            PathBuf::from("x.txt"),
+            "not present".to_string(),
+            "replacement".to_string(),
+        );
+        let view = DiffView::from_edits(&[edit], None);
+        assert_eq!(view.files[0].original, view.files[0].proposed);
+        assert_eq!(view.files[0].original, "");
+    }
+
+    #[test]
+    fn test_diff_view_selected_file_mut() {
+        let mut view = DiffView::from_edits(
+            &[AiEdit::new(PathBuf::from("a.txt"), String::new(), "x".to_string())],
+            None,
+        );
+        {
+            let file = view.selected_file_mut().unwrap();
+            file.accepted = true;
+        }
+        assert!(view.files[0].accepted);
     }
 }

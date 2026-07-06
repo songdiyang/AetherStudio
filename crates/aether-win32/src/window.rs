@@ -23,6 +23,8 @@ const LP_TIMER_ID: usize = 0xA001;
 const TERM_TIMER_ID: usize = 0xA002;
 /// P3.4: Hover tooltip 防抖定时器 ID
 const HOVER_TIMER_ID: usize = 0xA003;
+/// 新建项目对话框输入框光标闪烁定时器 ID
+pub const CARET_TIMER_ID: usize = 0xA004;
 /// 长按阈值（毫秒）
 const LP_THRESHOLD_MS: u32 = 500;
 /// 终端刷新间隔（毫秒），约 20fps 足以实时显示 shell 输出
@@ -559,6 +561,26 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
             return LRESULT(0);
         }
 
+        // 新建项目对话框优先拦截点击
+        if st.new_project_dialog.visible {
+            let action = st.handle_new_project_dialog_click(mouse_x, mouse_y);
+            match action {
+                crate::new_project_dialog::NewProjectDialogAction::Confirm => {
+                    st.confirm_new_project();
+                }
+                crate::new_project_dialog::NewProjectDialogAction::Cancel => {
+                    st.close_new_project_dialog();
+                }
+                crate::new_project_dialog::NewProjectDialogAction::FocusInput => {
+                    st.new_project_dialog.focus_field = 0;
+                }
+                crate::new_project_dialog::NewProjectDialogAction::None => {}
+            }
+            drop(st);
+            state.borrow_mut().render();
+            return LRESULT(0);
+        }
+
         // 0. 检测标题栏区域点击（包含菜单项和窗口控制按钮）
         let titlebar_region = layout.title_bar_region();
         if titlebar_region.contains(mouse_x, mouse_y) {
@@ -1060,8 +1082,8 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
         }
 
         // 4. 检测标签栏点击
-        let has_multiple_tabs = st.tab_count() > 1;
-        let tab_region = layout.tab_bar_region(has_multiple_tabs);
+        let show_tab_bar = st.show_tab_bar();
+        let tab_region = layout.tab_bar_region(show_tab_bar);
         if tab_region.contains(mouse_x, mouse_y)
             && st.handle_tab_bar_click(mouse_x, mouse_y, tab_region.x)
         {
@@ -1072,7 +1094,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
 
         // 4.5 检测查找替换面板点击
         if st.find_visible {
-            let editor_region = layout.editor_content_region(has_multiple_tabs);
+            let editor_region = layout.editor_content_region(show_tab_bar);
             let panel_height = if st.replace_visible { 72.0 } else { 40.0 };
             let panel_width = editor_region.width.min(600.0);
             let panel_x = editor_region.x + editor_region.width - panel_width - 10.0;
@@ -1124,15 +1146,9 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
         // 底部面板点击已在 4.6 中处理，此处保留用于扩展
 
         // 5. 欢迎页/编辑器区域点击
-        let mut welcome_x = if layout.activity_bar_visible {
-            layout.activity_bar_width
-        } else {
-            0.0
-        };
-        if layout.sidebar_visible {
-            welcome_x += layout.sidebar_width;
-        }
-        let welcome_width = st.window_width as f32 - welcome_x;
+        // 欢迎页渲染时全屏居中，不受活动栏/侧边栏影响，点击检测区域需与渲染一致
+        let welcome_x = 0.0;
+        let welcome_width = st.window_width as f32;
         let welcome_y = layout.top_offset();
         let welcome_height = st.window_height as f32
             - welcome_y
@@ -1164,8 +1180,8 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                                 state.borrow_mut().render();
                             }
                         }
-                        crate::welcome::WelcomeAction::NewFile => {
-                            state.borrow_mut().new_file();
+                        crate::welcome::WelcomeAction::NewProject => {
+                            state.borrow_mut().new_project();
                             state.borrow_mut().render();
                         }
                         crate::welcome::WelcomeAction::CloneRepo => {
@@ -1194,7 +1210,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                     return LRESULT(0);
                 }
             } else {
-                let editor_content = layout.editor_content_region(has_multiple_tabs);
+                let editor_content = layout.editor_content_region(st.show_tab_bar());
                 st.set_cursor_from_mouse(mouse_x, mouse_y, editor_content.x, editor_content.y);
                 st.clear_selection();
                 st.start_selection();
@@ -1335,7 +1351,7 @@ unsafe fn on_m_o_u_s_e_m_o_v_e(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: LP
             .hit_test(mouse_x, mouse_y, activity_region.y);
 
         // 更新标签栏悬停状态
-        let editor_content = layout.editor_content_region(st.tab_count() > 1);
+        let editor_content = layout.editor_content_region(st.show_tab_bar());
         let old_hover = st.hover_tab;
         st.update_hover_tab(mouse_x, mouse_y, editor_content.x);
         let new_hover = st.hover_tab;
@@ -1452,16 +1468,10 @@ unsafe fn on_m_o_u_s_e_m_o_v_e(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: LP
         // 更新欢迎页悬停状态
         let old_welcome_hover = st.welcome_hover_action.clone();
         if st.show_welcome() {
-            let mut welcome_x = if layout.activity_bar_visible {
-                layout.activity_bar_width
-            } else {
-                0.0
-            };
-            if layout.sidebar_visible {
-                welcome_x += layout.sidebar_width;
-            }
+            // 欢迎页渲染时全屏居中，不受活动栏/侧边栏影响，点击检测区域需与渲染一致
+            let welcome_x = 0.0;
             let welcome_y = layout.top_offset();
-            let welcome_width = st.window_width as f32 - welcome_x;
+            let welcome_width = st.window_width as f32;
             let welcome_height = st.window_height as f32
                 - welcome_y
                 - if layout.status_bar_visible {
@@ -1655,8 +1665,8 @@ unsafe fn on_l_b_u_t_t_o_n_d_b_l_c_l_k(
         let mouse_x = raw_x / st.dpi_scale;
         let mouse_y = raw_y / st.dpi_scale;
         let layout = st.layout.clone();
-        let has_multiple_tabs = st.tabs.len() > 1;
-        let editor_content = layout.editor_content_region(has_multiple_tabs);
+        let show_tab_bar = st.show_tab_bar();
+        let editor_content = layout.editor_content_region(show_tab_bar);
         let editor_region = crate::layout::Region::new(
             editor_content.x,
             editor_content.y,
@@ -1709,6 +1719,18 @@ unsafe fn on_t_i_m_e_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -
             let _ = KillTimer(hwnd, TERM_TIMER_ID);
         } else if let Some(state) = get_and_set_state(hwnd) {
             state.borrow_mut().render();
+        }
+        return LRESULT(0);
+    }
+    if wparam.0 == CARET_TIMER_ID {
+        // 新建项目对话框输入框光标闪烁
+        if let Some(state) = get_and_set_state(hwnd) {
+            let mut st = state.borrow_mut();
+            if st.new_project_dialog.visible {
+                st.new_project_dialog.caret_visible = !st.new_project_dialog.caret_visible;
+                drop(st);
+                state.borrow_mut().render();
+            }
         }
         return LRESULT(0);
     }
@@ -2043,6 +2065,28 @@ unsafe fn on_p_a_i_n_t(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) 
     LRESULT(0)
 }
 
+/// REQ-P0-05: WM_SETFOCUS — 窗口获得焦点
+unsafe fn on_set_focus(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+    get_and_set_state(hwnd);
+    EDITOR_STATE.with(|s| {
+        if let Some(state) = s.borrow().as_ref() {
+            state.borrow_mut().focus_manager.on_set_focus();
+        }
+    });
+    LRESULT(0)
+}
+
+/// REQ-P0-05: WM_KILLFOCUS — 窗口失去焦点
+unsafe fn on_kill_focus(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+    get_and_set_state(hwnd);
+    EDITOR_STATE.with(|s| {
+        if let Some(state) = s.borrow().as_ref() {
+            state.borrow_mut().focus_manager.on_kill_focus();
+        }
+    });
+    LRESULT(0)
+}
+
 /// WM_IME_STARTCOMPOSITION
 unsafe fn on_ime_startcomposition(
     _hwnd: HWND,
@@ -2250,6 +2294,19 @@ unsafe fn on_c_h_a_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> 
             } else if EDITOR_STATE.with(|s| {
                 s.borrow()
                     .as_ref()
+                    .map(|state| state.borrow().new_project_dialog.visible)
+                    .unwrap_or(false)
+            }) {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().new_project_dialog.project_name.push(c);
+                        state.borrow_mut().new_project_dialog.error_message = None;
+                        state.borrow_mut().render();
+                    }
+                });
+            } else if EDITOR_STATE.with(|s| {
+                s.borrow()
+                    .as_ref()
                     .map(|state| {
                         state.borrow().sidebar_content
                             == crate::layout::SidebarContent::RemoteManagerPanel
@@ -2351,7 +2408,7 @@ unsafe fn on_c_h_a_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> 
 }
 
 /// WM_KEYDOWN
-unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
     // C-12: 键盘消息进入时先同步 thread_local 到当前窗口状态
     get_and_set_state(hwnd);
     let vk = VIRTUAL_KEY(wparam.0 as u16);
@@ -2739,6 +2796,60 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
         return LRESULT(0);
     }
 
+    // 新建项目对话框键盘处理
+    let new_project_dialog_active = EDITOR_STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|state| state.borrow().new_project_dialog.visible)
+            .unwrap_or(false)
+    });
+    if new_project_dialog_active {
+        match vk {
+            VK_ESCAPE => {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().close_new_project_dialog();
+                        state.borrow_mut().render();
+                    }
+                });
+                return LRESULT(0);
+            }
+            VK_RETURN => {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().confirm_new_project();
+                        state.borrow_mut().render();
+                    }
+                });
+                return LRESULT(0);
+            }
+            VK_BACK => {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().new_project_dialog.project_name.pop();
+                        state.borrow_mut().new_project_dialog.error_message = None;
+                        state.borrow_mut().render();
+                    }
+                });
+                return LRESULT(0);
+            }
+            VK_V if ctrl => {
+                // Ctrl+V 粘贴到项目名称输入框
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().paste_into_new_project_dialog();
+                        state.borrow_mut().render();
+                    }
+                });
+                return LRESULT(0);
+            }
+            _ => {
+                // 普通字符键交给 DefWindowProc，确保能生成 WM_CHAR
+                return DefWindowProcW(hwnd, msg, wparam, LPARAM(0));
+            }
+        }
+    }
+
     // SSH 管理面板编辑模式键盘处理
     let ssh_mgr_editing = EDITOR_STATE.with(|s| {
         s.borrow()
@@ -2934,7 +3045,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
             VK_N => {
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
-                        state.borrow_mut().new_file();
+                        state.borrow_mut().new_project();
                         state.borrow_mut().render();
                     }
                 });
@@ -3861,9 +3972,12 @@ unsafe fn on_default(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LR
 
 extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
-        // UI-M06: 从窗口 GWLP_USERDATA 获取状态，同步到 thread_local，
-        // 防止多窗口消息交错时键盘输入路由到错误窗口
-        match msg {
+        // C-04: 捕获 window_proc 内的 panic，避免 panic 穿越 FFI 边界导致未定义行为
+        use std::panic::AssertUnwindSafe;
+        let result = std::panic::catch_unwind(AssertUnwindSafe(move || {
+            // UI-M06: 从窗口 GWLP_USERDATA 获取状态，同步到 thread_local，
+            // 防止多窗口消息交错时键盘输入路由到错误窗口
+            match msg {
             WM_LBUTTONDOWN => on_l_b_u_t_t_o_n_d_o_w_n(hwnd, msg, wparam, lparam),
             WM_MOUSEMOVE => on_m_o_u_s_e_m_o_v_e(hwnd, msg, wparam, lparam),
             WM_LBUTTONUP => on_l_b_u_t_t_o_n_u_p(hwnd, msg, wparam, lparam),
@@ -3893,7 +4007,17 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             WM_KEYDOWN => on_k_e_y_d_o_w_n(hwnd, msg, wparam, lparam),
             WM_MOUSEWHEEL => on_m_o_u_s_e_w_h_e_e_l(hwnd, msg, wparam, lparam),
             WM_MOUSEHWHEEL => on_m_o_u_s_e_h_w_h_e_e_l(hwnd, msg, wparam, lparam),
+            WM_SETFOCUS => on_set_focus(hwnd, msg, wparam, lparam),
+            WM_KILLFOCUS => on_kill_focus(hwnd, msg, wparam, lparam),
             _ => on_default(hwnd, msg, wparam, lparam),
+            }
+        }));
+        match result {
+            Ok(lresult) => lresult,
+            Err(_) => {
+                eprintln!("window_proc 中发生 panic，回退到默认处理");
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
         }
     }
 }

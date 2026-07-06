@@ -105,7 +105,7 @@ pub enum EditorAction {
     FormatDocument,
 
     // 其他
-    NewFile,
+    NewProject,
     ToggleFullScreen,
     ShowCommandPalette,
     TriggerAi,
@@ -137,7 +137,7 @@ impl KeyMap {
         bindings.insert((Key::Char('s'), true, false, false), EditorAction::Save);
         bindings.insert((Key::Char('s'), true, true, false), EditorAction::SaveAll);
         bindings.insert((Key::Char('w'), true, false, false), EditorAction::CloseTab);
-        bindings.insert((Key::Char('n'), true, false, false), EditorAction::NewFile);
+        bindings.insert((Key::Char('n'), true, false, false), EditorAction::NewProject);
 
         // 编辑操作
         bindings.insert((Key::Char('z'), true, false, false), EditorAction::Undo);

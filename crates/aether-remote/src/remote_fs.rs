@@ -125,7 +125,8 @@ pub trait RemoteFs: Send + Sync {
         // 使用 shell_escape 转义路径，避免命令注入
         let escaped_path = shell_escape::unix::escape(std::borrow::Cow::Borrowed(path));
         // 获取远程 URL
-        let (stdout, _) = self.exec(&format!("cd {} && git remote -v", escaped_path))?;
+        let (stdout, _) =
+            self.exec_restricted(&format!("git -C {} remote -v", escaped_path))?;
         let mut remote_url = String::new();
         for line in stdout.lines() {
             if line.contains("origin") && line.contains("(fetch)") {
@@ -138,12 +139,17 @@ pub trait RemoteFs: Send + Sync {
         }
 
         // 获取当前分支
-        let (stdout, _) =
-            self.exec(&format!("cd {} && git branch --show-current", escaped_path))?;
+        let (stdout, _) = self.exec_restricted(&format!(
+            "git -C {} branch --show-current",
+            escaped_path
+        ))?;
         let branch = stdout.trim().to_string();
 
         // 检查状态
-        let (stdout, _) = self.exec(&format!("cd {} && git status --porcelain", escaped_path))?;
+        let (stdout, _) = self.exec_restricted(&format!(
+            "git -C {} status --porcelain",
+            escaped_path
+        ))?;
         let has_changes = !stdout.trim().is_empty();
 
         Ok(GitRemoteInfo {
@@ -160,8 +166,8 @@ pub trait RemoteFs: Send + Sync {
             .iter()
             .map(|arg| shell_escape::unix::escape(std::borrow::Cow::Borrowed(arg)).into_owned())
             .collect();
-        let cmd = format!("cd {} && git {}", escaped_path, escaped_args.join(" "));
-        self.exec(&cmd)
+        let cmd = format!("git -C {} {}", escaped_path, escaped_args.join(" "));
+        self.exec_restricted(&cmd)
     }
 }
 

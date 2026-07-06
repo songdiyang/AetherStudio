@@ -183,3 +183,72 @@ impl ActivityBar {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_activity_item_new() {
+        let item = ActivityItem::new(ActivityBarView::Explorer);
+        assert_eq!(item.view, ActivityBarView::Explorer);
+        assert_eq!(item.tooltip, "资源管理器");
+        assert!(!item.is_active);
+    }
+
+    #[test]
+    fn test_activity_bar_default_state() {
+        let bar = ActivityBar::new();
+        assert_eq!(bar.items.len(), 3);
+        assert_eq!(bar.active_index, 0);
+        assert_eq!(bar.active_view(), ActivityBarView::Explorer);
+    }
+
+    #[test]
+    fn test_activity_bar_switch_to() {
+        let mut bar = ActivityBar::new();
+        bar.switch_to(2);
+        assert_eq!(bar.active_index, 2);
+        assert!(bar.items[2].is_active);
+        assert!(!bar.items[0].is_active);
+    }
+
+    #[test]
+    fn test_activity_bar_switch_to_view() {
+        let mut bar = ActivityBar::new();
+        bar.switch_to_view(ActivityBarView::SourceControl);
+        assert_eq!(bar.active_view(), ActivityBarView::SourceControl);
+    }
+
+    #[test]
+    fn test_activity_bar_hit_test() {
+        let bar = ActivityBar::new();
+        assert_eq!(bar.hit_test(24.0, 50.0, 0.0), Some(1));
+        assert_eq!(bar.hit_test(60.0, 50.0, 0.0), None);
+        assert_eq!(bar.hit_test(24.0, 200.0, 0.0), None);
+    }
+
+    #[test]
+    fn test_activity_bar_icon_region() {
+        let bar = ActivityBar::new();
+        assert!(bar.icon_region(0, 10.0).is_some());
+        assert!(bar.icon_region(10, 10.0).is_none());
+    }
+
+    #[test]
+    fn test_activity_bar_reorder() {
+        let mut bar = ActivityBar::new();
+        bar.begin_drag(0);
+        bar.drop_index = Some(2);
+        bar.reorder();
+        assert_eq!(bar.items[1].view, ActivityBarView::Explorer);
+    }
+
+    #[test]
+    fn test_activity_bar_apply_order() {
+        let mut bar = ActivityBar::new();
+        bar.apply_order(&["sourceControl".to_string(), "explorer".to_string()]);
+        assert_eq!(bar.items[0].view, ActivityBarView::SourceControl);
+        assert_eq!(bar.items[1].view, ActivityBarView::Explorer);
+    }
+}

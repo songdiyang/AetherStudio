@@ -36,11 +36,7 @@ pub fn parse_edits(response: &str, default_path: Option<&str>) -> Vec<AiEdit> {
     let mut edits = Vec::new();
     let mut remaining = response;
 
-    loop {
-        // 查找文件头
-        let Some(start) = remaining.find("<<<<<<< FILE") else {
-            break;
-        };
+    while let Some(start) = remaining.find("<<<<<<< FILE") {
         remaining = &remaining[start..];
 
         // 提取路径

@@ -295,4 +295,91 @@ mod tests {
         assert_eq!(manager.list()[0].name, "a");
         assert_eq!(manager.list()[1].name, "b");
     }
+
+    #[test]
+    fn test_recent_project_from_path() {
+        let p = RecentProject::from_path(Path::new("D:\\Workspace\\MyProject"));
+        assert_eq!(p.name, "MyProject");
+        assert_eq!(p.path, "D:\\Workspace\\MyProject");
+
+        // 根路径没有 file_name，应回退为 "Unknown"
+        let root = RecentProject::from_path(Path::new("/"));
+        assert_eq!(root.name, "Unknown");
+    }
+
+    #[test]
+    fn test_json_escape_and_unescape() {
+        let raw = "line1\nline2\tquote\"slash\\back";
+        let escaped = RecentProjectsManager::escape_json(raw);
+        assert!(escaped.contains("\\n"));
+        assert!(escaped.contains("\\t"));
+        assert!(escaped.contains("\\\""));
+        assert!(escaped.contains("\\\\"));
+        assert_eq!(RecentProjectsManager::unescape_json(&escaped), raw);
+
+        // 未知转义字符保留原字符（x）
+        assert_eq!(RecentProjectsManager::unescape_json("hello\\xworld"), "helloxworld");
+        assert_eq!(RecentProjectsManager::unescape_json("trailing\\"), "trailing");
+    }
+
+    #[test]
+    fn test_to_json_empty() {
+        let empty: VecDeque<RecentProject> = VecDeque::new();
+        let json = RecentProjectsManager::to_json(&empty);
+        assert_eq!(json, "[\n]");
+    }
+
+    #[test]
+    fn test_parse_json_malformed_and_incomplete() {
+        let bad = "not json at all";
+        assert!(RecentProjectsManager::parse_json(bad).is_empty());
+
+        // 缺少 last_opened 但有结束大括号：仍能生成项目，last_opened 使用默认值
+        let without_last_opened = r#"{
+  "name": "Project",
+  "path": "/path"
+}"#;
+        let parsed = RecentProjectsManager::parse_json(without_last_opened);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "Project");
+        assert_eq!(parsed[0].path, "/path");
+
+        let with_closing = r#"{
+  "name": "Project2",
+  "path": "/path2",
+  "last_opened": 0
+}"#;
+        let parsed = RecentProjectsManager::parse_json(with_closing);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "Project2");
+        assert_eq!(parsed[0].path, "/path2");
+    }
+
+    #[test]
+    fn test_manager_is_empty_and_len() {
+        let mut manager = RecentProjectsManager {
+            projects: VecDeque::new(),
+            config_dir: PathBuf::from("."),
+            max_count: 5,
+        };
+        assert!(manager.is_empty());
+        assert_eq!(manager.len(), 0);
+        manager.add(Path::new("/path/a"));
+        assert!(!manager.is_empty());
+        assert_eq!(manager.len(), 1);
+    }
+
+    #[test]
+    fn test_clean_invalid_removes_missing_paths() {
+        let mut manager = RecentProjectsManager {
+            projects: VecDeque::new(),
+            config_dir: PathBuf::from("."),
+            max_count: 5,
+        };
+        manager.add(Path::new("/definitely/not/existing/path/abc"));
+        manager.add(Path::new("/another/missing/path"));
+        assert_eq!(manager.len(), 2);
+        manager.clean_invalid();
+        assert!(manager.is_empty());
+    }
 }

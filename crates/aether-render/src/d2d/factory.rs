@@ -238,3 +238,36 @@ pub mod colors {
         color_f(0.50, 0.50, 0.50, 1.0)
     } // #808080
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn color_eq(a: D2D1_COLOR_F, b: D2D1_COLOR_F, eps: f32) -> bool {
+        (a.r - b.r).abs() < eps
+            && (a.g - b.g).abs() < eps
+            && (a.b - b.b).abs() < eps
+            && (a.a - b.a).abs() < eps
+    }
+
+    #[test]
+    fn test_color_f() {
+        let c = color_f(0.1, 0.2, 0.3, 0.4);
+        assert!(color_eq(c, D2D1_COLOR_F { r: 0.1, g: 0.2, b: 0.3, a: 0.4 }, 0.0001));
+    }
+
+    #[test]
+    fn test_dark_colors_are_opaque() {
+        assert!(color_eq(colors::editor_bg(), D2D1_COLOR_F { r: 0.118, g: 0.118, b: 0.118, a: 1.0 }, 0.001));
+        assert!(color_eq(colors::text_default(), D2D1_COLOR_F { r: 0.83, g: 0.83, b: 0.83, a: 1.0 }, 0.001));
+        assert!(color_eq(colors::keyword(), D2D1_COLOR_F { r: 0.77, g: 0.52, b: 0.75, a: 1.0 }, 0.001));
+        assert!(color_eq(colors::string(), D2D1_COLOR_F { r: 0.81, g: 0.57, b: 0.47, a: 1.0 }, 0.001));
+        assert!(color_eq(colors::number(), D2D1_COLOR_F { r: 0.71, g: 0.81, b: 0.66, a: 1.0 }, 0.001));
+        assert!(color_eq(colors::comment(), D2D1_COLOR_F { r: 0.42, g: 0.60, b: 0.33, a: 1.0 }, 0.001));
+        assert!(color_eq(colors::function(), D2D1_COLOR_F { r: 0.86, g: 0.86, b: 0.67, a: 1.0 }, 0.001));
+        assert!(color_eq(colors::type_name(), D2D1_COLOR_F { r: 0.31, g: 0.79, b: 0.69, a: 1.0 }, 0.001));
+        assert!(color_eq(colors::operator(), D2D1_COLOR_F { r: 0.83, g: 0.83, b: 0.83, a: 1.0 }, 0.001));
+        assert!(color_eq(colors::variable(), D2D1_COLOR_F { r: 0.61, g: 0.74, b: 1.0, a: 1.0 }, 0.001));
+        assert!(color_eq(colors::preprocessor(), D2D1_COLOR_F { r: 0.50, g: 0.50, b: 0.50, a: 1.0 }, 0.001));
+    }
+}

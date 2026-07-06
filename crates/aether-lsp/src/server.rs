@@ -1,6 +1,8 @@
 use lsp_types::*;
 use std::collections::HashMap;
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -17,9 +19,9 @@ const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// 语言服务器实例管理
 /// 负责单个语言服务器的完整生命周期：发现→启动→初始化→运行→关闭
-pub struct LanguageServer {
+pub struct LanguageServer<W = ChildStdin, R = ChildStdout> {
     /// 传输层
-    transport: LspTransport,
+    transport: LspTransport<W, R>,
     /// 服务器配置
     config: ServerConfig,
     /// 已缓存的服务器能力
@@ -39,7 +41,7 @@ pub struct LanguageServer {
     event_tx: Option<mpsc::UnboundedSender<LspEvent>>,
 }
 
-impl LanguageServer {
+impl LanguageServer<ChildStdin, ChildStdout> {
     /// 启动并初始化语言服务器
     ///
     /// `event_tx` 用于转发服务器推送的 notifications（如 diagnostics）到 UI 层。
@@ -78,9 +80,15 @@ impl LanguageServer {
 
         Ok(server)
     }
+}
 
+impl<W, R> LanguageServer<W, R>
+where
+    W: AsyncWrite + Unpin + Send,
+    R: AsyncRead + Unpin + Send,
+{
     /// 序列化参数为 JSON Value，失败时返回 io::Error 而非 panic
-    fn serialize_params<T: serde::Serialize>(params: T) -> std::io::Result<serde_json::Value> {
+    pub(crate) fn serialize_params<T: serde::Serialize>(params: T) -> std::io::Result<serde_json::Value> {
         serde_json::to_value(params).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -175,7 +183,7 @@ impl LanguageServer {
     /// - `workspace/applyEdit`：返回 `{ applied: false }`（UI 层尚未支持自动应用）
     /// - `workspace/workspaceFolders`：返回当前 root_uri 作为唯一工作区
     /// - 其他：返回 MethodNotFound 错误
-    async fn handle_server_request(&mut self, req: LspRequest) -> std::io::Result<()> {
+    pub(crate) async fn handle_server_request(&mut self, req: LspRequest) -> std::io::Result<()> {
         let result: Result<serde_json::Value, LspError> = match req.method.as_str() {
             "workspace/configuration" => {
                 let count = req
@@ -245,7 +253,7 @@ impl LanguageServer {
     ///
     /// 这是修复「通知静默丢失」缺陷的核心：原实现 `_ => {}` 会丢弃所有
     /// diagnostics、logMessage、showMessage 等推送，导致 UI 永远收不到诊断。
-    fn handle_notification(&self, notif: LspNotification) {
+    pub(crate) fn handle_notification(&self, notif: LspNotification) {
         match notif.method.as_str() {
             "textDocument/publishDiagnostics" => {
                 if let Some(tx) = &self.event_tx {
@@ -1017,3 +1025,659 @@ const SEMANTIC_TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
     SemanticTokenModifier::DOCUMENTATION,
     SemanticTokenModifier::DEFAULT_LIBRARY,
 ];
+
+#[cfg(test)]
+impl<W, R> LanguageServer<W, R>
+where
+    W: AsyncWrite + Unpin + Send,
+    R: AsyncRead + Unpin + Send,
+{
+    /// 测试用构造函数，不实际启动子进程
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        transport: LspTransport<W, R>,
+        config: ServerConfig,
+        language_id: String,
+        event_tx: Option<mpsc::UnboundedSender<LspEvent>>,
+    ) -> Self {
+        Self {
+            transport,
+            config,
+            capabilities: ServerCapabilitiesCache::default(),
+            id_generator: RequestIdGenerator::new(),
+            pending_requests: HashMap::new(),
+            open_documents: HashMap::new(),
+            initialized: false,
+            language_id,
+            event_tx,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::encode_message;
+    use tokio::io::AsyncReadExt;
+
+    #[test]
+    fn test_serialize_params() {
+        let params = serde_json::json!({"key": "value"});
+        let value = LanguageServer::<tokio::io::DuplexStream, tokio::io::DuplexStream>::serialize_params(params.clone()).unwrap();
+        assert_eq!(value, params);
+    }
+
+    #[test]
+    fn test_supports_capabilities() {
+        use lsp_types::{CompletionOptions, HoverProviderCapability};
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (read, write) = tokio::io::duplex(1024);
+        let transport = LspTransport::new_generic(write, read);
+        let mut server = LanguageServer::new_for_test(
+            transport,
+            ServerConfig::default(),
+            "rust".to_string(),
+            Some(tx),
+        );
+
+        assert!(!server.supports_completion());
+        server.capabilities.completion_provider = Some(CompletionOptions::default());
+        assert!(server.supports_completion());
+
+        assert!(!server.supports_hover());
+        server.capabilities.hover_provider = Some(HoverProviderCapability::Simple(true));
+        assert!(server.supports_hover());
+    }
+
+    #[test]
+    fn test_handle_notification_publish_diagnostics() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (read, write) = tokio::io::duplex(1024);
+        let transport = LspTransport::new_generic(write, read);
+        let server = LanguageServer::new_for_test(
+            transport,
+            ServerConfig::default(),
+            "rust".to_string(),
+            Some(tx),
+        );
+
+        let uri = Url::parse("file:///test.rs").unwrap();
+        server.handle_notification(LspNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "textDocument/publishDiagnostics".to_string(),
+            params: Some(serde_json::json!({
+                "uri": uri,
+                "diagnostics": []
+            })),
+        });
+
+        match rx.try_recv().unwrap() {
+            LspEvent::Diagnostics { uri: event_uri, diagnostics } => {
+                assert_eq!(event_uri, uri);
+                assert!(diagnostics.is_empty());
+            }
+            _ => panic!("expected Diagnostics event"),
+        }
+    }
+
+    #[test]
+    fn test_handle_notification_log_message() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (read, write) = tokio::io::duplex(1024);
+        let transport = LspTransport::new_generic(write, read);
+        let server = LanguageServer::new_for_test(
+            transport,
+            ServerConfig::default(),
+            "rust".to_string(),
+            Some(tx),
+        );
+
+        server.handle_notification(LspNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "window/logMessage".to_string(),
+            params: Some(serde_json::json!({"message": "hello"})),
+        });
+
+        match rx.try_recv().unwrap() {
+            LspEvent::Log { language_id, message } => {
+                assert_eq!(language_id, "rust");
+                assert_eq!(message, "hello");
+            }
+            _ => panic!("expected Log event"),
+        }
+    }
+
+    #[test]
+    fn test_handle_notification_unknown() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (read, write) = tokio::io::duplex(1024);
+        let transport = LspTransport::new_generic(write, read);
+        let server = LanguageServer::new_for_test(
+            transport,
+            ServerConfig::default(),
+            "rust".to_string(),
+            Some(tx),
+        );
+
+        server.handle_notification(LspNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "unknown/notification".to_string(),
+            params: None,
+        });
+
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_handle_server_request_workspace_configuration() {
+        // stdin 通道: client_write -> server_read (handle_server_request 通过 transport.stdin 写响应)
+        let (client_write, mut server_read) = tokio::io::duplex(1024);
+        // stdout 通道未使用,仅需满足 transport 类型
+        let (_server_write, client_read) = tokio::io::duplex(1024);
+
+        let transport = LspTransport::new_generic(client_write, client_read);
+        let mut server = LanguageServer::new_for_test(
+            transport,
+            ServerConfig::default(),
+            "rust".to_string(),
+            None,
+        );
+
+        let req = LspRequest {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::Value::Number(10i64.into()),
+            method: "workspace/configuration".to_string(),
+            params: Some(serde_json::json!({"items": [{}, {}]})),
+        };
+        server.handle_server_request(req).await.unwrap();
+
+        let mut buf = vec![0u8; 1024];
+        let n = server_read.read(&mut buf).await.unwrap();
+        let response_str = String::from_utf8(buf[..n].to_vec()).unwrap();
+        assert!(response_str.contains("\"id\":10"));
+        assert!(response_str.contains("\"result\""));
+    }
+
+    #[tokio::test]
+    async fn test_handle_server_request_unknown_method() {
+        let (client_write, mut server_read) = tokio::io::duplex(1024);
+        let (_server_write, client_read) = tokio::io::duplex(1024);
+
+        let transport = LspTransport::new_generic(client_write, client_read);
+        let mut server = LanguageServer::new_for_test(
+            transport,
+            ServerConfig::default(),
+            "rust".to_string(),
+            None,
+        );
+
+        let req = LspRequest {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::Value::Number(11i64.into()),
+            method: "client/unknown".to_string(),
+            params: None,
+        };
+        server.handle_server_request(req).await.unwrap();
+
+        let mut buf = vec![0u8; 1024];
+        let n = server_read.read(&mut buf).await.unwrap();
+        let response_str = String::from_utf8(buf[..n].to_vec()).unwrap();
+        assert!(response_str.contains("\"id\":11"));
+        assert!(response_str.contains("-32601"));
+    }
+
+    #[test]
+    fn test_cache_capabilities() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (read, write) = tokio::io::duplex(1024);
+        let transport = LspTransport::new_generic(write, read);
+        let mut server = LanguageServer::new_for_test(
+            transport,
+            ServerConfig::default(),
+            "rust".to_string(),
+            Some(tx),
+        );
+
+        let caps = ServerCapabilities {
+            completion_provider: Some(CompletionOptions::default()),
+            hover_provider: Some(HoverProviderCapability::Simple(true)),
+            ..Default::default()
+        };
+        server.cache_capabilities(&caps);
+        assert!(server.capabilities.completion_provider.is_some());
+        assert!(server.capabilities.hover_provider.is_some());
+    }
+
+    // 以下测试使用 mock 双向管道覆盖 LanguageServer 中不依赖真实子进程的分支。
+    type TestServer = LanguageServer<tokio::io::DuplexStream, tokio::io::DuplexStream>;
+
+    struct Harness {
+        server: TestServer,
+        client_recv: LspTransport<tokio::io::DuplexStream, tokio::io::DuplexStream>,
+        server_write: tokio::io::DuplexStream,
+    }
+
+    fn new_harness(event_tx: Option<mpsc::UnboundedSender<LspEvent>>) -> Harness {
+        let (client_write, server_read) = tokio::io::duplex(16384);
+        let (server_write, client_read) = tokio::io::duplex(16384);
+        let (_, dummy_write) = tokio::io::duplex(1);
+        let transport = LspTransport::new_generic(client_write, client_read);
+        let client_recv = LspTransport::new_generic(dummy_write, server_read);
+        let server = LanguageServer::new_for_test(
+            transport,
+            ServerConfig::default(),
+            "rust".to_string(),
+            event_tx,
+        );
+        Harness {
+            server,
+            client_recv,
+            server_write,
+        }
+    }
+
+    async fn write_response(write: &mut tokio::io::DuplexStream, message: &LspMessage) {
+        let bytes = encode_message(message).unwrap();
+        use tokio::io::AsyncWriteExt;
+        write.write_all(&bytes).await.unwrap();
+        write.flush().await.unwrap();
+    }
+
+    #[test]
+    fn test_serialize_params_error() {
+        struct AlwaysFails;
+        impl serde::Serialize for AlwaysFails {
+            fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                Err(serde::ser::Error::custom("fail"))
+            }
+        }
+        let result = TestServer::serialize_params(AlwaysFails);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_send_request_tracks_pending() {
+        let mut h = new_harness(None);
+        let id = h
+            .server
+            .send_request("textDocument/definition", Some(serde_json::json!({})))
+            .await
+            .unwrap();
+        assert!(h.server.pending_requests.contains_key(&id));
+        let received = h.client_recv.receive().await.unwrap();
+        match received {
+            LspMessage::Request(req) => {
+                assert_eq!(req.method, "textDocument/definition");
+                assert_eq!(req.id, id);
+            }
+            _ => panic!("expected request"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_receive_response_success() {
+        let mut h = new_harness(None);
+        let id = h.server.send_request("x", None).await.unwrap();
+        let response = LspMessage::Response(LspResponse {
+            jsonrpc: "2.0".to_string(),
+            id: id.clone(),
+            result: Some(serde_json::json!({"items": []})),
+            error: None,
+        });
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            let mut write = h.server_write;
+            write_response(&mut write, &response).await;
+        });
+        let result: Option<serde_json::Value> = h.server.receive_response(&id, Duration::from_secs(5)).await.unwrap();
+        assert!(result.is_some());
+        assert!(h.server.pending_requests.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_receive_response_error() {
+        let mut h = new_harness(None);
+        let id = h.server.send_request("x", None).await.unwrap();
+        let response = LspMessage::Response(LspResponse {
+            jsonrpc: "2.0".to_string(),
+            id: id.clone(),
+            result: None,
+            error: Some(LspError {
+                code: -32600,
+                message: "bad".to_string(),
+                data: None,
+            }),
+        });
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            let mut write = h.server_write;
+            write_response(&mut write, &response).await;
+        });
+        let result = h.server.receive_response::<serde_json::Value>(&id, Duration::from_secs(5)).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_receive_response_orphan_dropped() {
+        let mut h = new_harness(None);
+        let id = h.server.send_request("x", None).await.unwrap();
+        let orphan = LspMessage::Response(LspResponse {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::Value::Number(999i64.into()),
+            result: Some(serde_json::json!({})),
+            error: None,
+        });
+        let good = LspMessage::Response(LspResponse {
+            jsonrpc: "2.0".to_string(),
+            id: id.clone(),
+            result: Some(serde_json::Value::Null),
+            error: None,
+        });
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            let mut write = h.server_write;
+            write_response(&mut write, &orphan).await;
+            write_response(&mut write, &good).await;
+        });
+        let result = h.server.receive_response::<serde_json::Value>(&id, Duration::from_secs(5)).await.unwrap();
+        assert!(result.is_none());
+        assert!(!h.server.pending_requests.contains_key(&id));
+    }
+
+    #[tokio::test]
+    async fn test_receive_response_forwards_notification() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut h = new_harness(Some(tx));
+        let id = h.server.send_request("x", None).await.unwrap();
+        let notif = LspMessage::Notification(LspNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "textDocument/publishDiagnostics".to_string(),
+            params: Some(serde_json::json!({"uri": "file:///a.rs", "diagnostics": []})),
+        });
+        let response = LspMessage::Response(LspResponse {
+            jsonrpc: "2.0".to_string(),
+            id: id.clone(),
+            result: Some(serde_json::Value::Null),
+            error: None,
+        });
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            let mut write = h.server_write;
+            write_response(&mut write, &notif).await;
+            write_response(&mut write, &response).await;
+        });
+        let _ = h.server.receive_response::<serde_json::Value>(&id, Duration::from_secs(5)).await.unwrap();
+        match rx.try_recv().unwrap() {
+            LspEvent::Diagnostics { .. } => {}
+            _ => panic!("expected diagnostics"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_server_request_register_capability() {
+        let mut h = new_harness(None);
+        let req = LspRequest {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::Value::Number(1i64.into()),
+            method: "client/registerCapability".to_string(),
+            params: None,
+        };
+        h.server.handle_server_request(req).await.unwrap();
+        let resp = h.client_recv.receive().await.unwrap();
+        match resp {
+            LspMessage::Response(r) => {
+                assert!(r.error.is_none());
+                // Some(Value::Null) 在 JSON 中序列化为 null，反序列化后变为 None
+                assert!(r.result.is_none());
+            }
+            _ => panic!("expected response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_server_request_apply_edit_logs_event() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut h = new_harness(Some(tx));
+        let req = LspRequest {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::Value::Number(2i64.into()),
+            method: "workspace/applyEdit".to_string(),
+            params: None,
+        };
+        h.server.handle_server_request(req).await.unwrap();
+        let resp = h.client_recv.receive().await.unwrap();
+        match resp {
+            LspMessage::Response(r) => {
+                assert!(r.error.is_none());
+            }
+            _ => panic!("expected response"),
+        }
+        match rx.try_recv().unwrap() {
+            LspEvent::Log { language_id, .. } => assert_eq!(language_id, "rust"),
+            _ => panic!("expected log event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_server_request_workspace_folders() {
+        let config = ServerConfig {
+            root_uri: Some(Url::parse("file:///workspace").unwrap()),
+            ..Default::default()
+        };
+        let (client_write, server_read) = tokio::io::duplex(1024);
+        let (server_write, client_read) = tokio::io::duplex(1024);
+        let (_, dummy_write) = tokio::io::duplex(1);
+        let transport = LspTransport::new_generic(client_write, client_read);
+        let mut client_recv = LspTransport::new_generic(dummy_write, server_read);
+        let mut server = LanguageServer::new_for_test(
+            transport,
+            config,
+            "rust".to_string(),
+            None,
+        );
+        let req = LspRequest {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::Value::Number(3i64.into()),
+            method: "workspace/workspaceFolders".to_string(),
+            params: None,
+        };
+        server.handle_server_request(req).await.unwrap();
+        let resp = client_recv.receive().await.unwrap();
+        match resp {
+            LspMessage::Response(r) => {
+                let arr = r.result.unwrap().as_array().cloned().unwrap();
+                assert_eq!(arr.len(), 1);
+            }
+            _ => panic!("expected response"),
+        }
+        // 避免 unused 警告
+        let _ = server_write;
+    }
+
+    #[test]
+    fn test_handle_notification_without_event_tx() {
+        let h = new_harness(None);
+        h.server.handle_notification(LspNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "textDocument/publishDiagnostics".to_string(),
+            params: Some(serde_json::json!({"uri": "file:///a.rs", "diagnostics": []})),
+        });
+        // 无 event_tx 不应 panic
+    }
+
+    #[test]
+    fn test_handle_notification_diagnostics_invalid_params() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let h = new_harness(Some(tx));
+        h.server.handle_notification(LspNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "textDocument/publishDiagnostics".to_string(),
+            params: Some(serde_json::json!({"diagnostics": []})),
+        });
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_supports_all_capabilities() {
+        let mut h = new_harness(None);
+        assert!(!h.server.supports_definition());
+        h.server.capabilities.definition_provider = Some(OneOf::Left(true));
+        assert!(h.server.supports_definition());
+
+        assert!(!h.server.supports_references());
+        h.server.capabilities.references_provider = Some(OneOf::Left(true));
+        assert!(h.server.supports_references());
+
+        assert!(!h.server.supports_rename());
+        h.server.capabilities.rename_provider = Some(OneOf::Left(true));
+        assert!(h.server.supports_rename());
+
+        assert!(!h.server.supports_code_actions());
+        h.server.capabilities.code_action_provider = Some(CodeActionProviderCapability::Simple(true));
+        assert!(h.server.supports_code_actions());
+
+        assert!(!h.server.supports_formatting());
+        h.server.capabilities.document_formatting_provider = Some(OneOf::Left(true));
+        assert!(h.server.supports_formatting());
+
+        assert!(!h.server.supports_semantic_tokens());
+        h.server.capabilities.semantic_tokens_provider = Some(SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions::default()));
+        assert!(h.server.supports_semantic_tokens());
+
+        assert!(!h.server.supports_inlay_hints());
+        h.server.capabilities.inlay_hint_provider = Some(OneOf::Left(true));
+        assert!(h.server.supports_inlay_hints());
+    }
+
+    #[tokio::test]
+    async fn test_open_close_change_document() {
+        let mut h = new_harness(None);
+        let uri = Url::parse("file:///a.rs").unwrap();
+        h.server.open_document(uri.clone(), "rust".to_string(), 1, "fn main() {}".to_string()).await.unwrap();
+        let msg = h.client_recv.receive().await.unwrap();
+        match msg {
+            LspMessage::Notification(n) => assert_eq!(n.method, "textDocument/didOpen"),
+            _ => panic!("expected didOpen"),
+        }
+        assert!(h.server.open_documents.contains_key(&uri));
+
+        h.server.change_document(&uri, 2, vec![]).await.unwrap();
+        let msg = h.client_recv.receive().await.unwrap();
+        match msg {
+            LspMessage::Notification(n) => assert_eq!(n.method, "textDocument/didChange"),
+            _ => panic!("expected didChange"),
+        }
+        assert_eq!(h.server.open_documents[&uri].version, 2);
+
+        h.server.close_document(&uri).await.unwrap();
+        let msg = h.client_recv.receive().await.unwrap();
+        match msg {
+            LspMessage::Notification(n) => assert_eq!(n.method, "textDocument/didClose"),
+            _ => panic!("expected didClose"),
+        }
+        assert!(!h.server.open_documents.contains_key(&uri));
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_not_initialized_is_noop() {
+        let mut h = new_harness(None);
+        assert!(h.server.shutdown().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_initialized() {
+        let mut h = new_harness(None);
+        h.server.initialized = true;
+        let response = LspMessage::Response(LspResponse {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::Value::Number(1i64.into()),
+            result: Some(serde_json::Value::Null),
+            error: None,
+        });
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            let mut write = h.server_write;
+            write_response(&mut write, &response).await;
+        });
+        h.server.shutdown().await.unwrap();
+        assert!(!h.server.initialized);
+        let msg = h.client_recv.receive().await.unwrap();
+        match msg {
+            LspMessage::Request(req) => assert_eq!(req.method, "shutdown"),
+            _ => panic!("expected shutdown request"),
+        }
+        let msg = h.client_recv.receive().await.unwrap();
+        match msg {
+            LspMessage::Notification(n) => assert_eq!(n.method, "exit"),
+            _ => panic!("expected exit"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_request_completion_sends_message() {
+        let mut h = new_harness(None);
+        let uri = Url::parse("file:///a.rs").unwrap();
+        let _ = h.server.request_completion(&uri, Position { line: 0, character: 0 }).await;
+        let msg = h.client_recv.receive().await.unwrap();
+        match msg {
+            LspMessage::Request(req) => assert_eq!(req.method, "textDocument/completion"),
+            _ => panic!("expected completion request"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_request_hover_sends_message() {
+        let mut h = new_harness(None);
+        let uri = Url::parse("file:///a.rs").unwrap();
+        let _ = h.server.request_hover(&uri, Position { line: 0, character: 0 }).await;
+        let msg = h.client_recv.receive().await.unwrap();
+        match msg {
+            LspMessage::Request(req) => assert_eq!(req.method, "textDocument/hover"),
+            _ => panic!("expected hover request"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_initialize_caches_capabilities() {
+        let mut h = new_harness(None);
+        let response = LspMessage::Response(LspResponse {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::Value::Number(1i64.into()),
+            result: Some(serde_json::json!({
+                "capabilities": {
+                    "completionProvider": {},
+                    "hoverProvider": true,
+                    "definitionProvider": true,
+                    "textDocumentSync": {
+                        "openClose": true,
+                        "change": 2
+                    }
+                }
+            })),
+            error: None,
+        });
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            let mut write = h.server_write;
+            write_response(&mut write, &response).await;
+        });
+        h.server.initialize().await.unwrap();
+        assert!(h.server.initialized);
+        assert!(h.server.supports_completion());
+        assert!(h.server.supports_hover());
+        assert!(h.server.capabilities.text_document_sync.is_some());
+        let msg = h.client_recv.receive().await.unwrap();
+        match msg {
+            LspMessage::Request(req) => assert_eq!(req.method, "initialize"),
+            _ => panic!("expected initialize request"),
+        }
+        let msg = h.client_recv.receive().await.unwrap();
+        match msg {
+            LspMessage::Notification(n) => assert_eq!(n.method, "initialized"),
+            _ => panic!("expected initialized notification"),
+        }
+    }
+}

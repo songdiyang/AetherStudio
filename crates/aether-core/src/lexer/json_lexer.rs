@@ -213,4 +213,52 @@ mod tests {
             .count();
         assert_eq!(keyword_count, 3);
     }
+
+    #[test]
+    fn test_json_empty() {
+        assert!(JsonLexer::new().lex_full("").is_empty());
+    }
+
+    #[test]
+    fn test_json_whitespace() {
+        let tokens = JsonLexer::new().lex_full("  \n\t  ");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].kind, TokenKind::Whitespace);
+    }
+
+    #[test]
+    fn test_json_numbers() {
+        let tokens = JsonLexer::new().lex_full("[-123, 45.6, 7e-2, -8.9E+10]");
+        assert_eq!(
+            tokens.iter().filter(|t| t.kind == TokenKind::NumberLiteral).count(),
+            4
+        );
+    }
+
+    #[test]
+    fn test_json_strings() {
+        let tokens = JsonLexer::new().lex_full(r#"{"key": "value", "other":"x"}"#);
+        let keys = tokens.iter().filter(|t| t.kind == TokenKind::JsonKey).count();
+        let strings = tokens.iter().filter(|t| t.kind == TokenKind::StringLiteral).count();
+        assert_eq!(keys, 2);
+        assert_eq!(strings, 2);
+    }
+
+    #[test]
+    fn test_json_punctuation() {
+        let tokens = JsonLexer::new().lex_full("{}:");
+        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::Punctuation).count(), 3);
+    }
+
+    #[test]
+    fn test_json_unknown() {
+        let tokens = JsonLexer::new().lex_full("@");
+        assert_eq!(tokens[0].kind, TokenKind::Unknown);
+    }
+
+    #[test]
+    fn test_json_invalid_literal() {
+        let tokens = JsonLexer::new().lex_full("truish");
+        assert_eq!(tokens[0].kind, TokenKind::Identifier);
+    }
 }

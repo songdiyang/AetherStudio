@@ -226,4 +226,96 @@ mod tests {
         let re = build_regex(&q).unwrap();
         assert!(re.is_match("hello world"));
     }
+
+    #[test]
+    fn test_search_query_default() {
+        let q = SearchQuery::default();
+        assert!(q.pattern.is_empty());
+        assert!(!q.regex);
+        assert!(!q.case_sensitive);
+        assert!(q.include.is_empty());
+        assert_eq!(q.exclude.len(), 3);
+    }
+
+    #[test]
+    fn test_build_regex_literal_escapes() {
+        let q = SearchQuery {
+            pattern: "a.b".to_string(),
+            regex: false,
+            case_sensitive: true,
+            ..Default::default()
+        };
+        let re = build_regex(&q).unwrap();
+        assert!(re.is_match("a.b"));
+        assert!(!re.is_match("aXb"));
+    }
+
+    #[test]
+    fn test_build_regex_regex_mode() {
+        let q = SearchQuery {
+            pattern: r"\d+".to_string(),
+            regex: true,
+            case_sensitive: true,
+            ..Default::default()
+        };
+        let re = build_regex(&q).unwrap();
+        assert!(re.is_match("abc123"));
+        assert!(!re.is_match("abc"));
+    }
+
+    #[test]
+    fn test_build_regex_invalid() {
+        let q = SearchQuery {
+            pattern: "(".to_string(),
+            regex: true,
+            ..Default::default()
+        };
+        assert!(build_regex(&q).is_err());
+    }
+
+    #[test]
+    fn test_parse_ripgrep_output() {
+        let root = std::path::Path::new("/root");
+        let output = "src/main.rs:10:5:fn main() {\nsrc/lib.rs:20:1:pub fn add() {}";
+        let results = parse_ripgrep_output(root, output);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].path, root.join("src/main.rs"));
+        assert_eq!(results[0].line, 10);
+        assert_eq!(results[0].col, 5);
+        assert_eq!(results[1].line, 20);
+    }
+
+    #[test]
+    fn test_parse_ripgrep_output_malformed() {
+        let root = std::path::Path::new("/root");
+        let output = "no-colons\n:::\n";
+        let results = parse_ripgrep_output(root, output);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_is_excluded() {
+        let q = SearchQuery {
+            exclude: vec!["target".to_string(), ".git".to_string()],
+            ..Default::default()
+        };
+        let root = std::path::Path::new("/proj");
+        assert!(is_excluded(std::path::Path::new("/proj/target/debug/foo"), root, &q));
+        assert!(is_excluded(std::path::Path::new("/proj/.git/config"), root, &q));
+        assert!(!is_excluded(std::path::Path::new("/proj/src/main.rs"), root, &q));
+    }
+
+    #[test]
+    fn test_is_included() {
+        let q = SearchQuery {
+            include: vec!["src".to_string()],
+            ..Default::default()
+        };
+        let root = std::path::Path::new("/proj");
+        assert!(is_included(std::path::Path::new("/proj/src/main.rs"), root, &q));
+        assert!(!is_included(std::path::Path::new("/proj/tests/t.rs"), root, &q));
+
+        let empty = SearchQuery::default();
+        assert!(is_included(std::path::Path::new("/proj/any"), root, &empty));
+    }
 }

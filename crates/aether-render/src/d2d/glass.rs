@@ -152,3 +152,9 @@ pub fn draw_rounded_panel(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    // 本模块所有公开函数均依赖 ID2D1HwndRenderTarget 与 BrushCache 中的真实 COM 画刷，
+    // 无法在不创建渲染目标/窗口的情况下进行单元测试。相关逻辑可在集成测试或 GUI 测试中覆盖。
+}

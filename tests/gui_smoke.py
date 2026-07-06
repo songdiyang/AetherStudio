@@ -15,7 +15,7 @@ import psutil
 
 # 项目目录
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-APP_PATH = PROJECT_DIR / "target" / "x86_64-pc-windows-msvc" / "debug" / "aether-app.exe"
+APP_PATH = PROJECT_DIR / "target" / "x86_64-pc-windows-msvc" / "release" / "aether-app.exe"
 SCREENSHOT_DIR = PROJECT_DIR / "tests" / "screenshots"
 HIT_REGIONS_PATH = PROJECT_DIR / "tests" / "gui_hit_regions.jsonl"
 REPORT_PATH = PROJECT_DIR / "tests" / "gui_smoke_report.json"
@@ -214,8 +214,16 @@ def main():
     REPORT_PATH.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Report saved: {REPORT_PATH}")
 
-    # 不关闭应用，方便人工查看
-    print("Smoke test completed. App left running.")
+    # 关闭应用
+    print("Closing Aether Studio...")
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+    print("Smoke test completed. App closed.")
 
 
 if __name__ == "__main__":
