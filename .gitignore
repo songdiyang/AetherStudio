@@ -22,6 +22,10 @@ Thumbs.db
 
 # Logs
 *.log
+cargo_check_err.txt
+cargo_check_out.txt
+cargo_test_err.txt
+cargo_test_out.txt
 
 # Temporary files
 *.tmp
