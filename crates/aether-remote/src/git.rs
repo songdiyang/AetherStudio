@@ -237,11 +237,8 @@ impl GitRepository {
             } else if x == '!' && y == '!' {
                 // ignored, skip
             } else {
-                let is_conflict = x == 'U'
-                    || y == 'U'
-                    || (x == 'A' && y == 'A')
-                    || (x == 'D' && y == 'D')
-                    || (x == 'U' && y == 'U');
+                let is_conflict =
+                    x == 'U' || y == 'U' || (x == 'A' && y == 'A') || (x == 'D' && y == 'D');
 
                 if is_conflict {
                     status.conflicts.push(path);

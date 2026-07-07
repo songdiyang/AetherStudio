@@ -22,16 +22,35 @@ Thumbs.db
 
 # Logs
 *.log
+cargo_check_err.txt
+cargo_check_out.txt
+cargo_test_err.txt
+cargo_test_out.txt
 
 # Temporary files
 *.tmp
 *.temp
 
-# Learning reference: cloned vscode repo (not part of this project)
+# Reference / local-only directories
 vscode/
+tests/screenshots/
+tests/gui_hit_regions.jsonl
+tests/gui_probe_report.json
+tests/gui_smoke_report.json
 
 # Trae IDE shared HTML packages cache
 .trae-html-share-packages/
 
 # Upload cache
 .uploads/
+
+# Runtime user data
+crates/aether-win32/recent_projects.json
+
+# Coverage artifacts
+*.profraw
+tests/coverage/
+crates/*/tests/coverage/
+
+# AI assistant workspace memory
+.workbuddy/

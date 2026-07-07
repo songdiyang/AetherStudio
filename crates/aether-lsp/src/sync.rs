@@ -1,10 +1,18 @@
 use lsp_types::*;
 use std::collections::HashMap;
 
+use crate::incremental_sync::{FastLineIndex, LineIndexProvider};
+
 /// 文档同步管理器
 /// 跟踪所有已打开文档的状态和版本
 pub struct DocumentSync {
     documents: HashMap<Url, DocumentState>,
+}
+
+impl Default for DocumentSync {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DocumentSync {
@@ -71,11 +79,16 @@ pub struct DocumentState {
     pub text: String,
 }
 
-/// 计算增量变更（简化版：整行替换）
-/// 实际生产环境应使用差异算法（如 Myers diff）
+/// 计算增量变更（基于共同前缀/后缀的字符级 diff）
+///
+/// 相比原行级启发式，本实现：
+/// - 精确到字节级别的变更范围，不再按整行替换
+/// - 使用 FastLineIndex 将字节偏移转换为 LSP Position，且 character 按 UTF-16 码元计数
+/// - 大文件或变更范围过大时回退为全文替换
 pub fn compute_changes(old_text: &str, new_text: &str) -> Vec<TextDocumentContentChangeEvent> {
-    // 如果文本差异很大，直接发送完整内容
-    if old_text.len() > 10000 || new_text.len() > 10000 {
+    // 如果文本差异很大，直接发送完整内容更高效
+    const LARGE_FILE_THRESHOLD: usize = 100_000; // 100KB
+    if old_text.len() > LARGE_FILE_THRESHOLD || new_text.len() > LARGE_FILE_THRESHOLD {
         return vec![TextDocumentContentChangeEvent {
             range: None,
             range_length: None,
@@ -83,63 +96,207 @@ pub fn compute_changes(old_text: &str, new_text: &str) -> Vec<TextDocumentConten
         }];
     }
 
-    // 简单启发式：如果文本差异小，尝试找到变更范围
-    let old_lines: Vec<&str> = old_text.lines().collect();
-    let new_lines: Vec<&str> = new_text.lines().collect();
+    // 找到共同前缀长度
+    let prefix_len = old_text
+        .bytes()
+        .zip(new_text.bytes())
+        .take_while(|(a, b)| a == b)
+        .count();
 
-    // 找到第一个不同的行
-    let mut first_diff = 0;
-    while first_diff < old_lines.len()
-        && first_diff < new_lines.len()
-        && old_lines[first_diff] == new_lines[first_diff]
-    {
-        first_diff += 1;
-    }
+    // 找到共同后缀长度（不得超过剩余长度）
+    let suffix_len = old_text[prefix_len..]
+        .bytes()
+        .rev()
+        .zip(new_text[prefix_len..].bytes().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
 
-    // 找到最后一个不同的行
-    let mut old_last = old_lines.len();
-    let mut new_last = new_lines.len();
-    while old_last > first_diff
-        && new_last > first_diff
-        && old_lines[old_last - 1] == new_lines[new_last - 1]
-    {
-        old_last -= 1;
-        new_last -= 1;
-    }
+    let old_start = prefix_len;
+    let old_end = old_text.len() - suffix_len;
+    let new_start = prefix_len;
+    let new_end = new_text.len() - suffix_len;
 
-    if first_diff == old_lines.len() && first_diff == new_lines.len() {
-        // 没有变化
+    // 没有变化
+    if old_start == old_end && new_start == new_end {
         return vec![];
     }
 
-    // 构建变更范围
-    let start_line = first_diff;
-    let start_char = 0;
-    let end_line = old_last.saturating_sub(1);
-    let end_char = if end_line < old_lines.len() {
-        old_lines[end_line].len()
-    } else {
-        0
-    };
+    // 如果变更范围超过原文本50%，发送全文替换
+    if !old_text.is_empty() && (old_end - old_start) > old_text.len() / 2 {
+        return vec![TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: new_text.to_string(),
+        }];
+    }
 
-    let replacement: String = if new_last > first_diff {
-        new_lines[first_diff..new_last].join("\n")
-    } else {
-        String::new()
-    };
+    // 使用 FastLineIndex 将字节偏移转换为 LSP Position（UTF-16 码元）
+    let old_index = FastLineIndex::from_text(old_text);
+    let start_pos = old_index.byte_to_position(old_start);
+    let end_pos = old_index.byte_to_position(old_end);
+
+    let replacement = new_text[new_start..new_end].to_string();
 
     vec![TextDocumentContentChangeEvent {
         range: Some(Range {
-            start: Position {
-                line: start_line as u32,
-                character: start_char as u32,
-            },
-            end: Position {
-                line: end_line as u32,
-                character: end_char as u32,
-            },
+            start: start_pos,
+            end: end_pos,
         }),
-        range_length: None,
+        range_length: Some((old_end - old_start) as u32),
         text: replacement,
     }]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pos(line: u32, character: u32) -> Position {
+        Position { line, character }
+    }
+
+    #[test]
+    fn test_document_sync_open_close() {
+        let mut sync = DocumentSync::new();
+        let uri = Url::parse("file:///test.rs").unwrap();
+        sync.open_document(
+            uri.clone(),
+            "rust".to_string(),
+            1,
+            "fn main() {}".to_string(),
+        );
+        assert!(sync.is_open(&uri));
+        assert_eq!(sync.get_language_id(&uri).unwrap(), "rust");
+        assert_eq!(sync.get_version(&uri).unwrap(), 1);
+
+        sync.close_document(&uri);
+        assert!(!sync.is_open(&uri));
+        assert!(sync.get_document(&uri).is_none());
+    }
+
+    #[test]
+    fn test_document_sync_version_and_text() {
+        let mut sync = DocumentSync::new();
+        let uri = Url::parse("file:///test.rs").unwrap();
+        sync.open_document(uri.clone(), "rust".to_string(), 1, "a".to_string());
+        assert_eq!(sync.increment_version(&uri).unwrap(), 2);
+        assert_eq!(sync.get_version(&uri).unwrap(), 2);
+
+        sync.update_text(&uri, "b".to_string());
+        assert_eq!(sync.get_document(&uri).unwrap().text, "b");
+
+        // 不存在的文档
+        let missing = Url::parse("file:///missing.rs").unwrap();
+        assert!(sync.increment_version(&missing).is_none());
+        assert!(sync.get_version(&missing).is_none());
+    }
+
+    #[test]
+    fn test_compute_changes_no_change() {
+        let changes = compute_changes("hello", "hello");
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn test_compute_changes_insert() {
+        let changes = compute_changes("hello", "hello world");
+        assert_eq!(changes.len(), 1);
+        let change = &changes[0];
+        assert_eq!(
+            change.range,
+            Some(Range {
+                start: pos(0, 5),
+                end: pos(0, 5)
+            })
+        );
+        assert_eq!(change.text, " world");
+    }
+
+    #[test]
+    fn test_compute_changes_delete() {
+        // 删除部分不超过原文 50%,应生成增量变更
+        let changes = compute_changes("hello beautiful world", "hello world");
+        assert_eq!(changes.len(), 1);
+        let change = &changes[0];
+        // 共同前缀 "hello ",共同后缀 "world",删除中间 "beautiful "
+        assert_eq!(
+            change.range,
+            Some(Range {
+                start: pos(0, 6),
+                end: pos(0, 16)
+            })
+        );
+        assert_eq!(change.text, "");
+    }
+
+    #[test]
+    fn test_compute_changes_replace() {
+        let changes = compute_changes("hello world", "hello rust");
+        assert_eq!(changes.len(), 1);
+        let change = &changes[0];
+        assert_eq!(
+            change.range,
+            Some(Range {
+                start: pos(0, 6),
+                end: pos(0, 11)
+            })
+        );
+        assert_eq!(change.text, "rust");
+    }
+
+    #[test]
+    fn test_compute_changes_large_file_fallback() {
+        let old_text = "a".repeat(100_001);
+        let new_text = old_text.clone() + "b";
+        let changes = compute_changes(&old_text, &new_text);
+        assert_eq!(changes.len(), 1);
+        assert!(changes[0].range.is_none());
+        assert_eq!(changes[0].text, new_text);
+    }
+
+    #[test]
+    fn test_compute_changes_major_change_fallback() {
+        // 变更超过 50% 时回退为全文替换
+        let old_text = "abcdef";
+        let new_text = "xyz";
+        let changes = compute_changes(old_text, new_text);
+        assert_eq!(changes.len(), 1);
+        assert!(changes[0].range.is_none());
+        assert_eq!(changes[0].text, new_text);
+    }
+
+    #[test]
+    fn test_compute_changes_multiline() {
+        let old_text = "line1\nline2\nline3";
+        let new_text = "line1\nmodified\nline3";
+        let changes = compute_changes(old_text, new_text);
+        assert_eq!(changes.len(), 1);
+        let change = &changes[0];
+        assert_eq!(
+            change.range,
+            Some(Range {
+                start: pos(1, 0),
+                end: pos(1, 5),
+            })
+        );
+        assert_eq!(change.text, "modified");
+    }
+
+    #[test]
+    fn test_compute_changes_utf16_character_count() {
+        // "𐍈" 是一个 UTF-16 代理对,占用 2 个 UTF-16 码元
+        let old_text = "a";
+        let new_text = "a𐍈";
+        let changes = compute_changes(old_text, new_text);
+        assert_eq!(changes.len(), 1);
+        let change = &changes[0];
+        assert_eq!(
+            change.range,
+            Some(Range {
+                start: pos(0, 1),
+                end: pos(0, 1)
+            })
+        );
+        assert_eq!(change.text, "𐍈");
+    }
 }

@@ -70,6 +70,10 @@ pub enum CommandId {
     RunDebug,
     // 终端
     TerminalNew,
+    // 搜索
+    SearchGlobal,
+    // AI
+    AiFixDiagnostics,
     // 帮助
     HelpAbout,
 }
@@ -78,7 +82,7 @@ impl CommandId {
     pub fn label(&self) -> &'static str {
         match self {
             CommandId::None => "",
-            CommandId::FileNew => "新建文件",
+            CommandId::FileNew => "新建项目",
             CommandId::FileNewWindow => "新建窗口",
             CommandId::FileOpen => "打开文件",
             CommandId::FileOpenFolder => "打开文件夹",
@@ -105,6 +109,8 @@ impl CommandId {
             CommandId::RunStart => "启动",
             CommandId::RunDebug => "调试",
             CommandId::TerminalNew => "新建终端",
+            CommandId::SearchGlobal => "全局搜索",
+            CommandId::AiFixDiagnostics => "AI 修复当前诊断",
             CommandId::HelpAbout => "关于",
         }
     }
@@ -164,7 +170,7 @@ impl MenuBar {
                 MenuBarItem::new(
                     "文件(F)",
                     vec![
-                        MenuItem::new("新建文件", CommandId::FileNew).with_shortcut("Ctrl+N"),
+                        MenuItem::new("新建项目", CommandId::FileNew).with_shortcut("Ctrl+N"),
                         MenuItem::new("新建窗口", CommandId::FileNewWindow)
                             .with_shortcut("Ctrl+Shift+N"),
                         MenuItem::new("打开文件...", CommandId::FileOpen).with_shortcut("Ctrl+O"),
@@ -407,5 +413,212 @@ impl MenuBar {
             self.active_index = None;
             self.layout_dirty = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_command_id_label() {
+        assert_eq!(CommandId::FileNew.label(), "新建项目");
+        assert_eq!(CommandId::EditUndo.label(), "撤销");
+        assert_eq!(CommandId::None.label(), "");
+    }
+
+    #[test]
+    fn test_menu_item_builder() {
+        let item = MenuItem::new("保存", CommandId::FileSave).with_shortcut("Ctrl+S");
+        assert_eq!(item.label, "保存");
+        assert_eq!(item.shortcut, Some("Ctrl+S".to_string()));
+        assert_eq!(item.command_id, CommandId::FileSave);
+        assert!(item.enabled);
+
+        let sep = MenuItem::separator();
+        assert_eq!(sep.label, "-");
+        assert_eq!(sep.command_id, CommandId::None);
+    }
+
+    #[test]
+    fn test_menu_bar_item_key() {
+        let item = MenuBarItem::new("文件(F)", vec![]);
+        assert_eq!(item.key(), "文件");
+    }
+
+    #[test]
+    fn test_menu_bar_hit_test() {
+        let mut bar = MenuBar::new();
+        bar.item_widths = vec![50.0, 60.0, 70.0];
+        assert_eq!(bar.hit_test(30.0, 20.0, 30.0), Some(0));
+        assert_eq!(bar.hit_test(55.0, 20.0, 30.0), Some(1));
+        assert_eq!(bar.hit_test(200.0, 20.0, 30.0), None);
+        assert_eq!(bar.hit_test(30.0, 35.0, 30.0), None);
+    }
+
+    #[test]
+    fn test_menu_bar_expand_and_close() {
+        let mut bar = MenuBar::new();
+        bar.expand(1);
+        assert_eq!(bar.active_index, Some(1));
+        assert!(bar.items[1].expanded);
+        assert!(!bar.items[0].expanded);
+
+        bar.close_all();
+        assert_eq!(bar.active_index, None);
+        assert!(!bar.items.iter().any(|i| i.expanded));
+    }
+
+    #[test]
+    fn test_menu_bar_drop_index_at() {
+        let mut bar = MenuBar::new();
+        let count = bar.items.len();
+        bar.item_widths = vec![50.0; count];
+        assert_eq!(bar.drop_index_at(20.0), 0);
+        assert_eq!(bar.drop_index_at(55.0), 1);
+        assert_eq!(bar.drop_index_at(count as f32 * 50.0 + 10.0), count);
+    }
+
+    #[test]
+    fn test_menu_bar_reorder() {
+        let mut bar = MenuBar::new();
+        bar.begin_drag(0);
+        bar.drop_index = Some(2);
+        let first_key = bar.items[0].key();
+        bar.reorder();
+        assert_eq!(bar.items[1].key(), first_key);
+    }
+
+    #[test]
+    fn test_menu_bar_apply_order() {
+        let mut bar = MenuBar::new();
+        let keys = vec!["编辑".to_string(), "文件".to_string()];
+        bar.apply_order(&keys);
+        assert_eq!(bar.items[0].key(), "编辑");
+        assert_eq!(bar.items[1].key(), "文件");
+        // 未被指定的项应保留在后面
+        assert!(bar.items.len() > 2);
+    }
+
+    #[test]
+    fn test_menu_bar_item_x() {
+        let mut bar = MenuBar::new();
+        bar.item_widths = vec![30.0, 40.0, 50.0];
+        assert_eq!(bar.item_x(0), 0.0);
+        assert_eq!(bar.item_x(1), 30.0);
+        assert_eq!(bar.item_x(2), 70.0);
+        assert_eq!(bar.item_x(5), 120.0); // 超出长度返回累计
+    }
+
+    #[test]
+    fn test_menu_bar_submenu_hit_test() {
+        let mut bar = MenuBar::new();
+        bar.expand(0);
+        bar.item_widths = vec![50.0; bar.items.len()];
+        let regions = bar.submenu_region(0, 10.0, 30.0);
+        assert!(!regions.is_empty());
+        let first = regions[0];
+        let hit = bar.hit_test_submenu(0, first.0 + 1.0, first.1 + 1.0, 10.0, 30.0);
+        assert_eq!(hit, Some(0));
+        assert!(bar.hit_test_submenu(0, -1.0, -1.0, 10.0, 30.0).is_none());
+        assert!(bar.submenu_region(1, 0.0, 0.0).is_empty());
+    }
+
+    #[test]
+    fn test_menu_bar_drag_and_customize() {
+        let mut bar = MenuBar::new();
+        bar.begin_drag(1);
+        assert!(bar.customize_mode);
+        assert_eq!(bar.drag_index, Some(1));
+        bar.exit_customize();
+        assert!(!bar.customize_mode);
+        assert!(bar.drag_index.is_none());
+    }
+
+    #[test]
+    fn test_menu_bar_reorder_edge_cases() {
+        let mut bar = MenuBar::new();
+        let keys: Vec<String> = bar.items.iter().map(|i| i.key()).collect();
+        let original_len = bar.items.len();
+
+        // from == to 不变化
+        bar.begin_drag(0);
+        bar.drop_index = Some(0);
+        bar.reorder();
+        assert_eq!(bar.items.len(), original_len);
+
+        // 越界不 panic
+        bar.drag_index = Some(100);
+        bar.drop_index = Some(1);
+        bar.reorder();
+        assert_eq!(bar.items.len(), original_len);
+
+        // 正常重排后恢复
+        bar.items = keys.iter().map(|k| MenuBarItem::new(k, vec![])).collect();
+        bar.begin_drag(0);
+        bar.drop_index = Some(original_len);
+        bar.reorder();
+        assert_eq!(bar.items[original_len - 1].key(), keys[0]);
+    }
+
+    #[test]
+    fn test_menu_bar_apply_order_edge_cases() {
+        let mut bar = MenuBar::new();
+        let original = bar.items.clone();
+        // 空配置保持原顺序
+        bar.apply_order(&[]);
+        assert_eq!(bar.items.len(), original.len());
+        // 重复键只保留第一次出现
+        bar.apply_order(&["文件".to_string(), "文件".to_string()]);
+        assert_eq!(bar.items[0].key(), "文件");
+        assert_eq!(bar.items.iter().filter(|i| i.key() == "文件").count(), 1);
+    }
+
+    #[test]
+    fn test_command_id_all_labels() {
+        use CommandId::*;
+        let ids = [
+            None,
+            FileNew,
+            FileNewWindow,
+            FileOpen,
+            FileOpenFolder,
+            FileCloseWorkspace,
+            FileSave,
+            FileSaveAs,
+            FileExit,
+            EditUndo,
+            EditRedo,
+            EditCut,
+            EditCopy,
+            EditPaste,
+            EditFind,
+            EditReplace,
+            EditSelectAll,
+            SelectAll,
+            ViewToggleSidebar,
+            ViewToggleActivityBar,
+            ViewToggleStatusBar,
+            ViewZoomIn,
+            ViewZoomOut,
+            GotoFile,
+            GotoLine,
+            RunStart,
+            RunDebug,
+            TerminalNew,
+            SearchGlobal,
+            AiFixDiagnostics,
+            HelpAbout,
+        ];
+        for id in &ids {
+            // label() 覆盖所有分支，不应 panic
+            let _ = id.label();
+        }
+    }
+
+    #[test]
+    fn test_menu_item_key_without_mnemonic() {
+        let item = MenuBarItem::new("帮助", vec![]);
+        assert_eq!(item.key(), "帮助");
     }
 }

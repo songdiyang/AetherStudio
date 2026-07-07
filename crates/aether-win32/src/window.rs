@@ -4,8 +4,10 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::launch::{copydata_result, parse_copydata_lparam, LaunchArgs};
+
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
+use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -20,12 +22,31 @@ const WINDOW_TITLE: &str = "Aether";
 const LP_TIMER_ID: usize = 0xA001;
 /// 终端刷新定时器 ID（终端运行时周期性触发重绘以显示异步输出）
 const TERM_TIMER_ID: usize = 0xA002;
+/// P3.4: Hover tooltip 防抖定时器 ID
+const HOVER_TIMER_ID: usize = 0xA003;
+/// 新建项目对话框输入框光标闪烁定时器 ID
+pub const CARET_TIMER_ID: usize = 0xA004;
 /// 长按阈值（毫秒）
 const LP_THRESHOLD_MS: u32 = 500;
 /// 终端刷新间隔（毫秒），约 20fps 足以实时显示 shell 输出
 const TERM_REFRESH_MS: u32 = 50;
+/// P3.4: Hover tooltip 触发延迟（毫秒）
+const HOVER_DELAY_MS: u32 = 500;
 /// 长按期间允许的鼠标移动容差（逻辑像素，超过则取消长按检测）
 const LP_MOVE_TOLERANCE: f32 = 4.0;
+/// P3.4: Hover tooltip 防抖鼠标移动容差（逻辑像素，超过则重新计时）
+const HOVER_MOVE_TOLERANCE: f32 = 4.0;
+
+/// REQ-P1-07: 标记窗口客户区为失效，触发下一次 WM_PAINT 重绘。
+///
+/// 替代事件处理中的直接 `render()` 调用。Windows 会自动合并多次
+/// `InvalidateRect` 为一次 WM_PAINT，天然消除双重渲染。
+/// 事件处理只需修改状态 + 调用本函数，实际渲染统一由 WM_PAINT 驱动。
+fn invalidate_window(hwnd: HWND) {
+    unsafe {
+        let _ = InvalidateRect(hwnd, None, false);
+    }
+}
 
 /// 设置 DPI 感知模式
 fn set_dpi_awareness() {
@@ -230,9 +251,9 @@ fn persist_window_state(state: &EditorState, hwnd: HWND) {
 }
 
 thread_local! {
-    static EDITOR_STATE: RefCell<Option<Rc<RefCell<EditorState>>>> = RefCell::new(None);
+    static EDITOR_STATE: RefCell<Option<Rc<RefCell<EditorState>>>> = const { RefCell::new(None) };
     // P2-9: 暂存 WM_CHAR 收到的高代理，等待配对的低代理组合为完整码点
-    static PENDING_HIGH_SURROGATE: RefCell<Option<u16>> = RefCell::new(None);
+    static PENDING_HIGH_SURROGATE: RefCell<Option<u16>> = const { RefCell::new(None) };
 }
 
 /// UI-C02: 全局窗口计数器，防止多窗口时关闭任一窗口就退出整个应用
@@ -273,7 +294,52 @@ fn get_and_set_state(hwnd: HWND) -> Option<Rc<RefCell<EditorState>>> {
     }
 }
 
-pub fn run() {
+/// 应用 CLI 传入的启动参数到指定编辑器状态
+fn apply_launch_args(state: &mut EditorState, args: &LaunchArgs) {
+    let mut loaded_file_for_goto: Option<std::path::PathBuf> = None;
+
+    for path in &args.paths {
+        if path.is_dir() {
+            state.open_folder(path.clone());
+        } else if path.is_file() {
+            // 文件：先打开所在文件夹作为工作区，再加载文件到标签页
+            if let Some(parent) = path.parent() {
+                state.open_folder(parent.to_path_buf());
+            }
+            state.load_file(path.clone());
+            if args.goto.is_some() && loaded_file_for_goto.is_none() {
+                loaded_file_for_goto = Some(path.clone());
+            }
+        }
+    }
+
+    // 如果提供了 goto，且第一个路径就是文件，则直接跳转
+    // 如果 goto 指向的文件不是第一个路径，需要在后续扩展中支持按文件名匹配
+    if let Some(goto) = args.goto {
+        let target_file = loaded_file_for_goto.or_else(|| args.paths.first().cloned());
+        if target_file.map(|p| p.is_file()).unwrap_or(false) {
+            state.goto_position(goto.line, goto.column);
+        }
+    }
+
+    // REQ-P1-07: 不直接调用 render()，标记全窗口脏区域，由调用方触发 WM_PAINT
+    state.dirty_tracker.mark_full_window();
+}
+
+/// WM_COPYDATA：接收来自第二个实例或 CLI 的启动参数
+unsafe fn on_copydata(hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if let Some(args) = parse_copydata_lparam(lparam) {
+        if let Some(state) = get_and_set_state(hwnd) {
+            apply_launch_args(&mut state.borrow_mut(), &args);
+            // REQ-P1-07: 触发重绘（apply_launch_args 已标记脏区域）
+            invalidate_window(hwnd);
+            return copydata_result(true);
+        }
+    }
+    copydata_result(false)
+}
+
+pub fn run(args: LaunchArgs) {
     unsafe {
         // 设置 DPI 感知模式（Per-Monitor V2）
         set_dpi_awareness();
@@ -295,7 +361,14 @@ pub fn run() {
         RegisterClassW(&wc);
 
         // 创建第一个窗口
-        create_editor_window(instance.into(), None);
+        let hwnd = create_editor_window(instance.into(), None);
+
+        // 应用启动参数：打开传入的文件夹或文件
+        if let Some(state) = get_and_set_state(hwnd) {
+            apply_launch_args(&mut state.borrow_mut(), &args);
+            // REQ-P1-07: 触发重绘（apply_launch_args 已标记脏区域）
+            invalidate_window(hwnd);
+        }
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
@@ -462,7 +535,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                 }
             }
             drop(st);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
             return LRESULT(0);
         }
 
@@ -486,11 +559,11 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                                 let url = st.clone_dialog.url.clone();
                                 st.start_git_clone(url, target_path);
                                 drop(st);
-                                state.borrow_mut().render();
+                                invalidate_window(hwnd);
                                 return LRESULT(0);
                             }
                             // 文件夹对话框取消
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                             return LRESULT(0);
                         }
                     }
@@ -501,7 +574,27 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                 }
             }
             drop(st);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
+            return LRESULT(0);
+        }
+
+        // 新建项目对话框优先拦截点击
+        if st.new_project_dialog.visible {
+            let action = st.handle_new_project_dialog_click(mouse_x, mouse_y);
+            match action {
+                crate::new_project_dialog::NewProjectDialogAction::Confirm => {
+                    st.confirm_new_project();
+                }
+                crate::new_project_dialog::NewProjectDialogAction::Cancel => {
+                    st.close_new_project_dialog();
+                }
+                crate::new_project_dialog::NewProjectDialogAction::FocusInput => {
+                    st.new_project_dialog.focus_field = 0;
+                }
+                crate::new_project_dialog::NewProjectDialogAction::None => {}
+            }
+            drop(st);
+            invalidate_window(hwnd);
             return LRESULT(0);
         }
 
@@ -531,7 +624,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                 // 点击用户头像按钮，切换菜单
                 st.user_menu.toggle();
                 drop(st);
-                state.borrow_mut().render();
+                invalidate_window(hwnd);
                 return LRESULT(0);
             }
 
@@ -566,7 +659,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                 // 切换右侧 AI 面板可见性
                 st.layout.toggle_right_panel();
                 drop(st);
-                state.borrow_mut().render();
+                invalidate_window(hwnd);
                 return LRESULT(0);
             } else if mouse_x >= bottom_panel_btn_x {
                 // 切换底部终端面板可见性
@@ -582,13 +675,13 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                     let _ = KillTimer(hwnd, TERM_TIMER_ID);
                 }
                 drop(st);
-                state.borrow_mut().render();
+                invalidate_window(hwnd);
                 return LRESULT(0);
             } else if mouse_x >= left_sidebar_btn_x {
                 // 切换左侧侧边栏可见性
                 st.layout.toggle_sidebar();
                 drop(st);
-                state.borrow_mut().render();
+                invalidate_window(hwnd);
                 return LRESULT(0);
             }
 
@@ -609,7 +702,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                 if st.menu_bar.customize_mode {
                     st.menu_bar.begin_drag(idx);
                     drop(st);
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                     return LRESULT(0);
                 }
 
@@ -619,7 +712,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                     st.menu_bar.expand(idx);
                 }
                 drop(st);
-                state.borrow_mut().render();
+                invalidate_window(hwnd);
                 return LRESULT(0);
             }
 
@@ -645,42 +738,42 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                         st.user_menu.close();
                         st.sidebar_content = crate::layout::SidebarContent::RemoteManagerPanel;
                         drop(st);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                         return LRESULT(0);
                     }
                     crate::user_menu::UserMenuItem::AetherSettings => {
                         st.user_menu.close();
                         st.status_message = "Aether 设置（待实现）".to_string();
                         drop(st);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                         return LRESULT(0);
                     }
                     crate::user_menu::UserMenuItem::HelpDocs => {
                         st.user_menu.close();
                         st.status_message = "帮助文档（待实现）".to_string();
                         drop(st);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                         return LRESULT(0);
                     }
                     crate::user_menu::UserMenuItem::FeatureRequest => {
                         st.user_menu.close();
                         st.status_message = "提交功能建议（待实现）".to_string();
                         drop(st);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                         return LRESULT(0);
                     }
                     crate::user_menu::UserMenuItem::BugReport => {
                         st.user_menu.close();
                         st.status_message = "问题反馈（待实现）".to_string();
                         drop(st);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                         return LRESULT(0);
                     }
                     crate::user_menu::UserMenuItem::Logout => {
                         st.user_menu.close();
                         st.status_message = "退出登录（待实现）".to_string();
                         drop(st);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                         return LRESULT(0);
                     }
                     _ => {}
@@ -689,7 +782,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                 // 点击菜单外部，关闭菜单
                 st.user_menu.close();
                 drop(st);
-                state.borrow_mut().render();
+                invalidate_window(hwnd);
                 return LRESULT(0);
             }
         }
@@ -711,7 +804,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                                 st.menu_bar.close_all();
                                 drop(st);
                                 state.borrow_mut().execute_command(cmd, hwnd);
-                                state.borrow_mut().render();
+                                invalidate_window(hwnd);
                                 return LRESULT(0);
                             }
                         }
@@ -720,7 +813,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
             }
             st.menu_bar.close_all();
             drop(st);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
             return LRESULT(0);
         }
 
@@ -743,7 +836,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                 if st.activity_bar.customize_mode {
                     st.activity_bar.begin_drag(idx);
                     drop(st);
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                     return LRESULT(0);
                 }
 
@@ -772,7 +865,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                     st.sidebar_content = crate::layout::SidebarContent::from_view(view);
                 }
                 drop(st);
-                state.borrow_mut().render();
+                invalidate_window(hwnd);
                 return LRESULT(0);
             }
         }
@@ -791,13 +884,13 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
         if right_panel_resize_zone {
             st.layout.right_panel_resizing = true;
             drop(st);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
             return LRESULT(0);
         }
         if bottom_panel_resize_zone {
             st.layout.bottom_panel_resizing = true;
             drop(st);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
             return LRESULT(0);
         }
 
@@ -869,7 +962,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                         st.ssh_manager_panel.cycle_auth_type();
                     }
                     drop(st);
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                     return LRESULT(0);
                 }
                 // 检测添加按钮
@@ -877,7 +970,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                     if rect.contains(mouse_x, mouse_y) {
                         st.ssh_manager_panel.start_add();
                         drop(st);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                         return LRESULT(0);
                     }
                 }
@@ -894,7 +987,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                                 }
                             }
                             drop(st);
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                             return LRESULT(0);
                         }
                     }
@@ -902,20 +995,20 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                         if rect.contains(mouse_x, mouse_y) {
                             st.ssh_manager_panel.cancel_edit();
                             drop(st);
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                             return LRESULT(0);
                         }
                     }
                 }
                 drop(st);
-                state.borrow_mut().render();
+                invalidate_window(hwnd);
                 return LRESULT(0);
             }
             let sidebar_rel_x = mouse_x - sidebar_region.x;
             let sidebar_rel_y = mouse_y - sidebar_region.y;
             if st.handle_sidebar_click(sidebar_rel_x, sidebar_rel_y) {
                 drop(st);
-                state.borrow_mut().render();
+                invalidate_window(hwnd);
                 return LRESULT(0);
             }
         }
@@ -933,7 +1026,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
             let btn_h = 28.0;
             let btn_gap = 8.0;
             let action_start_y = 52.0; // 标题 + 分隔线 + 边距
-            let action_rows = (actions.len() + 1) / 2;
+            let action_rows = actions.len().div_ceil(2);
             let action_end_y = action_start_y + action_rows as f32 * (btn_h + 6.0) + 8.0;
 
             // 检测快捷操作按钮点击
@@ -965,7 +1058,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                             &selected_code,
                             &settings,
                         );
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                         return LRESULT(0);
                     }
                 }
@@ -986,7 +1079,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                     st.status_message = "AI 代码已应用到编辑器".to_string();
                 }
                 drop(st);
-                state.borrow_mut().render();
+                invalidate_window(hwnd);
                 return LRESULT(0);
             }
 
@@ -1000,25 +1093,25 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                 // C-10: 点击输入框才聚焦，避免面板可见即劫持键盘
                 st.ai_panel.input_focused = true;
                 drop(st);
-                state.borrow_mut().render();
+                invalidate_window(hwnd);
                 return LRESULT(0);
             }
         }
 
         // 4. 检测标签栏点击
-        let has_multiple_tabs = st.tab_count() > 1;
-        let tab_region = layout.tab_bar_region(has_multiple_tabs);
-        if tab_region.contains(mouse_x, mouse_y) {
-            if st.handle_tab_bar_click(mouse_x, mouse_y, tab_region.x) {
-                drop(st);
-                state.borrow_mut().render();
-                return LRESULT(0);
-            }
+        let show_tab_bar = st.show_tab_bar();
+        let tab_region = layout.tab_bar_region(show_tab_bar);
+        if tab_region.contains(mouse_x, mouse_y)
+            && st.handle_tab_bar_click(mouse_x, mouse_y, tab_region.x)
+        {
+            drop(st);
+            invalidate_window(hwnd);
+            return LRESULT(0);
         }
 
         // 4.5 检测查找替换面板点击
         if st.find_visible {
-            let editor_region = layout.editor_content_region(has_multiple_tabs);
+            let editor_region = layout.editor_content_region(show_tab_bar);
             let panel_height = if st.replace_visible { 72.0 } else { 40.0 };
             let panel_width = editor_region.width.min(600.0);
             let panel_x = editor_region.x + editor_region.width - panel_width - 10.0;
@@ -1052,7 +1145,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                     }
                 }
                 drop(st);
-                state.borrow_mut().render();
+                invalidate_window(hwnd);
                 return LRESULT(0);
             }
         }
@@ -1062,7 +1155,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
         if bottom_panel_region.contains(mouse_x, mouse_y) {
             st.terminal_panel.focused = true;
             drop(st);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
             return LRESULT(0);
         }
 
@@ -1070,15 +1163,9 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
         // 底部面板点击已在 4.6 中处理，此处保留用于扩展
 
         // 5. 欢迎页/编辑器区域点击
-        let mut welcome_x = if layout.activity_bar_visible {
-            layout.activity_bar_width
-        } else {
-            0.0
-        };
-        if layout.sidebar_visible {
-            welcome_x += layout.sidebar_width;
-        }
-        let welcome_width = st.window_width as f32 - welcome_x;
+        // 欢迎页渲染时全屏居中，不受活动栏/侧边栏影响，点击检测区域需与渲染一致
+        let welcome_x = 0.0;
+        let welcome_width = st.window_width as f32;
         let welcome_y = layout.top_offset();
         let welcome_height = st.window_height as f32
             - welcome_y
@@ -1107,45 +1194,45 @@ unsafe fn on_l_b_u_t_t_o_n_d_o_w_n(
                             if let Some(path) = Dialogs::open_folder_dialog(hwnd, "打开文件夹")
                             {
                                 state.borrow_mut().open_folder(path);
-                                state.borrow_mut().render();
+                                invalidate_window(hwnd);
                             }
                         }
-                        crate::welcome::WelcomeAction::NewFile => {
-                            state.borrow_mut().new_file();
-                            state.borrow_mut().render();
+                        crate::welcome::WelcomeAction::NewProject => {
+                            state.borrow_mut().new_project();
+                            invalidate_window(hwnd);
                         }
                         crate::welcome::WelcomeAction::CloneRepo => {
                             state.borrow_mut().clone_dialog.visible = true;
                             state.borrow_mut().clone_dialog.reset();
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                         }
                         crate::welcome::WelcomeAction::OpenRemote => {
                             state.borrow_mut().ssh_dialog.visible = true;
                             state.borrow_mut().ssh_dialog.reset();
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                         }
                         crate::welcome::WelcomeAction::OpenRecentProject(path_str) => {
                             let path = PathBuf::from(path_str);
                             state.borrow_mut().open_folder(path);
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                         }
                         crate::welcome::WelcomeAction::MoreRecentProjects => {
                             if let Some(path) = Dialogs::open_folder_dialog(hwnd, "打开文件夹")
                             {
                                 state.borrow_mut().open_folder(path);
-                                state.borrow_mut().render();
+                                invalidate_window(hwnd);
                             }
                         }
                     }
                     return LRESULT(0);
                 }
             } else {
-                let editor_content = layout.editor_content_region(has_multiple_tabs);
+                let editor_content = layout.editor_content_region(st.show_tab_bar());
                 st.set_cursor_from_mouse(mouse_x, mouse_y, editor_content.x, editor_content.y);
                 st.clear_selection();
                 st.start_selection();
                 drop(st);
-                state.borrow_mut().render();
+                invalidate_window(hwnd);
                 return LRESULT(0);
             }
         }
@@ -1174,14 +1261,14 @@ unsafe fn on_m_o_u_s_e_m_o_v_e(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: LP
             // H-22: 使用专门的 hover 方法，避免 click 方法的副作用（返回动作可能触发逻辑）
             st.handle_ssh_dialog_hover(mouse_x, mouse_y);
             drop(st);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
             return LRESULT(0);
         }
         if st.clone_dialog.visible {
             // H-22: 同理，clone 对话框也使用 hover 而非 click
             st.handle_clone_dialog_hover(mouse_x, mouse_y);
             drop(st);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
             return LRESULT(0);
         }
 
@@ -1203,14 +1290,14 @@ unsafe fn on_m_o_u_s_e_m_o_v_e(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: LP
             let bar_y = layout.activity_bar_region().y;
             st.activity_bar.drop_index = Some(st.activity_bar.drop_index_at(mouse_y, bar_y));
             drop(st);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
             return LRESULT(0);
         }
         if is_dragging && menu_dragging {
             // 与 menu_bar.hit_test 一致：使用绝对 mouse_x
             st.menu_bar.drop_index = Some(st.menu_bar.drop_index_at(mouse_x));
             drop(st);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
             return LRESULT(0);
         }
 
@@ -1283,7 +1370,7 @@ unsafe fn on_m_o_u_s_e_m_o_v_e(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: LP
             .hit_test(mouse_x, mouse_y, activity_region.y);
 
         // 更新标签栏悬停状态
-        let editor_content = layout.editor_content_region(st.tab_count() > 1);
+        let editor_content = layout.editor_content_region(st.show_tab_bar());
         let old_hover = st.hover_tab;
         st.update_hover_tab(mouse_x, mouse_y, editor_content.x);
         let new_hover = st.hover_tab;
@@ -1400,16 +1487,10 @@ unsafe fn on_m_o_u_s_e_m_o_v_e(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: LP
         // 更新欢迎页悬停状态
         let old_welcome_hover = st.welcome_hover_action.clone();
         if st.show_welcome() {
-            let mut welcome_x = if layout.activity_bar_visible {
-                layout.activity_bar_width
-            } else {
-                0.0
-            };
-            if layout.sidebar_visible {
-                welcome_x += layout.sidebar_width;
-            }
+            // 欢迎页渲染时全屏居中，不受活动栏/侧边栏影响，点击检测区域需与渲染一致
+            let welcome_x = 0.0;
             let welcome_y = layout.top_offset();
-            let welcome_width = st.window_width as f32 - welcome_x;
+            let welcome_width = st.window_width as f32;
             let welcome_height = st.window_height as f32
                 - welcome_y
                 - if layout.status_bar_visible {
@@ -1473,15 +1554,50 @@ unsafe fn on_m_o_u_s_e_m_o_v_e(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: LP
                 let delta = mouse_x - editor_region.right();
                 st.layout.resize_right_panel(-delta);
                 drop(st);
-                state.borrow_mut().render();
+                invalidate_window(hwnd);
                 return LRESULT(0);
             } else if st.layout.bottom_panel_resizing {
                 let delta = mouse_y - editor_region.bottom();
                 st.layout.resize_bottom_panel(-delta);
                 drop(st);
-                state.borrow_mut().render();
+                invalidate_window(hwnd);
                 return LRESULT(0);
             }
+        }
+
+        // P3.4: Hover tooltip 防抖逻辑
+        // - 鼠标在文件树区域且有悬停节点时，启动/重启防抖定时器
+        // - 鼠标移动超过容差或离开文件树时，清除 tooltip 并重启定时器
+        {
+            let in_sidebar = sidebar_region.contains(mouse_x, mouse_y)
+                && matches!(
+                    st.sidebar_content,
+                    crate::layout::SidebarContent::FileTree
+                        | crate::layout::SidebarContent::RemoteFileTree
+                );
+            let has_hover_node = st.hover_file_node.is_some() || st.hover_remote_node.is_some();
+            let dx = mouse_x - st.hover_last_mouse_x;
+            let dy = mouse_y - st.hover_last_mouse_y;
+            let moved_beyond_tolerance =
+                dx.abs() > HOVER_MOVE_TOLERANCE || dy.abs() > HOVER_MOVE_TOLERANCE;
+
+            if moved_beyond_tolerance || !in_sidebar || !has_hover_node {
+                // 鼠标移动或离开悬停区域：清除已有 tooltip
+                if st.hover_tooltip.is_some() {
+                    st.hover_tooltip = None;
+                }
+            }
+
+            if in_sidebar && has_hover_node {
+                // 在悬停区域且有目标：启动/重启防抖定时器
+                let _ = SetTimer(hwnd, HOVER_TIMER_ID, HOVER_DELAY_MS, None);
+            } else {
+                // 离开悬停区域：停止定时器
+                let _ = KillTimer(hwnd, HOVER_TIMER_ID);
+            }
+
+            st.hover_last_mouse_x = mouse_x;
+            st.hover_last_mouse_y = mouse_y;
         }
 
         if old_menu_hover != new_menu_hover
@@ -1493,12 +1609,12 @@ unsafe fn on_m_o_u_s_e_m_o_v_e(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: LP
             || welcome_hover_changed
         {
             drop(st);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
         } else if is_dragging {
             st.set_cursor_from_mouse(mouse_x, mouse_y, editor_content.x, editor_content.y);
             st.update_selection();
             drop(st);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
         }
     }
     LRESULT(0)
@@ -1537,8 +1653,7 @@ unsafe fn on_l_b_u_t_t_o_n_u_p(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: 
             // 仅在用户实际开始拖拽时才重绘
             if persist_activity || persist_menu {
                 drop(st);
-                state.borrow_mut().render();
-                return;
+                invalidate_window(hwnd);
             }
         }
     });
@@ -1569,8 +1684,8 @@ unsafe fn on_l_b_u_t_t_o_n_d_b_l_c_l_k(
         let mouse_x = raw_x / st.dpi_scale;
         let mouse_y = raw_y / st.dpi_scale;
         let layout = st.layout.clone();
-        let has_multiple_tabs = st.tabs.len() > 1;
-        let editor_content = layout.editor_content_region(has_multiple_tabs);
+        let show_tab_bar = st.show_tab_bar();
+        let editor_content = layout.editor_content_region(show_tab_bar);
         let editor_region = crate::layout::Region::new(
             editor_content.x,
             editor_content.y,
@@ -1580,7 +1695,7 @@ unsafe fn on_l_b_u_t_t_o_n_d_b_l_c_l_k(
         if editor_region.contains(mouse_x, mouse_y) {
             st.select_word_at_mouse(mouse_x, mouse_y, editor_content.x, editor_content.y);
             drop(st);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
         }
     }
     LRESULT(0)
@@ -1588,6 +1703,26 @@ unsafe fn on_l_b_u_t_t_o_n_d_b_l_c_l_k(
 
 /// WM_TIMER
 unsafe fn on_t_i_m_e_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+    if wparam.0 == HOVER_TIMER_ID {
+        // P3.4: Hover tooltip 防抖定时器触发
+        let _ = KillTimer(hwnd, HOVER_TIMER_ID);
+        if let Some(state) = get_and_set_state(hwnd) {
+            let mut st = state.borrow_mut();
+            // 仅在仍有悬停目标时计算 tooltip
+            if st.hover_file_node.is_some() || st.hover_remote_node.is_some() {
+                if let Some(text) = st.compute_hover_tooltip_text() {
+                    // tooltip 定位：鼠标右下方，预留 16px 间距
+                    let tx = st.hover_last_mouse_x + 16.0;
+                    let ty = st.hover_last_mouse_y + 16.0;
+                    let max_w = 400.0;
+                    st.hover_tooltip = Some(crate::editor::HoverTooltip::new(text, tx, ty, max_w));
+                    drop(st);
+                    invalidate_window(hwnd);
+                }
+            }
+        }
+        return LRESULT(0);
+    }
     if wparam.0 == TERM_TIMER_ID {
         // 终端刷新：周期性重绘以显示异步到达的 shell 输出。
         // render() 内部会调用 flush_output 拉取子进程输出。
@@ -1600,8 +1735,20 @@ unsafe fn on_t_i_m_e_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -
         });
         if !still_visible {
             let _ = KillTimer(hwnd, TERM_TIMER_ID);
-        } else if let Some(state) = get_and_set_state(hwnd) {
-            state.borrow_mut().render();
+        } else if get_and_set_state(hwnd).is_some() {
+            invalidate_window(hwnd);
+        }
+        return LRESULT(0);
+    }
+    if wparam.0 == CARET_TIMER_ID {
+        // 新建项目对话框输入框光标闪烁
+        if let Some(state) = get_and_set_state(hwnd) {
+            let mut st = state.borrow_mut();
+            if st.new_project_dialog.visible {
+                st.new_project_dialog.caret_visible = !st.new_project_dialog.caret_visible;
+                drop(st);
+                invalidate_window(hwnd);
+            }
         }
         return LRESULT(0);
     }
@@ -1631,7 +1778,7 @@ unsafe fn on_t_i_m_e_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -
                             }
                             st.lpress_start = None;
                             drop(st);
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                             return LRESULT(0);
                         }
                     }
@@ -1737,46 +1884,46 @@ unsafe fn on_wm_app_7(_hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPARAM) -
 }
 
 /// msg if msg == WM_APP + 4
-unsafe fn on_wm_app_4(_hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+unsafe fn on_wm_app_4(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
     // C-09: SSH 异步连接完成
     let raw = wparam.0;
     EDITOR_STATE.with(|s| {
         if let Some(state) = s.borrow().as_ref() {
             state.borrow_mut().on_ssh_connect_complete(raw);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
         }
     });
     LRESULT(0)
 }
 
 /// msg if msg == WM_APP + 5
-unsafe fn on_wm_app_5(_hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+unsafe fn on_wm_app_5(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
     // C-09: Git 异步克隆完成
     let raw = wparam.0;
     EDITOR_STATE.with(|s| {
         if let Some(state) = s.borrow().as_ref() {
             state.borrow_mut().on_git_clone_complete(raw);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
         }
     });
     LRESULT(0)
 }
 
 /// msg if msg == WM_APP + 6
-unsafe fn on_wm_app_6(_hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+unsafe fn on_wm_app_6(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
     // P0-1: 远程子目录异步列目录完成
     let raw = wparam.0;
     EDITOR_STATE.with(|s| {
         if let Some(state) = s.borrow().as_ref() {
             state.borrow_mut().on_ssh_list_dir_complete(raw);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
         }
     });
     LRESULT(0)
 }
 
 /// WM_DROPFILES
-unsafe fn on_d_r_o_p_f_i_l_e_s(_hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+unsafe fn on_d_r_o_p_f_i_l_e_s(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
     use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
     let hdrop = HDROP(wparam.0 as *mut std::ffi::c_void);
 
@@ -1794,7 +1941,7 @@ unsafe fn on_d_r_o_p_f_i_l_e_s(_hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: 
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().open_folder(path);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 break;
@@ -1802,7 +1949,7 @@ unsafe fn on_d_r_o_p_f_i_l_e_s(_hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: 
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().load_file(path);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -1829,7 +1976,7 @@ unsafe fn on_s_i_z_e(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> 
                 }
                 drop(st);
                 if !is_min {
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                 }
             }
         });
@@ -1873,7 +2020,7 @@ unsafe fn on_d_p_i_c_h_a_n_g_e_d(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: 
             let font_size = st.text_renderer.font_size();
             st.render_ctx.init_common_resources(&theme, font_size);
             drop(st);
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
         }
     });
     LRESULT(0)
@@ -1987,6 +2134,28 @@ unsafe fn on_p_a_i_n_t(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) 
     LRESULT(0)
 }
 
+/// REQ-P0-05: WM_SETFOCUS — 窗口获得焦点
+unsafe fn on_set_focus(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+    get_and_set_state(hwnd);
+    EDITOR_STATE.with(|s| {
+        if let Some(state) = s.borrow().as_ref() {
+            state.borrow_mut().focus_manager.on_set_focus();
+        }
+    });
+    LRESULT(0)
+}
+
+/// REQ-P0-05: WM_KILLFOCUS — 窗口失去焦点
+unsafe fn on_kill_focus(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+    get_and_set_state(hwnd);
+    EDITOR_STATE.with(|s| {
+        if let Some(state) = s.borrow().as_ref() {
+            state.borrow_mut().focus_manager.on_kill_focus();
+        }
+    });
+    LRESULT(0)
+}
+
 /// WM_IME_STARTCOMPOSITION
 unsafe fn on_ime_startcomposition(
     _hwnd: HWND,
@@ -2018,7 +2187,7 @@ unsafe fn on_ime_composition(hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPA
             EDITOR_STATE.with(|s| {
                 if let Some(state) = s.borrow().as_ref() {
                     state.borrow_mut().commit_composition(text);
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                 }
             });
         }
@@ -2037,7 +2206,7 @@ unsafe fn on_ime_composition(hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPA
             EDITOR_STATE.with(|s| {
                 if let Some(state) = s.borrow().as_ref() {
                     state.borrow_mut().set_composition(text);
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                 }
             });
         } else {
@@ -2045,7 +2214,7 @@ unsafe fn on_ime_composition(hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPA
             EDITOR_STATE.with(|s| {
                 if let Some(state) = s.borrow().as_ref() {
                     state.borrow_mut().clear_composition();
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                 }
             });
         }
@@ -2056,7 +2225,7 @@ unsafe fn on_ime_composition(hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPA
     EDITOR_STATE.with(|s| {
         if let Some(state) = s.borrow().as_ref() {
             state.borrow_mut().clear_composition();
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
         }
     });
     LRESULT(0)
@@ -2064,7 +2233,7 @@ unsafe fn on_ime_composition(hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPA
 
 /// WM_IME_ENDCOMPOSITION
 unsafe fn on_ime_endcomposition(
-    _hwnd: HWND,
+    hwnd: HWND,
     _msg: u32,
     _wparam: WPARAM,
     _lparam: LPARAM,
@@ -2073,7 +2242,7 @@ unsafe fn on_ime_endcomposition(
     EDITOR_STATE.with(|s| {
         if let Some(state) = s.borrow().as_ref() {
             state.borrow_mut().clear_composition();
-            state.borrow_mut().render();
+            invalidate_window(hwnd);
         }
     });
     LRESULT(0)
@@ -2128,7 +2297,24 @@ unsafe fn on_c_h_a_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> 
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().settings_panel.input_char(c);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
+                    }
+                });
+                return LRESULT(0);
+            }
+
+            // 搜索面板可见时，输入字符进入搜索查询
+            let search_panel_active = EDITOR_STATE.with(|s| {
+                s.borrow()
+                    .as_ref()
+                    .map(|state| state.borrow().search_panel.visible)
+                    .unwrap_or(false)
+            });
+            if search_panel_active {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().search_panel.input_char(c);
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2164,14 +2350,27 @@ unsafe fn on_c_h_a_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> 
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().handle_ssh_dialog_key(c);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             } else if clone_dialog_active {
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().handle_clone_dialog_key(c);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
+                    }
+                });
+            } else if EDITOR_STATE.with(|s| {
+                s.borrow()
+                    .as_ref()
+                    .map(|state| state.borrow().new_project_dialog.visible)
+                    .unwrap_or(false)
+            }) {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().new_project_dialog.project_name.push(c);
+                        state.borrow_mut().new_project_dialog.error_message = None;
+                        invalidate_window(hwnd);
                     }
                 });
             } else if EDITOR_STATE.with(|s| {
@@ -2199,14 +2398,14 @@ unsafe fn on_c_h_a_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> 
                         };
                         field_str.push(c);
                         drop(st);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             } else if command_palette_active {
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().command_palette.append_query(c);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             } else if EDITOR_STATE.with(|s| {
@@ -2240,7 +2439,7 @@ unsafe fn on_c_h_a_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> 
                             }
                             _ => {}
                         }
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             } else if terminal_active {
@@ -2248,7 +2447,7 @@ unsafe fn on_c_h_a_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> 
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().terminal_panel.input_line.push(c);
                         state.borrow_mut().terminal_panel.cursor_pos += 1;
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             } else if EDITOR_STATE.with(|s| {
@@ -2260,7 +2459,7 @@ unsafe fn on_c_h_a_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> 
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().ai_panel.input_char(c);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             } else {
@@ -2268,7 +2467,7 @@ unsafe fn on_c_h_a_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> 
                     if let Some(state) = s.borrow().as_ref() {
                         // P1-1: 多光标模式下广播到所有光标
                         state.borrow_mut().broadcast_insert_char(c);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -2278,7 +2477,7 @@ unsafe fn on_c_h_a_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> 
 }
 
 /// WM_KEYDOWN
-unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
     // C-12: 键盘消息进入时先同步 thread_local 到当前窗口状态
     get_and_set_state(hwnd);
     let vk = VIRTUAL_KEY(wparam.0 as u16);
@@ -2304,10 +2503,69 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                     st.menu_bar.exit_customize();
                     st.status_message = "已退出自定义排序模式".to_string();
                     drop(st);
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                 }
             });
             return LRESULT(0);
+        }
+    }
+
+    // ===== 全局搜索面板键盘处理 =====
+    let search_panel_visible = EDITOR_STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|state| state.borrow().search_panel.visible)
+            .unwrap_or(false)
+    });
+    if search_panel_visible && !ctrl {
+        match vk {
+            VK_ESCAPE => {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().search_panel.hide();
+                        invalidate_window(hwnd);
+                    }
+                });
+                return LRESULT(0);
+            }
+            VK_BACK => {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().search_panel.backspace();
+                        invalidate_window(hwnd);
+                    }
+                });
+                return LRESULT(0);
+            }
+            VK_RETURN => {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        let root = state.borrow().current_folder.clone();
+                        state.borrow_mut().search_panel.search(root.as_deref());
+                        invalidate_window(hwnd);
+                    }
+                });
+                return LRESULT(0);
+            }
+            VK_DOWN => {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().search_panel.select_next();
+                        invalidate_window(hwnd);
+                    }
+                });
+                return LRESULT(0);
+            }
+            VK_UP => {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().search_panel.select_prev();
+                        invalidate_window(hwnd);
+                    }
+                });
+                return LRESULT(0);
+            }
+            _ => {}
         }
     }
 
@@ -2324,7 +2582,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().welcome_focus_next();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 true
@@ -2333,7 +2591,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().welcome_focus_prev();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 true
@@ -2352,7 +2610,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                                 EDITOR_STATE.with(|s| {
                                     if let Some(state) = s.borrow().as_ref() {
                                         state.borrow_mut().open_folder(path);
-                                        state.borrow_mut().render();
+                                        invalidate_window(hwnd);
                                     }
                                 });
                             }
@@ -2362,7 +2620,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                             EDITOR_STATE.with(|s| {
                                 if let Some(state) = s.borrow().as_ref() {
                                     state.borrow_mut().open_folder(path);
-                                    state.borrow_mut().render();
+                                    invalidate_window(hwnd);
                                 }
                             });
                         }
@@ -2372,7 +2630,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                                 EDITOR_STATE.with(|s| {
                                     if let Some(state) = s.borrow().as_ref() {
                                         state.borrow_mut().open_folder(path);
-                                        state.borrow_mut().render();
+                                        invalidate_window(hwnd);
                                     }
                                 });
                             }
@@ -2453,7 +2711,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().settings_panel.active_field = None;
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2462,7 +2720,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().settings_panel.active_field = None;
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2471,7 +2729,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().settings_panel.backspace();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2481,7 +2739,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().settings_panel.delete_forward();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2494,7 +2752,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         } else {
                             state.borrow_mut().settings_panel.next_field();
                         }
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2534,7 +2792,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().ssh_dialog.visible = false;
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2552,7 +2810,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                             st.ssh_dialog.error_message = Some("请填写主机和用户名".to_string());
                         }
                         drop(st);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2561,7 +2819,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().ssh_dialog.next_field();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2570,7 +2828,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().handle_ssh_dialog_backspace();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2580,7 +2838,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().paste_into_ssh_dialog();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2596,7 +2854,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().clone_dialog.visible = false;
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2608,7 +2866,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         if st.clone_dialog.url.is_empty() {
                             st.clone_dialog.error_message = Some("请输入仓库 URL".to_string());
                             drop(st);
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                         } else if st.git_cloning {
                             // C-09: 正在克隆中，忽略
                             drop(st);
@@ -2623,11 +2881,11 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                                 let mut st = state.borrow_mut();
                                 st.start_git_clone(url, target_path);
                                 drop(st);
-                                state.borrow_mut().render();
+                                invalidate_window(hwnd);
                                 return LRESULT(0);
                             }
                             // 文件夹对话框取消
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                         }
                     }
                     LRESULT(0)
@@ -2638,7 +2896,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().handle_clone_dialog_backspace();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2648,7 +2906,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().paste_into_clone_dialog();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2656,6 +2914,60 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
             _ => {}
         }
         return LRESULT(0);
+    }
+
+    // 新建项目对话框键盘处理
+    let new_project_dialog_active = EDITOR_STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|state| state.borrow().new_project_dialog.visible)
+            .unwrap_or(false)
+    });
+    if new_project_dialog_active {
+        match vk {
+            VK_ESCAPE => {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().close_new_project_dialog();
+                        invalidate_window(hwnd);
+                    }
+                });
+                return LRESULT(0);
+            }
+            VK_RETURN => {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().confirm_new_project();
+                        invalidate_window(hwnd);
+                    }
+                });
+                return LRESULT(0);
+            }
+            VK_BACK => {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().new_project_dialog.project_name.pop();
+                        state.borrow_mut().new_project_dialog.error_message = None;
+                        invalidate_window(hwnd);
+                    }
+                });
+                return LRESULT(0);
+            }
+            VK_V if ctrl => {
+                // Ctrl+V 粘贴到项目名称输入框
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().paste_into_new_project_dialog();
+                        invalidate_window(hwnd);
+                    }
+                });
+                return LRESULT(0);
+            }
+            _ => {
+                // 普通字符键交给 DefWindowProc，确保能生成 WM_CHAR
+                return DefWindowProcW(hwnd, msg, wparam, LPARAM(0));
+            }
+        }
     }
 
     // SSH 管理面板编辑模式键盘处理
@@ -2674,7 +2986,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().ssh_manager_panel.cancel_edit();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2692,7 +3004,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                             }
                         }
                         drop(st);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2704,7 +3016,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         st.ssh_manager_panel.focus_field =
                             (st.ssh_manager_panel.focus_field + 1) % 5;
                         drop(st);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2724,7 +3036,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         };
                         field_str.pop();
                         drop(st);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2740,7 +3052,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().command_palette.hide();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2753,7 +3065,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                             state.borrow_mut().execute_command(cmd, hwnd);
                         }
                         state.borrow_mut().command_palette.hide();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2762,7 +3074,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().command_palette.select_prev();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2771,7 +3083,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().command_palette.select_next();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2780,7 +3092,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().command_palette.backspace_query();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
                 return LRESULT(0);
@@ -2796,7 +3108,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                     EDITOR_STATE.with(|s| {
                         if let Some(state) = s.borrow().as_ref() {
                             state.borrow_mut().load_file(path);
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                         }
                     });
                 }
@@ -2806,7 +3118,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                     EDITOR_STATE.with(|s| {
                         if let Some(state) = s.borrow().as_ref() {
                             state.borrow_mut().open_folder(path);
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                         }
                     });
                 }
@@ -2818,7 +3130,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         EDITOR_STATE.with(|s| {
                             if let Some(state) = s.borrow().as_ref() {
                                 state.borrow_mut().save_as(path);
-                                state.borrow_mut().render();
+                                invalidate_window(hwnd);
                             }
                         });
                     }
@@ -2836,7 +3148,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                             EDITOR_STATE.with(|s| {
                                 if let Some(state) = s.borrow().as_ref() {
                                     state.borrow_mut().save_as(path);
-                                    state.borrow_mut().render();
+                                    invalidate_window(hwnd);
                                 }
                             });
                         }
@@ -2844,7 +3156,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         EDITOR_STATE.with(|s| {
                             if let Some(state) = s.borrow().as_ref() {
                                 state.borrow_mut().save_file();
-                                state.borrow_mut().render();
+                                invalidate_window(hwnd);
                             }
                         });
                     }
@@ -2853,8 +3165,8 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
             VK_N => {
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
-                        state.borrow_mut().new_file();
-                        state.borrow_mut().render();
+                        state.borrow_mut().new_project();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -2871,7 +3183,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().layout.toggle_sidebar();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -2880,7 +3192,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                     EDITOR_STATE.with(|s| {
                         if let Some(state) = s.borrow().as_ref() {
                             state.borrow_mut().command_palette.toggle();
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                         }
                     });
                 } else {
@@ -2888,7 +3200,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                     EDITOR_STATE.with(|s| {
                         if let Some(state) = s.borrow().as_ref() {
                             state.borrow_mut().command_palette.show();
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                         }
                     });
                 }
@@ -2898,7 +3210,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().zoom_font(Some(1.0));
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -2907,7 +3219,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().zoom_font(Some(-1.0));
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -2916,7 +3228,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().zoom_font(None);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -2926,7 +3238,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         if let Some(state) = s.borrow().as_ref() {
                             state.borrow_mut().command_palette.show();
                             state.borrow_mut().command_palette.update_query(">");
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                         }
                     });
                 } else {
@@ -2934,7 +3246,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         if let Some(state) = s.borrow().as_ref() {
                             state.borrow_mut().command_palette.show();
                             state.borrow_mut().command_palette.update_query(":");
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                         }
                     });
                 }
@@ -2952,14 +3264,14 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         if let Some(state) = s.borrow().as_ref() {
                             state.borrow_mut().terminal_panel.send_interrupt();
                             state.borrow_mut().status_message = "终端已中断 (Ctrl+C)".to_string();
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                         }
                     });
                 } else {
                     EDITOR_STATE.with(|s| {
                         if let Some(state) = s.borrow().as_ref() {
                             state.borrow_mut().copy();
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                         }
                     });
                 }
@@ -2968,7 +3280,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().cut();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -2976,7 +3288,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().paste();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3005,7 +3317,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                                 "终端已关闭"
                             }
                             .to_string();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3024,14 +3336,14 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                             } else {
                                 "AI 面板已关闭".to_string()
                             };
-                            st.render();
+                            invalidate_window(hwnd);
                         }
                     });
                 } else {
                     EDITOR_STATE.with(|s| {
                         if let Some(state) = s.borrow().as_ref() {
                             state.borrow_mut().select_all();
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                         }
                     });
                 }
@@ -3052,7 +3364,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                                 state.borrow_mut().find_all();
                             }
                         }
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3060,7 +3372,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().toggle_replace();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3072,7 +3384,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         } else {
                             state.borrow_mut().undo();
                         }
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3080,7 +3392,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().redo();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3092,7 +3404,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         } else {
                             state.borrow_mut().next_tab();
                         }
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3101,7 +3413,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                     if let Some(state) = s.borrow().as_ref() {
                         // P2-8: 关闭前进行 dirty 检查
                         state.borrow_mut().close_current_tab_checked();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3109,7 +3421,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().goto_tab(1);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3117,7 +3429,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().goto_tab(2);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3125,7 +3437,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().goto_tab(3);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3133,7 +3445,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().goto_tab(4);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3141,7 +3453,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().goto_tab(5);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3149,7 +3461,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().goto_tab(6);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3157,7 +3469,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().goto_tab(7);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3165,7 +3477,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().goto_tab(8);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3174,7 +3486,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                     if let Some(state) = s.borrow().as_ref() {
                         let last = state.borrow().tab_count();
                         state.borrow_mut().goto_tab(last);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3196,7 +3508,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                             st.move_cursor_word_left();
                         }
                         drop(st);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3217,7 +3529,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                             st.move_cursor_word_right();
                         }
                         drop(st);
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3226,7 +3538,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().move_cursor_file_start();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3234,7 +3546,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().move_cursor_file_end();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3243,7 +3555,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().add_cursor_at_next_occurrence();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3252,9 +3564,20 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().toggle_line_comment();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
+            }
+            // P3.3: Ctrl+Shift+I 手动触发内联补全（占位 AI）
+            VK_I => {
+                if shift {
+                    EDITOR_STATE.with(|s| {
+                        if let Some(state) = s.borrow().as_ref() {
+                            state.borrow_mut().request_inline_completion();
+                            invalidate_window(hwnd);
+                        }
+                    });
+                }
             }
             // P1-6: Ctrl+Alt+Up / Ctrl+Alt+Down 列光标
             VK_UP => {
@@ -3263,7 +3586,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                     EDITOR_STATE.with(|s| {
                         if let Some(state) = s.borrow().as_ref() {
                             state.borrow_mut().add_cursor_line_above();
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                         }
                     });
                 }
@@ -3274,7 +3597,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                     EDITOR_STATE.with(|s| {
                         if let Some(state) = s.borrow().as_ref() {
                             state.borrow_mut().add_cursor_line_below();
-                            state.borrow_mut().render();
+                            invalidate_window(hwnd);
                         }
                     });
                 }
@@ -3320,15 +3643,21 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                             .terminal_panel
                             .push_output(&format!("> {}", input));
                         state.borrow_mut().terminal_panel.send_enter();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             } else if ai_panel_active {
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         let settings = state.borrow().app_settings.ai.clone();
-                        let _ = state.borrow_mut().ai_panel.send_message(&settings);
-                        state.borrow_mut().render();
+                        let mode = state.borrow().ai_panel.mode;
+                        let attachments = state.borrow().ai_panel.attachments.clone();
+                        let context = state.borrow().gather_context(&attachments);
+                        let _ = state
+                            .borrow_mut()
+                            .ai_panel
+                            .send_message_with_prepared_context(&settings, context, mode);
+                        invalidate_window(hwnd);
                     }
                 });
             } else if find_active {
@@ -3345,7 +3674,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                             }
                             _ => {}
                         }
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             } else {
@@ -3357,7 +3686,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         }
                         // P1-1: 多光标模式下广播换行到所有光标
                         state.borrow_mut().broadcast_insert_newline();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3372,14 +3701,14 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                             st.terminal_panel.cursor_pos =
                                 st.terminal_panel.cursor_pos.saturating_sub(1);
                         }
-                        st.render();
+                        invalidate_window(hwnd);
                     }
                 });
             } else if ai_panel_active {
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
                         state.borrow_mut().ai_panel.backspace();
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             } else if find_active {
@@ -3396,7 +3725,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                             }
                             _ => {}
                         }
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             } else {
@@ -3409,7 +3738,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                             // P1-1: 多光标模式下广播退格到所有光标
                             state.borrow_mut().broadcast_delete_char();
                         }
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             }
@@ -3423,7 +3752,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                     } else {
                         state.borrow_mut().delete_forward();
                     }
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                 }
             });
         }
@@ -3435,7 +3764,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                     } else {
                         state.borrow_mut().find_next();
                     }
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                 }
             });
         }
@@ -3443,7 +3772,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
             EDITOR_STATE.with(|s| {
                 if let Some(state) = s.borrow().as_ref() {
                     state.borrow_mut().close_find_replace();
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                 }
             });
         }
@@ -3464,7 +3793,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         st.move_cursor_left();
                     }
                     drop(st);
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                 }
             });
         }
@@ -3485,7 +3814,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         st.move_cursor_right();
                     }
                     drop(st);
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                 }
             });
         }
@@ -3506,7 +3835,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         st.move_cursor_up();
                     }
                     drop(st);
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                 }
             });
         }
@@ -3527,7 +3856,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         st.move_cursor_down();
                     }
                     drop(st);
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                 }
             });
         }
@@ -3563,7 +3892,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         st.move_cursor_smart_home(already_at_smart);
                     }
                     drop(st);
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                 }
             });
         }
@@ -3584,7 +3913,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                         st.move_cursor_end();
                     }
                     drop(st);
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                 }
             });
         }
@@ -3593,7 +3922,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 if let Some(state) = s.borrow().as_ref() {
                     let page = state.borrow().window_height as f32 - 24.0;
                     state.borrow_mut().scroll(-page);
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                 }
             });
         }
@@ -3602,7 +3931,7 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                 if let Some(state) = s.borrow().as_ref() {
                     let page = state.borrow().window_height as f32 - 24.0;
                     state.borrow_mut().scroll(page);
-                    state.borrow_mut().render();
+                    invalidate_window(hwnd);
                 }
             });
         }
@@ -3626,18 +3955,27 @@ unsafe fn on_k_e_y_d_o_w_n(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARA
                             _ => crate::editor::FindReplaceFocus::FindQuery,
                         };
                         state.borrow_mut().find_focus = new_focus;
-                        state.borrow_mut().render();
+                        invalidate_window(hwnd);
                     }
                 });
             } else {
                 EDITOR_STATE.with(|s| {
                     if let Some(state) = s.borrow().as_ref() {
-                        let has_sel = has_selection(&state.borrow());
-                        if has_sel {
-                            state.borrow_mut().delete_selection();
+                        // P3.3: 若有内联补全建议，Tab 接受建议；否则插入制表符
+                        let accepted = {
+                            let mut st = state.borrow_mut();
+                            st.accept_inline_completion()
+                        };
+                        if accepted {
+                            invalidate_window(hwnd);
+                        } else {
+                            let has_sel = has_selection(&state.borrow());
+                            if has_sel {
+                                state.borrow_mut().delete_selection();
+                            }
+                            state.borrow_mut().insert_tab();
+                            invalidate_window(hwnd);
                         }
-                        state.borrow_mut().insert_tab();
-                        state.borrow_mut().render();
                     }
                 });
             }
@@ -3679,7 +4017,7 @@ unsafe fn on_m_o_u_s_e_w_h_e_e_l(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: 
                     // Shift+滚轮向右滚动查看右侧内容
                     let char_width = state.text_renderer.char_width();
                     state.scroll_horizontal(-delta * char_width);
-                    state.render();
+                    invalidate_window(hwnd);
                     return;
                 }
             }
@@ -3695,7 +4033,7 @@ unsafe fn on_m_o_u_s_e_w_h_e_e_l(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: 
                     } else {
                         state.terminal_panel.scroll_down(lines * 3);
                     }
-                    state.render();
+                    invalidate_window(hwnd);
                     return;
                 }
             }
@@ -3711,7 +4049,7 @@ unsafe fn on_m_o_u_s_e_w_h_e_e_l(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: 
             } else {
                 state.scroll(-delta);
             }
-            state.render();
+            invalidate_window(hwnd);
         }
     });
     LRESULT(0)
@@ -3749,7 +4087,7 @@ unsafe fn on_m_o_u_s_e_h_w_h_e_e_l(
                 let char_width = state.text_renderer.char_width();
                 // delta > 0 表示向右滚动触控板，光标向右移动查看右侧内容
                 state.scroll_horizontal(-delta * char_width);
-                state.render();
+                invalidate_window(hwnd);
             }
         }
     });
@@ -3781,6 +4119,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             msg if msg == WM_APP + 6 => on_wm_app_6(hwnd, msg, wparam, lparam),
             msg if msg == WM_APP + 7 => on_wm_app_7(hwnd, msg, wparam, lparam),
             WM_DROPFILES => on_d_r_o_p_f_i_l_e_s(hwnd, msg, wparam, lparam),
+            WM_COPYDATA => on_copydata(hwnd, msg, wparam, lparam),
             WM_SIZE => on_s_i_z_e(hwnd, msg, wparam, lparam),
             WM_DPICHANGED => on_d_p_i_c_h_a_n_g_e_d(hwnd, msg, wparam, lparam),
             WM_NCACTIVATE => on_n_c_a_c_t_i_v_a_t_e(hwnd, msg, wparam, lparam),
@@ -3796,6 +4135,8 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             WM_KEYDOWN => on_k_e_y_d_o_w_n(hwnd, msg, wparam, lparam),
             WM_MOUSEWHEEL => on_m_o_u_s_e_w_h_e_e_l(hwnd, msg, wparam, lparam),
             WM_MOUSEHWHEEL => on_m_o_u_s_e_h_w_h_e_e_l(hwnd, msg, wparam, lparam),
+            WM_SETFOCUS => on_set_focus(hwnd, msg, wparam, lparam),
+            WM_KILLFOCUS => on_kill_focus(hwnd, msg, wparam, lparam),
             _ => on_default(hwnd, msg, wparam, lparam),
         }
     }));

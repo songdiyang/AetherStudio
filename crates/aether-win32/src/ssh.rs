@@ -587,7 +587,7 @@ impl SshManagerPanel {
                 passphrase: None,
             },
             // P1-2: password 不再生成 Password 认证，回退为 Agent（纵深防御）
-            "password" | _ => aether_remote::ssh::SshAuth::Agent,
+            _ => aether_remote::ssh::SshAuth::Agent,
         };
         aether_remote::ssh::SshConfig {
             host: config.host.clone(),

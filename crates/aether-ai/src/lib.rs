@@ -1,6 +1,7 @@
 use aether_shared::settings::AiSettings;
 use serde::{Deserialize, Serialize};
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
+use std::sync::mpsc;
 use url::Url;
 
 // H-01: SSRF DNS 重绑定限制说明
@@ -35,6 +36,7 @@ impl std::fmt::Debug for AiProvider {
 }
 
 impl AiProvider {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "openai" | "gpt" | "gpt-4" | "gpt-3.5-turbo" => Self::OpenAi,
@@ -133,6 +135,9 @@ pub struct AiConfig {
     pub api_key: String,
     pub base_url: Option<String>,
     pub model: String,
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<u32>,
+    pub system_prompt: Option<String>,
 }
 
 impl std::fmt::Debug for AiConfig {
@@ -142,6 +147,12 @@ impl std::fmt::Debug for AiConfig {
             .field("api_key", &"[REDACTED]")
             .field("base_url", &self.base_url)
             .field("model", &self.model)
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .field(
+                "system_prompt",
+                &self.system_prompt.as_deref().map(|_| "[PRESENT]"),
+            )
             .finish()
     }
 }
@@ -167,6 +178,9 @@ impl AiConfig {
             api_key: settings.api_key.clone(),
             base_url,
             model,
+            temperature: settings.temperature,
+            max_tokens: settings.max_tokens,
+            system_prompt: settings.system_prompt.clone(),
         }
     }
 }
@@ -196,6 +210,24 @@ impl ChatMessage {
             content: content.into(),
         }
     }
+}
+
+/// AI 流式响应事件
+#[derive(Clone, Debug)]
+pub enum AiStreamEvent {
+    /// 一个新的文本 token
+    Token(String),
+    /// 流结束
+    Done,
+    /// 流式过程中出现错误
+    Error(String),
+}
+
+/// 已解析并校验的公网端点
+#[derive(Debug, PartialEq, Eq)]
+struct ResolvedEndpoint {
+    host: String,
+    port: u16,
 }
 
 impl AiClient {
@@ -321,7 +353,7 @@ impl AiClient {
     /// H-01: 此方法对 DNS 解析返回的所有 IP 做私有地址校验，但不固定连接 IP。
     /// DNS 重绑定攻击（验证后 DNS 返回不同 IP）的彻底防护需要自定义 TLS connector，
     /// 属于架构级改造，暂不实施。当前校验作为纵深防御层保留。
-    fn resolve_and_lock(url_str: &str) -> Result<(), AiError> {
+    fn resolve_and_lock(url_str: &str) -> Result<ResolvedEndpoint, AiError> {
         let parsed =
             Url::parse(url_str).map_err(|e| AiError::Config(format!("无效的 URL: {}", e)))?;
         let host = parsed
@@ -332,7 +364,10 @@ impl AiClient {
         // 如果已经是 IP 地址，直接校验
         if let Ok(ip) = host.parse::<std::net::IpAddr>() {
             Self::check_ip_private(ip, host)?;
-            return Ok(());
+            return Ok(ResolvedEndpoint {
+                host: host.to_string(),
+                port,
+            });
         }
 
         // DNS 解析并校验所有 IP
@@ -346,13 +381,16 @@ impl AiClient {
         for addr in &addrs {
             Self::check_ip_private(addr.ip(), host)?;
         }
-        Ok(())
+        Ok(ResolvedEndpoint {
+            host: host.to_string(),
+            port,
+        })
     }
 
     /// SEC-C03: TOCTOU 二次 DNS 校验 — 在发起 HTTP 请求前调用
     /// 验证 DNS 解析结果未在两次查询间被篡改为私有地址
     fn validate_tcp_connect_target(url_str: &str) -> Result<(), AiError> {
-        Self::resolve_and_lock(url_str)
+        Self::resolve_and_lock(url_str).map(|_| ())
     }
 
     /// 安全读取响应体，限制最大 10MB
@@ -653,5 +691,762 @@ impl AiClient {
             .to_string();
 
         Ok(content)
+    }
+
+    /// 流式聊天补全。
+    ///
+    /// 返回一个 Receiver，后台线程会在每次收到 token 时发送 `AiStreamEvent::Token`，
+    /// 流结束时发送 `AiStreamEvent::Done`，出错时发送 `AiStreamEvent::Error`。
+    pub fn chat_completion_stream(
+        &self,
+        messages: &[ChatMessage],
+    ) -> Result<mpsc::Receiver<AiStreamEvent>, AiError> {
+        match self.config.provider {
+            AiProvider::Claude => self.stream_claude(messages),
+            _ => self.stream_openai_compatible(messages),
+        }
+    }
+
+    fn stream_openai_compatible(
+        &self,
+        messages: &[ChatMessage],
+    ) -> Result<mpsc::Receiver<AiStreamEvent>, AiError> {
+        let base_url = self
+            .config
+            .base_url
+            .as_deref()
+            .unwrap_or("https://api.openai.com/v1");
+        Self::validate_https(base_url)?;
+        Self::validate_not_private_ip(base_url)?;
+        Self::validate_tcp_connect_target(base_url)?;
+
+        if self.config.api_key.is_empty() {
+            return Err(AiError::Config("API Key 未设置".to_string()));
+        }
+
+        let url = format!("{}/chat/completions", base_url);
+        let mut body_messages: Vec<serde_json::Value> = Vec::new();
+        if let Some(sys) = &self.config.system_prompt {
+            body_messages.push(serde_json::json!({"role": "system", "content": sys}));
+        }
+        body_messages.extend(messages.iter().map(|m| {
+            serde_json::json!({
+                "role": m.role,
+                "content": m.content,
+            })
+        }));
+
+        let mut body = serde_json::json!({
+            "model": self.config.model,
+            "messages": body_messages,
+            "stream": true,
+        });
+        if let Some(t) = self.config.temperature {
+            body["temperature"] = serde_json::json!(t);
+        }
+        if let Some(m) = self.config.max_tokens {
+            body["max_tokens"] = serde_json::json!(m);
+        }
+
+        let response = self
+            .http
+            .post(&url)
+            .set("Authorization", &format!("Bearer {}", self.config.api_key))
+            .set("Content-Type", "application/json")
+            .send_json(body)
+            .map_err(|e| AiError::Http(e.to_string()))?;
+
+        Self::stream_response(response)
+    }
+
+    fn stream_claude(
+        &self,
+        messages: &[ChatMessage],
+    ) -> Result<mpsc::Receiver<AiStreamEvent>, AiError> {
+        let base_url = self
+            .config
+            .base_url
+            .as_deref()
+            .unwrap_or("https://api.anthropic.com/v1");
+        Self::validate_https(base_url)?;
+        Self::validate_not_private_ip(base_url)?;
+        Self::validate_tcp_connect_target(base_url)?;
+
+        if self.config.api_key.is_empty() {
+            return Err(AiError::Config("API Key 未设置".to_string()));
+        }
+
+        let url = format!("{}/messages", base_url);
+        let msgs: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role,
+                    "content": m.content,
+                })
+            })
+            .collect();
+        let max_tokens = self.config.max_tokens.unwrap_or(2048);
+
+        let mut body = serde_json::json!({
+            "model": self.config.model,
+            "messages": msgs,
+            "max_tokens": max_tokens,
+            "stream": true,
+        });
+        if let Some(sys) = &self.config.system_prompt {
+            body["system"] = serde_json::json!(sys);
+        }
+        if let Some(t) = self.config.temperature {
+            body["temperature"] = serde_json::json!(t);
+        }
+
+        let response = self
+            .http
+            .post(&url)
+            .set("x-api-key", &self.config.api_key)
+            .set("anthropic-version", "2023-06-01")
+            .set("Content-Type", "application/json")
+            .send_json(body)
+            .map_err(|e| AiError::Http(e.to_string()))?;
+
+        Self::stream_response(response)
+    }
+
+    fn stream_response(response: ureq::Response) -> Result<mpsc::Receiver<AiStreamEvent>, AiError> {
+        let status = response.status();
+        if status != 200 {
+            let text = Self::read_limited_response(response)?;
+            return Err(AiError::Api {
+                code: status,
+                message: text,
+            });
+        }
+
+        let (tx, rx) = mpsc::channel::<AiStreamEvent>();
+        std::thread::spawn(move || {
+            let reader = response.into_reader();
+            let mut buf = BufReader::new(reader);
+            let mut data_buf = String::new();
+            let mut line = String::new();
+            let mut done = false;
+
+            loop {
+                line.clear();
+                match buf.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(e) => {
+                        let _ = tx.send(AiStreamEvent::Error(format!("读取流失败: {}", e)));
+                        break;
+                    }
+                }
+
+                let trimmed = line.trim_end();
+                if trimmed.is_empty() {
+                    if !data_buf.is_empty() {
+                        if data_buf.trim() == "[DONE]" {
+                            done = true;
+                        } else {
+                            match serde_json::from_str::<serde_json::Value>(&data_buf) {
+                                Ok(json) => {
+                                    if json.get("error").is_some() {
+                                        let _ = tx.send(AiStreamEvent::Error(format!(
+                                            "API error: {}",
+                                            json["error"]
+                                        )));
+                                        break;
+                                    }
+                                    if let Some(token) = Self::extract_stream_token(&json) {
+                                        if !token.is_empty() {
+                                            let _ = tx.send(AiStreamEvent::Token(token));
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(AiStreamEvent::Error(format!(
+                                        "解析 SSE JSON 失败: {}",
+                                        e
+                                    )));
+                                }
+                            }
+                        }
+                        data_buf.clear();
+                    }
+                    continue;
+                }
+
+                if let Some(data) = trimmed.strip_prefix("data:") {
+                    data_buf.push_str(data.trim_start());
+                }
+            }
+
+            if !done {
+                let _ = tx.send(AiStreamEvent::Done);
+            }
+        });
+
+        Ok(rx)
+    }
+
+    fn extract_stream_token(json: &serde_json::Value) -> Option<String> {
+        // OpenAI / OpenAI-compatible: choices[0].delta.content
+        if let Some(content) = json
+            .pointer("/choices/0/delta/content")
+            .and_then(|v| v.as_str())
+        {
+            return Some(content.to_string());
+        }
+        // Anthropic content_block_delta: delta.text
+        if let Some(text) = json.pointer("/delta/text").and_then(|v| v.as_str()) {
+            return Some(text.to_string());
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== AiProvider ====================
+
+    #[test]
+    fn provider_from_str_openai_variants() {
+        for s in ["openai", "gpt", "gpt-4", "gpt-3.5-turbo", "OPENAI", "Gpt"] {
+            assert_eq!(
+                AiProvider::from_str(s),
+                AiProvider::OpenAi,
+                "failed for {}",
+                s
+            );
+        }
+    }
+
+    #[test]
+    fn provider_from_str_claude_variants() {
+        for s in ["claude", "anthropic", "Claude", "ANTHROPIC"] {
+            assert_eq!(
+                AiProvider::from_str(s),
+                AiProvider::Claude,
+                "failed for {}",
+                s
+            );
+        }
+    }
+
+    #[test]
+    fn provider_from_str_kimi_variants() {
+        for s in ["kimi", "moonshot", "KIMI", "Moonshot"] {
+            assert_eq!(
+                AiProvider::from_str(s),
+                AiProvider::Kimi,
+                "failed for {}",
+                s
+            );
+        }
+    }
+
+    #[test]
+    fn provider_from_str_azure_variants() {
+        for s in ["azure", "azure_openai", "azure-openai", "Azure"] {
+            assert_eq!(
+                AiProvider::from_str(s),
+                AiProvider::Azure,
+                "failed for {}",
+                s
+            );
+        }
+    }
+
+    #[test]
+    fn provider_from_str_custom_and_unknown() {
+        for s in ["custom", "foo", "", "llama", "unknown"] {
+            assert_eq!(
+                AiProvider::from_str(s),
+                AiProvider::Custom,
+                "failed for {:?}",
+                s
+            );
+        }
+    }
+
+    #[test]
+    fn provider_default_base_url() {
+        assert_eq!(
+            AiProvider::OpenAi.default_base_url(),
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(
+            AiProvider::Claude.default_base_url(),
+            "https://api.anthropic.com/v1"
+        );
+        assert_eq!(
+            AiProvider::Kimi.default_base_url(),
+            "https://api.moonshot.cn/v1"
+        );
+        assert_eq!(AiProvider::Azure.default_base_url(), "");
+        assert_eq!(AiProvider::Custom.default_base_url(), "");
+    }
+
+    #[test]
+    fn provider_default_model() {
+        assert_eq!(AiProvider::OpenAi.default_model(), "gpt-4");
+        assert_eq!(
+            AiProvider::Claude.default_model(),
+            "claude-3-sonnet-20240229"
+        );
+        assert_eq!(AiProvider::Kimi.default_model(), "moonshot-v1-8k");
+        assert_eq!(AiProvider::Azure.default_model(), "gpt-4");
+        assert_eq!(AiProvider::Custom.default_model(), "");
+    }
+
+    #[test]
+    fn provider_as_str() {
+        assert_eq!(AiProvider::OpenAi.as_str(), "openai");
+        assert_eq!(AiProvider::Claude.as_str(), "claude");
+        assert_eq!(AiProvider::Kimi.as_str(), "kimi");
+        assert_eq!(AiProvider::Azure.as_str(), "azure");
+        assert_eq!(AiProvider::Custom.as_str(), "custom");
+    }
+
+    #[test]
+    fn provider_debug_and_clone_eq() {
+        let p = AiProvider::Kimi;
+        assert_eq!(format!("{:?}", p), "Kimi");
+        assert_eq!(p.clone(), p);
+    }
+
+    // ==================== AiError ====================
+
+    #[test]
+    fn ai_error_display() {
+        assert_eq!(
+            format!("{}", AiError::Http("timeout".to_string())),
+            "HTTP error: timeout"
+        );
+        assert_eq!(
+            format!("{}", AiError::Parse("bad json".to_string())),
+            "Parse error: bad json"
+        );
+        assert_eq!(
+            format!("{}", AiError::Config("missing key".to_string())),
+            "Config error: missing key"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                AiError::Api {
+                    code: 500,
+                    message: "boom".to_string()
+                }
+            ),
+            "API error 500: boom"
+        );
+    }
+
+    // ==================== AiConfig ====================
+
+    fn settings_with(
+        provider: &str,
+        api_key: &str,
+        base_url: Option<&str>,
+        model: &str,
+    ) -> AiSettings {
+        AiSettings {
+            provider: provider.to_string(),
+            api_key: api_key.to_string(),
+            base_url: base_url.map(|s| s.to_string()),
+            model: model.to_string(),
+            temperature: None,
+            max_tokens: None,
+            system_prompt: None,
+        }
+    }
+
+    #[test]
+    fn config_from_settings_defaults() {
+        let settings = settings_with("openai", "key", None, "");
+        let config = AiConfig::from_settings(&settings);
+        assert_eq!(config.provider, AiProvider::OpenAi);
+        assert_eq!(config.api_key, "key");
+        assert_eq!(
+            config.base_url,
+            Some("https://api.openai.com/v1".to_string())
+        );
+        assert_eq!(config.model, "gpt-4");
+    }
+
+    #[test]
+    fn config_from_settings_custom_base_url_and_model() {
+        let settings = settings_with(
+            "claude",
+            "secret",
+            Some("https://example.com/v1"),
+            "model-x",
+        );
+        let config = AiConfig::from_settings(&settings);
+        assert_eq!(config.provider, AiProvider::Claude);
+        assert_eq!(config.base_url, Some("https://example.com/v1".to_string()));
+        assert_eq!(config.model, "model-x");
+    }
+
+    #[test]
+    fn config_from_settings_empty_base_url_for_custom_provider() {
+        // Custom provider has empty default base_url, so result should be None.
+        let settings = settings_with("custom", "key", None, "");
+        let config = AiConfig::from_settings(&settings);
+        assert_eq!(config.provider, AiProvider::Custom);
+        assert_eq!(config.base_url, None);
+        assert_eq!(config.model, "");
+    }
+
+    #[test]
+    fn config_from_settings_explicit_empty_base_url() {
+        let settings = settings_with("openai", "key", Some(""), "");
+        let config = AiConfig::from_settings(&settings);
+        // An explicitly empty base_url is preserved as Some("") rather than falling back.
+        assert_eq!(config.base_url, Some("".to_string()));
+    }
+
+    #[test]
+    fn config_debug_hides_api_key_and_shows_system_prompt_presence() {
+        let config = AiConfig {
+            provider: AiProvider::OpenAi,
+            api_key: "super-secret".to_string(),
+            base_url: Some("https://api.openai.com/v1".to_string()),
+            model: "gpt-4".to_string(),
+            temperature: Some(0.7),
+            max_tokens: Some(100),
+            system_prompt: Some("you are helpful".to_string()),
+        };
+        let out = format!("{:?}", config);
+        assert!(!out.contains("super-secret"), "api_key leaked in Debug");
+        assert!(out.contains("[REDACTED]"), "api_key not marked redacted");
+        assert!(
+            out.contains("[PRESENT]"),
+            "system_prompt presence not indicated"
+        );
+        assert!(out.contains("gpt-4"));
+    }
+
+    // ==================== ChatMessage ====================
+
+    #[test]
+    fn chat_message_user_and_assistant() {
+        let u = ChatMessage::user("hello");
+        assert_eq!(u.role, "user");
+        assert_eq!(u.content, "hello");
+
+        let a = ChatMessage::assistant(String::from("hi there"));
+        assert_eq!(a.role, "assistant");
+        assert_eq!(a.content, "hi there");
+    }
+
+    // ==================== AiClient ====================
+
+    #[test]
+    fn client_new_preserves_config() {
+        let settings = AiSettings {
+            provider: "kimi".to_string(),
+            api_key: "mk".to_string(),
+            base_url: Some("https://api.moonshot.cn/v1".to_string()),
+            model: "moonshot-v1-8k".to_string(),
+            temperature: Some(0.5),
+            max_tokens: Some(512),
+            system_prompt: Some("sys".to_string()),
+        };
+        let client = AiClient::new(&settings);
+        assert_eq!(client.config.provider, AiProvider::Kimi);
+        assert_eq!(client.config.api_key, "mk");
+        assert_eq!(
+            client.config.base_url,
+            Some("https://api.moonshot.cn/v1".to_string())
+        );
+        assert_eq!(client.config.model, "moonshot-v1-8k");
+        assert_eq!(client.config.temperature, Some(0.5));
+        assert_eq!(client.config.max_tokens, Some(512));
+        assert_eq!(client.config.system_prompt, Some("sys".to_string()));
+    }
+
+    #[test]
+    fn validate_https_rejects_http_and_accepts_https() {
+        assert!(AiClient::validate_https("http://api.openai.com").is_err());
+        assert!(AiClient::validate_https("https://").is_ok());
+        assert!(AiClient::validate_https("https://api.openai.com/v1").is_ok());
+        assert!(AiClient::validate_https("ftp://api.openai.com").is_err());
+        assert!(AiClient::validate_https("").is_err());
+    }
+
+    #[test]
+    fn check_ip_private_ipv4() {
+        assert!(AiClient::check_ip_private("10.0.0.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("172.16.0.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("192.168.1.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("127.0.0.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("169.254.1.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("224.0.0.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("192.0.2.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("255.255.255.255".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("0.0.0.0".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("1.1.1.1".parse().unwrap(), "h").is_ok());
+        assert!(AiClient::check_ip_private("8.8.8.8".parse().unwrap(), "h").is_ok());
+    }
+
+    #[test]
+    fn check_ip_private_ipv6() {
+        assert!(AiClient::check_ip_private("::1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("::".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("ff02::1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("::ffff:10.0.0.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("::ffff:127.0.0.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("::ffff:192.168.1.1".parse().unwrap(), "h").is_err());
+        assert!(AiClient::check_ip_private("2001:4860:4860::8888".parse().unwrap(), "h").is_ok());
+    }
+
+    #[test]
+    fn validate_not_private_ip_public_ip_passes() {
+        assert!(AiClient::validate_not_private_ip("https://1.1.1.1").is_ok());
+    }
+
+    #[test]
+    fn validate_not_private_ip_public_domain_passes() {
+        // example.com is not blocked; if DNS is unavailable the function still returns Ok.
+        assert!(AiClient::validate_not_private_ip("https://example.com").is_ok());
+    }
+
+    #[test]
+    fn validate_not_private_ip_rejects_private_and_local() {
+        assert!(AiClient::validate_not_private_ip("https://192.168.1.1").is_err());
+        assert!(AiClient::validate_not_private_ip("https://127.0.0.1").is_err());
+        assert!(AiClient::validate_not_private_ip("https://10.0.0.1").is_err());
+        assert!(AiClient::validate_not_private_ip("https://[::1]").is_err());
+        assert!(AiClient::validate_not_private_ip("https://[::ffff:192.168.1.1]").is_err());
+    }
+
+    #[test]
+    fn validate_not_private_ip_rejects_metadata_endpoints() {
+        assert!(AiClient::validate_not_private_ip("https://169.254.169.254").is_err());
+        assert!(AiClient::validate_not_private_ip("https://metadata.google.internal").is_err());
+        assert!(AiClient::validate_not_private_ip("https://metadata.google").is_err());
+        assert!(AiClient::validate_not_private_ip("https://metadata.azure.internal").is_err());
+        assert!(AiClient::validate_not_private_ip("https://100.100.100.200").is_err());
+        assert!(AiClient::validate_not_private_ip("https://metadata.tencentyun.com").is_err());
+    }
+
+    #[test]
+    fn validate_not_private_ip_rejects_bad_urls() {
+        assert!(AiClient::validate_not_private_ip("not a url").is_err());
+        assert!(AiClient::validate_not_private_ip("https://").is_err());
+    }
+
+    #[test]
+    fn resolve_and_lock_public_ip_ok() {
+        let ep = AiClient::resolve_and_lock("https://1.1.1.1").unwrap();
+        assert_eq!(ep.host, "1.1.1.1");
+        assert_eq!(ep.port, 443);
+    }
+
+    #[test]
+    fn resolve_and_lock_custom_port() {
+        let ep = AiClient::resolve_and_lock("https://8.8.8.8:8443").unwrap();
+        assert_eq!(ep.host, "8.8.8.8");
+        assert_eq!(ep.port, 8443);
+    }
+
+    #[test]
+    fn resolve_and_lock_rejects_private_ip() {
+        assert!(AiClient::resolve_and_lock("https://192.168.1.1").is_err());
+        assert!(AiClient::resolve_and_lock("https://127.0.0.1:8080").is_err());
+    }
+
+    #[test]
+    fn resolve_and_lock_rejects_bad_url() {
+        assert!(AiClient::resolve_and_lock("not a url").is_err());
+        assert!(AiClient::resolve_and_lock("https://").is_err());
+    }
+
+    #[test]
+    fn validate_tcp_connect_target_matches_resolve_and_lock() {
+        assert!(AiClient::validate_tcp_connect_target("https://1.1.1.1").is_ok());
+        assert!(AiClient::validate_tcp_connect_target("https://127.0.0.1").is_err());
+        assert!(AiClient::validate_tcp_connect_target("https://[::1]").is_err());
+    }
+
+    #[test]
+    fn read_limited_response_empty() {
+        let resp = ureq::Response::new(200, "OK", "").unwrap();
+        let text = AiClient::read_limited_response(resp).unwrap();
+        assert_eq!(text, "");
+    }
+
+    #[test]
+    fn read_limited_response_normal_body() {
+        let body = r#"{"choices":[{"message":{"content":"hi"}}]}"#;
+        let resp = ureq::Response::new(200, "OK", body).unwrap();
+        let text = AiClient::read_limited_response(resp).unwrap();
+        assert_eq!(text, body);
+    }
+
+    fn client_with_empty_key(provider: AiProvider, base_url: &str) -> AiClient {
+        let settings = AiSettings {
+            provider: provider.as_str().to_string(),
+            api_key: "".to_string(),
+            base_url: Some(base_url.to_string()),
+            model: "model".to_string(),
+            temperature: None,
+            max_tokens: None,
+            system_prompt: None,
+        };
+        AiClient::new(&settings)
+    }
+
+    #[test]
+    fn complete_rejects_empty_api_key_openai_compatible() {
+        let client = client_with_empty_key(AiProvider::OpenAi, "https://1.1.1.1");
+        let err = client.complete("prompt").unwrap_err();
+        match err {
+            AiError::Config(msg) => assert_eq!(msg, "API Key 未设置"),
+            other => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn complete_rejects_empty_api_key_claude() {
+        let client = client_with_empty_key(AiProvider::Claude, "https://1.1.1.1");
+        let err = client.complete("prompt").unwrap_err();
+        match err {
+            AiError::Config(msg) => assert_eq!(msg, "API Key 未设置"),
+            other => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn chat_completion_rejects_empty_api_key_openai_compatible() {
+        let client = client_with_empty_key(AiProvider::Kimi, "https://1.1.1.1");
+        let err = client
+            .chat_completion(&[ChatMessage::user("hi")])
+            .unwrap_err();
+        match err {
+            AiError::Config(msg) => assert_eq!(msg, "API Key 未设置"),
+            other => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn chat_completion_rejects_empty_api_key_claude() {
+        let client = client_with_empty_key(AiProvider::Claude, "https://1.1.1.1");
+        let err = client
+            .chat_completion(&[ChatMessage::user("hi")])
+            .unwrap_err();
+        match err {
+            AiError::Config(msg) => assert_eq!(msg, "API Key 未设置"),
+            other => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn chat_completion_stream_rejects_empty_api_key_openai_compatible() {
+        let client = client_with_empty_key(AiProvider::Azure, "https://1.1.1.1");
+        let err = client
+            .chat_completion_stream(&[ChatMessage::user("hi")])
+            .unwrap_err();
+        match err {
+            AiError::Config(msg) => assert_eq!(msg, "API Key 未设置"),
+            other => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn chat_completion_stream_rejects_empty_api_key_claude() {
+        let client = client_with_empty_key(AiProvider::Claude, "https://1.1.1.1");
+        let err = client
+            .chat_completion_stream(&[ChatMessage::user("hi")])
+            .unwrap_err();
+        match err {
+            AiError::Config(msg) => assert_eq!(msg, "API Key 未设置"),
+            other => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn chat_completion_stream_rejects_empty_api_key_custom() {
+        let client = client_with_empty_key(AiProvider::Custom, "https://1.1.1.1");
+        let err = client
+            .chat_completion_stream(&[ChatMessage::user("hi")])
+            .unwrap_err();
+        match err {
+            AiError::Config(msg) => assert_eq!(msg, "API Key 未设置"),
+            other => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    // ==================== extract_stream_token ====================
+
+    #[test]
+    fn extract_stream_token_openai() {
+        let json = serde_json::json!({
+            "choices": [{"delta": {"content": "hello"}}]
+        });
+        assert_eq!(
+            AiClient::extract_stream_token(&json),
+            Some("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_stream_token_openai_empty_content() {
+        let json = serde_json::json!({
+            "choices": [{"delta": {"content": ""}}]
+        });
+        assert_eq!(AiClient::extract_stream_token(&json), Some("".to_string()));
+    }
+
+    #[test]
+    fn extract_stream_token_openai_null_content() {
+        let json = serde_json::json!({
+            "choices": [{"delta": {"content": null}}]
+        });
+        assert_eq!(AiClient::extract_stream_token(&json), None);
+    }
+
+    #[test]
+    fn extract_stream_token_anthropic() {
+        let json = serde_json::json!({
+            "delta": {"text": "world"}
+        });
+        assert_eq!(
+            AiClient::extract_stream_token(&json),
+            Some("world".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_stream_token_unrelated() {
+        let json = serde_json::json!({"foo": "bar"});
+        assert_eq!(AiClient::extract_stream_token(&json), None);
+    }
+
+    // ==================== AiStreamEvent ====================
+
+    #[test]
+    fn ai_stream_event_clone_and_debug() {
+        let e = AiStreamEvent::Token("tok".to_string());
+        assert_eq!(format!("{:?}", e.clone()), format!("{:?}", e));
+
+        let done = AiStreamEvent::Done;
+        match done.clone() {
+            AiStreamEvent::Done => {}
+            _ => panic!("clone of Done should be Done"),
+        }
+
+        let err = AiStreamEvent::Error("oops".to_string());
+        match err.clone() {
+            AiStreamEvent::Error(msg) => assert_eq!(msg, "oops"),
+            _ => panic!("clone of Error should be Error"),
+        }
+
+        let dbg = format!("{:?}", AiStreamEvent::Token("x".to_string()));
+        assert!(dbg.contains("Token") && dbg.contains("x"));
     }
 }

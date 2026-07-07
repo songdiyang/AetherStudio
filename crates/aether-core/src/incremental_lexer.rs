@@ -255,4 +255,46 @@ mod tests {
 
         assert_eq!(lexer.get_line_tokens(1).unwrap().len(), 9); // 原来的第2行变成第1行: indent, let, ws, y, ws, =, ws, 2, ;
     }
+
+    #[test]
+    fn test_incremental_empty_lines() {
+        let mut lexer = IncrementalLexer::new(Language::Rust);
+        lexer.update_for_edit(&EditResult::default(), &[]);
+        assert!(lexer.get_all_tokens().is_empty());
+        assert_eq!(lexer.version(), 1);
+    }
+
+    #[test]
+    fn test_incremental_get_line_tokens_bounds() {
+        let mut lexer = IncrementalLexer::new(Language::Rust);
+        let lines = vec!["a".to_string(), "b".to_string()];
+        lexer.analyze_all(&lines);
+        assert!(lexer.get_line_tokens(0).is_some());
+        assert!(lexer.get_line_tokens(2).is_none());
+    }
+
+    #[test]
+    fn test_incremental_lexer_manager() {
+        let mut manager = IncrementalLexerManager::new();
+        let lexer = manager.open_file("a.rs", Language::Rust);
+        lexer.analyze_all(&["fn a() {}".to_string()]);
+        assert!(manager.current_lexer().is_some());
+        manager.switch_file("b.rs");
+        assert!(manager.current_lexer().is_none());
+        manager.close_file("a.rs");
+        manager.clear_all();
+        assert!(manager.current_lexer().is_none());
+    }
+
+    #[test]
+    fn test_incremental_manager_cache_limit() {
+        let mut manager = IncrementalLexerManager::new();
+        for i in 0..35 {
+            let path = format!("{}.rs", i);
+            let lexer = manager.open_file(&path, Language::Rust);
+            lexer.analyze_all(&["fn main() {}".to_string()]);
+        }
+        // 超过缓存上限后会被清空
+        assert!(manager.current_lexer().is_some());
+    }
 }

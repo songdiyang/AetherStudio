@@ -10,6 +10,17 @@ pub struct FileTree {
     root_last_child: u32,
 }
 
+impl Default for FileTree {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            names: StringPool::default(),
+            root_first_child: u32::MAX,
+            root_last_child: u32::MAX,
+        }
+    }
+}
+
 /// 单个节点（紧凑内存布局）
 #[derive(Clone, Debug)]
 pub struct FileNode {
@@ -39,16 +50,14 @@ pub enum FileKind {
 }
 
 /// 字符串池
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct StringPool {
     data: String,
 }
 
 impl StringPool {
     pub fn new() -> Self {
-        Self {
-            data: String::new(),
-        }
+        Self::default()
     }
 
     pub fn add(&mut self, s: &str) -> (u32, u16) {
@@ -68,12 +77,7 @@ impl StringPool {
 
 impl FileTree {
     pub fn new() -> Self {
-        Self {
-            nodes: Vec::new(),
-            names: StringPool::new(),
-            root_first_child: u32::MAX,
-            root_last_child: u32::MAX,
-        }
+        Self::default()
     }
 
     pub fn add_node(&mut self, name: &str, kind: FileKind, parent_idx: u32, depth: u8) -> u32 {
@@ -243,5 +247,83 @@ mod tests {
 
         let children: Vec<_> = tree.iter_children(root).collect();
         assert_eq!(children.len(), 2);
+    }
+
+    #[test]
+    fn test_file_tree_empty() {
+        let tree = FileTree::new();
+        assert!(tree.is_empty());
+        assert_eq!(tree.len(), 0);
+        assert_eq!(tree.first_root_node(), None);
+        assert_eq!(tree.iter_children(u32::MAX).count(), 0);
+    }
+
+    #[test]
+    fn test_file_tree_root_siblings() {
+        let mut tree = FileTree::new();
+        let a = tree.add_node("a", FileKind::Directory, u32::MAX, 0);
+        let b = tree.add_node("b", FileKind::File, u32::MAX, 0);
+        let c = tree.add_node("c", FileKind::File, u32::MAX, 0);
+
+        let roots: Vec<_> = tree.iter_children(u32::MAX).collect();
+        assert_eq!(roots.len(), 3);
+        assert_eq!(tree.first_root_node(), Some(a));
+        assert_eq!(tree.get_node(a).unwrap().next_sibling, b);
+        assert_eq!(tree.get_node(b).unwrap().next_sibling, c);
+        assert_eq!(tree.get_node(c).unwrap().next_sibling, u32::MAX);
+    }
+
+    #[test]
+    fn test_file_tree_names() {
+        let mut tree = FileTree::new();
+        let dir = tree.add_node("src", FileKind::Directory, u32::MAX, 0);
+        let main = tree.add_node("main.rs", FileKind::File, dir, 1);
+
+        let dir_node = tree.get_node(dir).unwrap();
+        assert_eq!(tree.get_name(dir_node), "src");
+        let main_node = tree.get_node(main).unwrap();
+        assert_eq!(tree.get_name(main_node), "main.rs");
+        assert_eq!(main_node.parent_idx, dir);
+        assert_eq!(main_node.depth, 1);
+    }
+
+    #[test]
+    fn test_file_tree_node_fields() {
+        let mut tree = FileTree::new();
+        let dir = tree.add_node("dir", FileKind::Directory, u32::MAX, 0);
+        let node = tree.get_node(dir).unwrap();
+        assert_eq!(node.kind, FileKind::Directory);
+        assert!(node.is_expanded);
+        assert!(!node.is_loaded);
+
+        let file = tree.add_node("file.txt", FileKind::File, dir, 1);
+        let file_node = tree.get_node(file).unwrap();
+        assert_eq!(file_node.kind, FileKind::File);
+        assert!(!file_node.is_expanded);
+    }
+
+    #[test]
+    fn test_file_tree_nodes_iter() {
+        let mut tree = FileTree::new();
+        let _ = tree.add_node("root", FileKind::Directory, u32::MAX, 0);
+        let _ = tree.add_node("child", FileKind::File, 0, 1);
+        assert_eq!(tree.nodes_iter().count(), 2);
+    }
+
+    #[test]
+    fn test_string_pool() {
+        let mut pool = StringPool::new();
+        let (off, len) = pool.add("hello");
+        assert_eq!(pool.get(off, len), "hello");
+        let (off2, len2) = pool.add("world");
+        assert_eq!(pool.get(off2, len2), "world");
+        assert_ne!(off, off2);
+    }
+
+    #[test]
+    fn test_file_tree_get_node_bounds() {
+        let tree = FileTree::new();
+        assert!(tree.get_node(0).is_none());
+        assert!(tree.get_node(u32::MAX).is_none());
     }
 }

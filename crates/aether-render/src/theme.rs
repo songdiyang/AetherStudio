@@ -323,3 +323,204 @@ impl Default for Theme {
         Self::glass()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn color_eq(a: D2D1_COLOR_F, b: D2D1_COLOR_F, eps: f32) -> bool {
+        (a.r - b.r).abs() < eps
+            && (a.g - b.g).abs() < eps
+            && (a.b - b.b).abs() < eps
+            && (a.a - b.a).abs() < eps
+    }
+
+    #[test]
+    fn test_default_theme_is_glass() {
+        let default = Theme::default();
+        let glass = Theme::glass();
+        assert!(default.glass_enabled);
+        assert!(color_eq(default.editor_bg, glass.editor_bg, 0.001));
+    }
+
+    #[test]
+    fn test_dark_and_glass_differ_in_glass_enabled() {
+        let dark = Theme::dark();
+        let glass = Theme::glass();
+        assert!(!dark.glass_enabled);
+        assert!(glass.glass_enabled);
+        // glass 编辑器背景有透明度
+        assert!(glass.editor_bg.a < 1.0);
+        assert!(dark.editor_bg.a >= 1.0);
+    }
+
+    #[test]
+    fn test_color_for_token_mappings() {
+        let theme = Theme::dark();
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Keyword),
+            theme.syntax.keyword,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Identifier),
+            theme.syntax.variable,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::StringLiteral),
+            theme.syntax.string,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::CharLiteral),
+            theme.syntax.string,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::NumberLiteral),
+            theme.syntax.number,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::LineComment),
+            theme.syntax.comment,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::BlockComment),
+            theme.syntax.comment,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::DocComment),
+            theme.syntax.comment,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Operator),
+            theme.syntax.operator,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Punctuation),
+            theme.syntax.operator,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Preprocessor),
+            theme.syntax.preprocessor,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Attribute),
+            theme.syntax.attribute,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::TypeName),
+            theme.syntax.type_name,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Function),
+            theme.syntax.function,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Macro),
+            theme.syntax.macro_color,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Lifetime),
+            theme.syntax.lifetime,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Generic),
+            theme.syntax.type_name,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::RegexLiteral),
+            theme.syntax.regex,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::FormatString),
+            theme.syntax.format_string,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::MdHeading),
+            theme.syntax.md_heading,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::MdLink),
+            theme.syntax.md_link,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::MdCode),
+            theme.syntax.md_code,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::MdEmphasis),
+            theme.syntax.md_emphasis,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::JsonKey),
+            theme.syntax.json_key,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::TomlTable),
+            theme.syntax.toml_table,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Whitespace),
+            theme.text_default,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Newline),
+            theme.text_default,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Unknown),
+            theme.text_default,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::EOF),
+            theme.text_default,
+            0.001
+        ));
+    }
+
+    #[test]
+    fn test_color_for_semantic_token_index() {
+        let theme = Theme::dark();
+        assert!(color_eq(
+            theme.color_for_semantic_token_index(0, 0),
+            theme.syntax.semantic_namespace,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_semantic_token_index(21, 0),
+            theme.syntax.semantic_operator_logical,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_semantic_token_index(99, 0),
+            theme.text_default,
+            0.001
+        ));
+    }
+}

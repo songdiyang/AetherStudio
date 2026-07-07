@@ -255,24 +255,16 @@ impl LayoutManager {
     }
 
     /// 计算标签栏区域
-    pub fn tab_bar_region(&self, has_multiple_tabs: bool) -> Region {
+    pub fn tab_bar_region(&self, show_tab_bar: bool) -> Region {
         let editor = self.editor_region();
-        let height = if has_multiple_tabs {
-            TAB_BAR_HEIGHT
-        } else {
-            0.0
-        };
+        let height = if show_tab_bar { TAB_BAR_HEIGHT } else { 0.0 };
         Region::new(editor.x, editor.y, editor.width, height)
     }
 
     /// 计算编辑器内容区域（排除标签栏）
-    pub fn editor_content_region(&self, has_multiple_tabs: bool) -> Region {
+    pub fn editor_content_region(&self, show_tab_bar: bool) -> Region {
         let editor = self.editor_region();
-        let tab_height = if has_multiple_tabs {
-            TAB_BAR_HEIGHT
-        } else {
-            0.0
-        };
+        let tab_height = if show_tab_bar { TAB_BAR_HEIGHT } else { 0.0 };
         let height = (editor.height - tab_height).max(0.0);
         Region::new(editor.x, editor.y + tab_height, editor.width, height)
     }
@@ -296,23 +288,18 @@ impl LayoutManager {
     }
 
     /// 计算底部面板区域
-    /// 底部面板只占据中间编辑器区域（活动栏和侧边栏之间），不覆盖左右侧边栏
+    /// 底部面板横跨整个窗口底部（覆盖左右侧边栏下方的空间），与状态栏一致
     pub fn bottom_panel_region(&self) -> Region {
+        let y = self.window_height - self.status_bar_height - self.bottom_panel_height;
         if !self.bottom_panel_visible {
             return Region::new(
-                self.editor_region().x,
+                0.0,
                 self.window_height - self.status_bar_height,
-                self.editor_region().width,
+                self.window_width,
                 0.0,
             );
         }
-        let editor = self.editor_region();
-        Region::new(
-            editor.x,
-            self.window_height - self.status_bar_height - self.bottom_panel_height,
-            editor.width,
-            self.bottom_panel_height,
-        )
+        Region::new(0.0, y, self.window_width, self.bottom_panel_height)
     }
 
     /// 计算状态栏区域
@@ -427,5 +414,235 @@ impl LayoutManager {
         } else {
             self.bottom_panel_height = 0.0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_region_contains() {
+        let r = Region::new(10.0, 20.0, 100.0, 50.0);
+        assert!(r.contains(10.0, 20.0));
+        assert!(r.contains(109.9, 69.9));
+        assert!(!r.contains(110.0, 30.0));
+        assert!(!r.contains(50.0, 70.0));
+        assert!(!r.contains(9.9, 30.0));
+    }
+
+    #[test]
+    fn test_region_right_and_bottom() {
+        let r = Region::new(5.0, 5.0, 10.0, 20.0);
+        assert_eq!(r.right(), 15.0);
+        assert_eq!(r.bottom(), 25.0);
+    }
+
+    #[test]
+    fn test_activity_bar_view_label_icon_key() {
+        assert_eq!(ActivityBarView::Explorer.label(), "资源管理器");
+        assert_eq!(ActivityBarView::Terminal.icon(), "⌨");
+        assert_eq!(ActivityBarView::AiAssistant.key(), "aiAssistant");
+    }
+
+    #[test]
+    fn test_activity_bar_view_default_order() {
+        let order = ActivityBarView::default_order();
+        assert_eq!(
+            order,
+            vec![
+                ActivityBarView::Explorer,
+                ActivityBarView::SourceControl,
+                ActivityBarView::RemoteManager,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_activity_bar_view_from_key() {
+        assert_eq!(
+            ActivityBarView::from_key("explorer"),
+            Some(ActivityBarView::Explorer)
+        );
+        assert_eq!(
+            ActivityBarView::from_key("sourceControl"),
+            Some(ActivityBarView::SourceControl)
+        );
+        assert_eq!(
+            ActivityBarView::from_key("remoteManager"),
+            Some(ActivityBarView::RemoteManager)
+        );
+        assert_eq!(
+            ActivityBarView::from_key("openTabs"),
+            Some(ActivityBarView::RemoteManager)
+        );
+        assert_eq!(ActivityBarView::from_key("terminal"), None);
+        assert_eq!(ActivityBarView::from_key("aiAssistant"), None);
+        assert_eq!(ActivityBarView::from_key("unknown"), None);
+    }
+
+    #[test]
+    fn test_sidebar_content_from_view() {
+        assert_eq!(
+            SidebarContent::from_view(ActivityBarView::Explorer),
+            SidebarContent::FileTree
+        );
+        assert_eq!(
+            SidebarContent::from_view(ActivityBarView::SourceControl),
+            SidebarContent::SourceControlPanel
+        );
+        assert_eq!(
+            SidebarContent::from_view(ActivityBarView::Terminal),
+            SidebarContent::TerminalPanel
+        );
+        assert_eq!(
+            SidebarContent::from_view(ActivityBarView::RemoteManager),
+            SidebarContent::RemoteManagerPanel
+        );
+        assert_eq!(
+            SidebarContent::from_view(ActivityBarView::AiAssistant),
+            SidebarContent::AiAssistantPanel
+        );
+    }
+
+    #[test]
+    fn test_sidebar_content_is_ai_assistant() {
+        assert!(SidebarContent::AiAssistantPanel.is_ai_assistant());
+        assert!(!SidebarContent::FileTree.is_ai_assistant());
+    }
+
+    #[test]
+    fn test_layout_manager_default_regions() {
+        let layout = LayoutManager::new(1280.0, 800.0);
+        let title = layout.title_bar_region();
+        assert_eq!(title.x, 0.0);
+        assert_eq!(title.height, TITLE_BAR_HEIGHT);
+
+        let activity = layout.activity_bar_region();
+        assert_eq!(activity.x, 0.0);
+        assert_eq!(activity.width, ACTIVITY_BAR_WIDTH);
+
+        let sidebar = layout.sidebar_region();
+        assert_eq!(sidebar.x, ACTIVITY_BAR_WIDTH);
+        assert_eq!(sidebar.width, SIDEBAR_WIDTH);
+
+        let editor = layout.editor_region();
+        assert_eq!(editor.x, ACTIVITY_BAR_WIDTH + SIDEBAR_WIDTH);
+        assert!(editor.width > 0.0);
+
+        let status = layout.status_bar_region();
+        assert_eq!(status.y, 800.0 - STATUS_BAR_HEIGHT);
+        assert_eq!(status.height, STATUS_BAR_HEIGHT);
+    }
+
+    #[test]
+    fn test_layout_manager_hidden_activity_bar() {
+        let mut layout = LayoutManager::new(1280.0, 800.0);
+        layout.toggle_activity_bar();
+        assert!(!layout.activity_bar_visible);
+
+        let activity = layout.activity_bar_region();
+        assert_eq!(activity.width, 0.0);
+
+        let sidebar = layout.sidebar_region();
+        assert_eq!(sidebar.x, 0.0);
+
+        let editor = layout.editor_region();
+        assert_eq!(editor.x, SIDEBAR_WIDTH);
+    }
+
+    #[test]
+    fn test_layout_manager_hidden_sidebar() {
+        let mut layout = LayoutManager::new(1280.0, 800.0);
+        layout.toggle_sidebar();
+        assert!(!layout.sidebar_visible);
+
+        let sidebar = layout.sidebar_region();
+        assert_eq!(sidebar.width, 0.0);
+
+        let editor = layout.editor_region();
+        assert_eq!(editor.x, ACTIVITY_BAR_WIDTH);
+    }
+
+    #[test]
+    fn test_layout_manager_right_and_bottom_panels() {
+        let mut layout = LayoutManager::new(1280.0, 800.0);
+        layout.toggle_right_panel();
+        let right = layout.right_panel_region();
+        assert_eq!(right.width, 300.0);
+        assert_eq!(right.x, 1280.0 - 300.0);
+
+        layout.toggle_bottom_panel();
+        let bottom = layout.bottom_panel_region();
+        assert_eq!(bottom.height, 200.0);
+        assert_eq!(bottom.y, 800.0 - STATUS_BAR_HEIGHT - 200.0);
+
+        let editor = layout.editor_region();
+        assert_eq!(
+            editor.width,
+            1280.0 - ACTIVITY_BAR_WIDTH - SIDEBAR_WIDTH - 300.0
+        );
+    }
+
+    #[test]
+    fn test_layout_manager_tab_bar_and_content() {
+        let layout = LayoutManager::new(1280.0, 800.0);
+        let tab_bar = layout.tab_bar_region(true);
+        assert_eq!(tab_bar.height, TAB_BAR_HEIGHT);
+
+        let content = layout.editor_content_region(true);
+        assert_eq!(
+            content.height,
+            layout.editor_region().height - TAB_BAR_HEIGHT
+        );
+        assert_eq!(content.y, layout.editor_region().y + TAB_BAR_HEIGHT);
+    }
+
+    #[test]
+    fn test_layout_manager_resize_sidebar() {
+        let mut layout = LayoutManager::new(1280.0, 800.0);
+        layout.resize_sidebar(100.0);
+        assert_eq!(layout.sidebar_width, SIDEBAR_WIDTH + 100.0);
+
+        layout.resize_sidebar(1000.0);
+        assert_eq!(layout.sidebar_width, MAX_SIDEBAR_WIDTH);
+
+        layout.resize_sidebar(-1000.0);
+        assert_eq!(layout.sidebar_width, MIN_SIDEBAR_WIDTH);
+    }
+
+    #[test]
+    fn test_layout_manager_resize_window() {
+        let mut layout = LayoutManager::new(1280.0, 800.0);
+        layout.resize_window(1920.0, 1080.0);
+        assert_eq!(layout.window_width, 1920.0);
+        assert_eq!(layout.window_height, 1080.0);
+        assert_eq!(layout.title_bar_region().width, 1920.0);
+    }
+
+    #[test]
+    fn test_layout_manager_toggle_status_bar() {
+        let mut layout = LayoutManager::new(1280.0, 800.0);
+        layout.toggle_status_bar();
+        assert!(!layout.status_bar_visible);
+        let status = layout.status_bar_region();
+        assert_eq!(status.height, 0.0);
+        assert_eq!(status.y, 800.0);
+    }
+
+    #[test]
+    fn test_layout_manager_top_offset_and_content_height() {
+        let mut layout = LayoutManager::new(800.0, 600.0);
+        assert_eq!(layout.top_offset(), TITLE_BAR_HEIGHT + MENU_BAR_HEIGHT);
+        assert_eq!(
+            layout.content_height(),
+            600.0 - TITLE_BAR_HEIGHT - STATUS_BAR_HEIGHT
+        );
+
+        layout.toggle_status_bar();
+        assert_eq!(layout.content_height(), 600.0 - TITLE_BAR_HEIGHT);
+
+        layout.toggle_bottom_panel();
+        assert_eq!(layout.content_height(), 600.0 - TITLE_BAR_HEIGHT - 200.0);
     }
 }

@@ -136,6 +136,7 @@ impl TextRenderer {
     }
 
     /// 渲染单行文本
+    #[allow(clippy::too_many_arguments)]
     pub fn render_line(
         &self,
         target: &ID2D1HwndRenderTarget,
@@ -288,4 +289,30 @@ impl Viewport {
             width_cols,
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_viewport_new_computes_width_cols() {
+        let vp = Viewport::new(10.0, 20.0, 800.0, 600.0, 8.0);
+        assert_eq!(vp.x, 10.0);
+        assert_eq!(vp.y, 20.0);
+        assert_eq!(vp.width, 800.0);
+        assert_eq!(vp.height, 600.0);
+        assert_eq!(vp.width_cols, 100);
+    }
+
+    #[test]
+    fn test_viewport_new_zero_char_width() {
+        // char_width 为 0 时除法产生 inf，转换为 usize 后为一个大值
+        let vp = Viewport::new(0.0, 0.0, 100.0, 100.0, 0.0);
+        assert_eq!(vp.width_cols, usize::MAX);
+    }
+
+    // TextRenderer 及其渲染方法依赖 IDWriteFactory、IDWriteTextFormat、ID2D1HwndRenderTarget 等
+    // 真实 COM 对象，无法在不调用 DirectWrite/Direct2D 的情况下进行单元测试。
+    // 相关逻辑应在集成测试或 GUI 测试中覆盖。
 }

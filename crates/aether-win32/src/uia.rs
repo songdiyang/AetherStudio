@@ -41,17 +41,13 @@ impl UiaAccessibility {
 
     /// 通知文本内容变更（触发屏幕阅读器更新）
     pub fn notify_text_changed(&self) {
-        if !self.enabled {
-            return;
-        }
+        if !self.enabled {}
         // 实际实现需要调用 UIA 事件通知 API
     }
 
     /// 通知选区变更
     pub fn notify_selection_changed(&self) {
-        if !self.enabled {
-            return;
-        }
+        if !self.enabled {}
         // 实际实现需要调用 UIA 事件通知 API
     }
 }

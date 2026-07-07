@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+#![allow(clippy::collapsible_match, clippy::cmp_owned)]
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use windows::core::Result;
@@ -15,13 +18,17 @@ use aether_render::d2d::factory::D2DFactory;
 use aether_render::d2d::text::TextRenderer;
 use aether_render::theme::Theme;
 use aether_tree_sitter::TreeSitterHighlighter;
-use lsp_types::{CompletionItem, Diagnostic, TextDocumentContentChangeEvent};
+use lsp_types::{CompletionItem, Diagnostic};
 use url::Url;
 
 use crate::activity_bar::ActivityBar;
+use crate::ai_agent::AiEdit;
+use crate::ai_context::{truncate_middle, wrap_code_block, AiContextAttachment};
 use crate::ai_panel::AiPanel;
+use crate::ai_prompt::AiMode;
 use crate::command_palette::CommandPalette;
 use crate::dialogs::Dialogs;
+use crate::focus_manager::FocusManager;
 use crate::git::GitIntegration;
 use crate::input::{KeyMap, PressTarget};
 use crate::layout::{ActivityBarView, LayoutManager, SidebarContent, TAB_BAR_HEIGHT};
@@ -43,6 +50,67 @@ pub enum FindReplaceFocus {
     None,
     FindQuery,
     ReplaceText,
+}
+
+/// 文件树点击命中的具体部位
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FileTreeClickPart {
+    /// 点击目录展开/折叠箭头
+    Arrow,
+    /// 点击文件或目录名称/图标区域
+    Label,
+}
+
+/// Hover Tooltip（鼠标悬停提示）
+///
+/// 当鼠标在某个区域停留超过 `HOVER_DELAY_MS` 后显示。
+/// 当前用于文件树节点完整路径提示，后续可扩展接入 LSP hover。
+#[derive(Clone, Debug, PartialEq)]
+pub struct HoverTooltip {
+    /// 提示文本（多行用 `\n` 分隔）
+    pub text: String,
+    /// 提示框左上角 x（逻辑像素）
+    pub x: f32,
+    /// 提示框左上角 y（逻辑像素）
+    pub y: f32,
+    /// 提示框最大宽度（用于自动换行，0 表示不限制）
+    pub max_width: f32,
+}
+
+impl HoverTooltip {
+    pub fn new(text: impl Into<String>, x: f32, y: f32, max_width: f32) -> Self {
+        Self {
+            text: text.into(),
+            x,
+            y,
+            max_width,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+}
+
+/// 计算文件树节点的完整路径（从根到该节点）。
+///
+/// 通过 `parent_idx` 链向上遍历，拼接各级目录名。
+/// 返回 `None` 表示节点不存在或树不可用。
+pub fn file_tree_node_path(tree: &FileTree, node_idx: u32) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    let mut current_idx = node_idx;
+
+    loop {
+        let node = tree.get_node(current_idx)?;
+        parts.push(tree.get_name(node));
+        if node.parent_idx == u32::MAX {
+            break;
+        }
+        current_idx = node.parent_idx;
+    }
+
+    parts.reverse();
+    Some(parts.join("/"))
 }
 
 /// 文件夹异步扫描条目（由后台线程生成，分批通过 PostMessage 发送回 UI 线程）
@@ -91,6 +159,44 @@ struct SshListDirResult {
 struct SendHwnd(usize);
 unsafe impl Send for SendHwnd {}
 
+/// C-06: 安全地通过 PostMessageW 发送 Box 指针；失败时回收 Box 防止泄漏
+unsafe fn post_boxed_message_lparam<T>(hwnd: HWND, msg: u32, ptr: *mut T) {
+    use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+    let posted = PostMessageW(
+        hwnd,
+        msg,
+        windows::Win32::Foundation::WPARAM(0),
+        windows::Win32::Foundation::LPARAM(ptr as isize),
+    );
+    if posted.is_err() {
+        let _ = Box::from_raw(ptr);
+    }
+}
+
+unsafe fn post_boxed_message_wparam<T>(hwnd: HWND, msg: u32, ptr: *mut T) {
+    use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+    let posted = PostMessageW(
+        hwnd,
+        msg,
+        windows::Win32::Foundation::WPARAM(ptr as usize),
+        windows::Win32::Foundation::LPARAM(0),
+    );
+    if posted.is_err() {
+        let _ = Box::from_raw(ptr);
+    }
+}
+
+/// 简化的 LSP 诊断项（UI 层不直接依赖 lsp-types）
+#[derive(Clone, Debug)]
+pub struct DiagnosticItem {
+    pub severity: u8,
+    pub message: String,
+    pub line: usize,
+    pub col: usize,
+    pub end_line: usize,
+    pub end_col: usize,
+}
+
 /// 编辑器应用状态
 pub struct EditorState {
     pub hwnd: HWND,
@@ -120,6 +226,10 @@ pub struct EditorState {
     pub(crate) buffer_version: u64,
     /// 行号 UTF-16 预缓存（避免每帧 format! + encode_utf16 分配）
     pub(crate) cached_line_numbers: Vec<Vec<u16>>,
+    /// P2.3: 大文件标记（超过阈值后关闭语法高亮等重操作）
+    pub(crate) is_large_file: bool,
+    /// P2.3: 行 Y 偏移前缀和缓存（固定行高模式下 trivial，预留可变行高扩展）
+    pub(crate) line_y_offsets: Vec<f32>,
     /// 可复用的 UTF-16 文本缓冲区（避免 render_editor 中每 token 分配 Vec<u16>）
     pub(crate) text_utf16_buf: Vec<u16>,
     /// 文件树渲染用的可复用 UTF-16 缓冲区（避免 render_tree_nodes 中每次分配 Vec<u16>）
@@ -179,6 +289,16 @@ pub struct EditorState {
     pub terminal_panel: TerminalPanel,
     /// AI 助手面板
     pub ai_panel: AiPanel,
+    /// 全局搜索面板
+    pub search_panel: crate::search_panel::SearchPanel,
+    /// 当前工作区中各文件的 LSP 诊断（路径字符串 -> 诊断列表）
+    pub diagnostics: HashMap<String, Vec<DiagnosticItem>>,
+    /// LSP 客户端（工作区打开时初始化，旧版 LSP 集成）
+    pub legacy_lsp_client: Option<std::sync::Arc<aether_lsp::client::LspClient>>,
+    /// LSP 事件接收器
+    pub lsp_rx: Option<tokio::sync::mpsc::UnboundedReceiver<aether_lsp::client::LspEvent>>,
+    /// Tokio 运行时（用于 LSP 异步操作）
+    pub lsp_runtime: Option<tokio::runtime::Runtime>,
     /// SSH 连接对话框
     pub ssh_dialog: SshConnectionDialog,
     /// 远程会话
@@ -193,6 +313,8 @@ pub struct EditorState {
     pub remote_scroll_y: f32,
     /// 克隆仓库对话框
     pub clone_dialog: CloneRepoDialog,
+    /// 新建项目对话框
+    pub new_project_dialog: crate::new_project_dialog::NewProjectDialog,
     /// SSH 管理面板（侧边栏服务器管理）
     pub ssh_manager_panel: SshManagerPanel,
     /// 当前连接的服务器配置索引（对应 app_settings.remote.ssh_servers）
@@ -231,6 +353,19 @@ pub struct EditorState {
     pub git_panel: crate::git::GitIntegration,
     /// 脏矩形追踪器（用于局部重绘优化）
     pub dirty_tracker: crate::dirty_rect::DirtyRectTracker,
+    /// REQ-P0-05: 统一焦点管理器
+    pub focus_manager: FocusManager,
+    /// 事件队列（P1.1: 解耦模型改动与渲染）
+    pub event_queue: crate::events::EventQueue,
+    /// P3.1: 当前内联补全建议（幽灵文本）
+    pub inline_completion: Option<crate::inline_completion::InlineCompletion>,
+    /// P3.1: 内联补全服务（占位）
+    pub inline_completion_service: crate::inline_completion::InlineCompletionService,
+    /// P3.4: 当前显示的 hover tooltip（鼠标悬停提示）
+    pub hover_tooltip: Option<HoverTooltip>,
+    /// P3.4: 上次鼠标位置（用于 hover 防抖判定）
+    pub hover_last_mouse_x: f32,
+    pub hover_last_mouse_y: f32,
     /// 上一帧的光标位置（用于检测光标移动）
     pub last_cursor_line: usize,
     /// 上一帧的光标列（用于检测光标移动）
@@ -253,6 +388,8 @@ pub struct EditorState {
     pub last_bottom_panel_visible: bool,
     /// 上一帧的状态消息（用于检测状态栏变化）
     pub last_status_message: String,
+    /// 上一帧的活动标签页索引（用于检测标签切换）
+    pub last_active_tab: usize,
     /// 用户菜单
     pub user_menu: crate::user_menu::UserMenu,
     /// 长按检测：按下时刻（None 表示当前未进行长按检测）
@@ -309,6 +446,9 @@ impl EditorState {
             tab.cached_lines = std::mem::take(&mut self.cached_lines);
             tab.cached_tokens = std::mem::take(&mut self.cached_tokens);
             tab.line_cache_versions = std::mem::take(&mut self.line_cache_versions);
+            tab.is_large_file = self.is_large_file;
+            tab.line_y_offsets = std::mem::take(&mut self.line_y_offsets);
+            tab.inline_completion = self.inline_completion.take();
             tab.buffer_version = self.buffer_version;
             tab.language = self.language;
         }
@@ -331,6 +471,9 @@ impl EditorState {
             self.cached_lines = std::mem::take(&mut tab.cached_lines);
             self.cached_tokens = std::mem::take(&mut tab.cached_tokens);
             self.line_cache_versions = std::mem::take(&mut tab.line_cache_versions);
+            self.is_large_file = tab.is_large_file;
+            self.line_y_offsets = std::mem::take(&mut tab.line_y_offsets);
+            self.inline_completion = tab.inline_completion.take();
             self.buffer_version = tab.buffer_version;
             self.language = tab.language;
         }
@@ -346,6 +489,11 @@ impl EditorState {
         self.tabs.len()
     }
 
+    /// 是否显示标签栏：多标签，或当前活动标签页已关联文件时均显示
+    pub fn show_tab_bar(&self) -> bool {
+        self.tabs.len() > 1 || self.current_tab().file_path.is_some()
+    }
+
     /// 切换到指定标签页
     pub fn switch_tab(&mut self, index: usize) {
         if index < self.tabs.len() && index != self.active_tab {
@@ -355,6 +503,42 @@ impl EditorState {
             self.is_selecting = false;
             self.sync_file_tree_selection();
             self.status_message = format!("切换到: {}", self.current_tab().file_name());
+            self.emit_event(crate::events::EditorEvent::TabChanged);
+            // 显式标记局部脏区域，避免标签切换触发全窗口重绘导致卡顿
+            let editor_region = self.layout.editor_region();
+            let tab_region = self.layout.tab_bar_region(self.show_tab_bar());
+            let status_region = self.layout.status_bar_region();
+            self.dirty_tracker.mark_region(
+                editor_region.x,
+                editor_region.y,
+                editor_region.width,
+                editor_region.height,
+                crate::dirty_rect::DirtyRegionType::EditorContent,
+            );
+            self.dirty_tracker.mark_region(
+                tab_region.x,
+                tab_region.y,
+                tab_region.width,
+                tab_region.height,
+                crate::dirty_rect::DirtyRegionType::TabBar,
+            );
+            self.dirty_tracker.mark_region(
+                status_region.x,
+                status_region.y,
+                status_region.width,
+                status_region.height,
+                crate::dirty_rect::DirtyRegionType::StatusBar,
+            );
+            let sidebar_region = self.layout.sidebar_region();
+            if sidebar_region.width > 0.0 {
+                self.dirty_tracker.mark_region(
+                    sidebar_region.x,
+                    sidebar_region.y,
+                    sidebar_region.width,
+                    sidebar_region.height,
+                    crate::dirty_rect::DirtyRegionType::Sidebar,
+                );
+            }
         }
     }
 
@@ -460,7 +644,7 @@ impl EditorState {
     /// mouse_y 是相对于标签栏的 y 坐标（已由调用方转换）
     pub fn handle_tab_bar_click(&mut self, mouse_x: f32, _mouse_y: f32, editor_x: f32) -> bool {
         // P3-2: 使用 layout 常量而非硬编码 30.0，确保布局常量变更时此处理同步
-        let tab_bar_height = if self.tabs.len() > 1 {
+        let tab_bar_height = if self.show_tab_bar() {
             TAB_BAR_HEIGHT
         } else {
             0.0
@@ -520,7 +704,7 @@ impl EditorState {
     /// 更新鼠标悬停标签
     pub fn update_hover_tab(&mut self, mouse_x: f32, mouse_y: f32, editor_x: f32) {
         // P3-2: 使用 layout 常量而非硬编码 30.0
-        let tab_bar_height = if self.tabs.len() > 1 {
+        let tab_bar_height = if self.show_tab_bar() {
             TAB_BAR_HEIGHT
         } else {
             0.0
@@ -609,6 +793,8 @@ impl EditorState {
             line_cache_versions: Vec::new(),
             buffer_version: 0,
             cached_line_numbers: Vec::new(),
+            is_large_file: false,
+            line_y_offsets: Vec::new(),
             text_utf16_buf: Vec::with_capacity(256),
             tree_text_utf16_buf: Vec::with_capacity(64),
             language: Language::PlainText,
@@ -648,6 +834,11 @@ impl EditorState {
             git: GitIntegration::new(),
             terminal_panel: TerminalPanel::new(),
             ai_panel: AiPanel::new(),
+            search_panel: crate::search_panel::SearchPanel::new(),
+            diagnostics: HashMap::new(),
+            legacy_lsp_client: None,
+            lsp_rx: None,
+            lsp_runtime: None,
             settings_panel: SettingsPanel::from_settings(&app_settings),
             open_tabs_panel: crate::open_tabs::OpenTabsPanel::new(),
             app_settings,
@@ -658,6 +849,7 @@ impl EditorState {
             hover_remote_node: None,
             remote_scroll_y: 0.0,
             clone_dialog: CloneRepoDialog::new(),
+            new_project_dialog: crate::new_project_dialog::NewProjectDialog::new(),
             ssh_manager_panel: SshManagerPanel::new(),
             active_ssh_index: None,
             is_maximized: false,
@@ -674,6 +866,13 @@ impl EditorState {
             sidebar_scroll_y: 0.0,
             git_panel: crate::git::GitIntegration::new(),
             dirty_tracker: crate::dirty_rect::DirtyRectTracker::new(1280.0, 800.0),
+            focus_manager: FocusManager::new(),
+            event_queue: crate::events::EventQueue::new(),
+            inline_completion: None,
+            inline_completion_service: crate::inline_completion::InlineCompletionService::new(),
+            hover_tooltip: None,
+            hover_last_mouse_x: 0.0,
+            hover_last_mouse_y: 0.0,
             last_cursor_line: 0,
             last_cursor_col: 0,
             last_scroll_y: 0.0,
@@ -685,6 +884,7 @@ impl EditorState {
             last_right_panel_visible: false,
             last_bottom_panel_visible: false,
             last_status_message: "就绪".to_string(),
+            last_active_tab: 0,
             user_menu: crate::user_menu::UserMenu::new(),
             lpress_start: None,
             lpress_x: 0.0,
@@ -760,6 +960,165 @@ impl EditorState {
         // 更新脏矩形追踪器窗口尺寸，触发全窗口重绘
         self.dirty_tracker.resize(log_w as f32, log_h as f32);
         self.render_ctx.resize(phys_width, phys_height);
+        self.emit_event(crate::events::EditorEvent::WindowResized);
+    }
+
+    /// 发射一个编辑器事件到事件队列
+    pub fn emit_event(&mut self, event: crate::events::EditorEvent) {
+        self.event_queue.push(event);
+    }
+
+    /// P3.1: 请求内联补全建议（占位实现）
+    pub fn request_inline_completion(&mut self) {
+        // 收集光标前后文本作为上下文
+        let prefix = self
+            .buffer
+            .get_line(self.cursor_line)
+            .map(|s| s[..self.cursor_col.min(s.len())].to_string())
+            .unwrap_or_default();
+        let suffix = self
+            .buffer
+            .get_line(self.cursor_line)
+            .map(|s| s[self.cursor_col.min(s.len())..].to_string())
+            .unwrap_or_default();
+
+        if let Some(suggestion) = self.inline_completion_service.request(&prefix, &suffix) {
+            self.inline_completion = Some(crate::inline_completion::InlineCompletion {
+                text: suggestion.text,
+                trigger_line: self.cursor_line,
+                trigger_col: self.cursor_col,
+                version: suggestion.version,
+            });
+            self.emit_event(crate::events::EditorEvent::CursorMoved);
+        }
+    }
+
+    /// P3.1: 清除当前内联补全建议
+    pub fn clear_inline_completion(&mut self) {
+        self.inline_completion = None;
+    }
+
+    /// P3.3: 接受当前内联补全建议，将建议文本插入到光标处
+    pub fn accept_inline_completion(&mut self) -> bool {
+        let Some(comp) = self.inline_completion.take() else {
+            return false;
+        };
+        if comp.trigger_line != self.cursor_line || comp.trigger_col != self.cursor_col {
+            return false;
+        }
+        let pos = self.cursor_byte_pos();
+        self.buffer.insert(pos, &comp.text);
+        self.cursor_col += comp.text.len();
+        self.is_dirty = true;
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.is_dirty = true;
+        }
+        self.buffer_version += 1;
+        self.emit_edit_events();
+        true
+    }
+
+    /// 发射文本编辑相关事件（TextChanged + CursorMoved）
+    fn emit_edit_events(&mut self) {
+        self.emit_event(crate::events::EditorEvent::TextChanged {
+            start_line: self.cursor_line,
+            end_line: self.cursor_line + 1,
+        });
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
+    }
+
+    /// 将事件队列中所有事件转换为脏矩形标记
+    pub fn flush_events_to_dirty_tracker(&mut self) {
+        // 预取布局区域，避免闭包多次借用 self.layout
+        let editor_region = self.layout.editor_region();
+        let status_region = self.layout.status_bar_region();
+        let sidebar_region = self.layout.sidebar_region();
+        let right_panel_region = self.layout.right_panel_region();
+        let bottom_region = self.layout.bottom_panel_region();
+        let line_height = self.text_renderer.line_height();
+        // REQ-P1-03: 用字符列（而非字节偏移）计算脏矩形光标 x 坐标，
+        // 避免非 ASCII 文本时光标残影/撕裂
+        let char_col = self
+            .buffer
+            .get_line(self.cursor_line)
+            .map(|line| line[..self.cursor_col.min(line.len())].chars().count())
+            .unwrap_or(0);
+        let cursor_x =
+            editor_region.x + 60.0 + 5.0 + char_col as f32 * self.text_renderer.char_width()
+                - self.scroll_x;
+        let cursor_y = editor_region.y + self.cursor_line as f32 * line_height - self.scroll_y;
+
+        self.event_queue
+            .drain_to_dirty_tracker(&mut self.dirty_tracker, |event| {
+                use crate::events::EditorEvent;
+                match event {
+                    EditorEvent::TextChanged { .. } => Some((
+                        editor_region.x,
+                        editor_region.y,
+                        editor_region.width,
+                        editor_region.height,
+                    )),
+                    EditorEvent::CursorMoved => Some((cursor_x, cursor_y, 2.0, line_height)),
+                    EditorEvent::SelectionChanged => Some((
+                        editor_region.x,
+                        editor_region.y,
+                        editor_region.width,
+                        editor_region.height,
+                    )),
+                    EditorEvent::Scrolled => Some((
+                        editor_region.x,
+                        editor_region.y,
+                        editor_region.width,
+                        editor_region.height,
+                    )),
+                    EditorEvent::TabChanged => None, // 由 switch_tab 显式标记局部区域
+                    EditorEvent::SidebarChanged => {
+                        if sidebar_region.width > 0.0 {
+                            Some((
+                                sidebar_region.x,
+                                sidebar_region.y,
+                                sidebar_region.width,
+                                sidebar_region.height,
+                            ))
+                        } else {
+                            None
+                        }
+                    }
+                    EditorEvent::RightPanelChanged => {
+                        if right_panel_region.width > 0.0 {
+                            Some((
+                                right_panel_region.x,
+                                right_panel_region.y,
+                                right_panel_region.width,
+                                right_panel_region.height,
+                            ))
+                        } else {
+                            None
+                        }
+                    }
+                    EditorEvent::BottomPanelChanged => {
+                        if bottom_region.height > 0.0 {
+                            Some((
+                                bottom_region.x,
+                                bottom_region.y,
+                                bottom_region.width,
+                                bottom_region.height,
+                            ))
+                        } else {
+                            None
+                        }
+                    }
+                    EditorEvent::StatusBarChanged => Some((
+                        status_region.x,
+                        status_region.y,
+                        status_region.width,
+                        status_region.height,
+                    )),
+                    EditorEvent::WindowResized => None, // 全窗口事件在内部处理
+                    EditorEvent::FindReplaceChanged => None, // 由调用方显式标记
+                    EditorEvent::DialogVisibilityChanged => None, // 全窗口事件在内部处理
+                }
+            });
     }
 
     /// 检查当前标签页是否可以重用（空文件且未修改）
@@ -790,6 +1149,24 @@ impl EditorState {
         self.active_tab = self.tabs.len() - 1;
         self.sync_from_tab();
         self.is_selecting = false;
+        self.emit_event(crate::events::EditorEvent::TabChanged);
+        // 标记标签栏和编辑器区域脏区，避免新标签打开时触发全窗口重绘
+        let editor_region = self.layout.editor_region();
+        let tab_region = self.layout.tab_bar_region(self.show_tab_bar());
+        self.dirty_tracker.mark_region(
+            editor_region.x,
+            editor_region.y,
+            editor_region.width,
+            editor_region.height,
+            crate::dirty_rect::DirtyRegionType::EditorContent,
+        );
+        self.dirty_tracker.mark_region(
+            tab_region.x,
+            tab_region.y,
+            tab_region.width,
+            tab_region.height,
+            crate::dirty_rect::DirtyRegionType::TabBar,
+        );
     }
 
     pub fn load_file(&mut self, path: PathBuf) {
@@ -844,11 +1221,19 @@ impl EditorState {
                         cached_tokens: Vec::new(),
                         line_cache_versions: Vec::new(),
                         buffer_version: 1,
+                        is_large_file: false,
+                        line_y_offsets: Vec::new(),
+                        inline_completion: None,
                         language: lang,
                     };
                     self.open_in_new_tab(tab);
                     self.status_message = format!("已打开: {}", path.display());
                 }
+                self.emit_event(crate::events::EditorEvent::TextChanged {
+                    start_line: 0,
+                    end_line: self.buffer.len_lines(),
+                });
+                self.emit_event(crate::events::EditorEvent::StatusBarChanged);
                 // 接线 LSP：通知服务器文档已打开（按需启动 server），激活补全/悬停/诊断
                 self.lsp_notify_open();
             }
@@ -858,6 +1243,12 @@ impl EditorState {
                 Dialogs::show_error(self.hwnd, "打开文件", &msg);
             }
         }
+
+        // 文件加载成功后通知 LSP 服务器
+        if self.file_path.as_ref() == Some(&path) {
+            let text = self.buffer.get_text(0, self.buffer.len_bytes());
+            self.lsp_open_document(&path, &text);
+        }
     }
 
     /// 通知 LSP 服务器文档已打开（按需启动 server）。
@@ -865,7 +1256,7 @@ impl EditorState {
     /// 异步执行：克隆所需数据后 spawn tokio task，不阻塞 UI 线程。
     fn lsp_notify_open(&self) {
         // 1. 映射语言到 LSP language_id（无配置则跳过）
-        let language_id = match language_to_lsp_id(self.language) {
+        let language_id = match language_to_lsp_id_opt(self.language) {
             Some(id) => id.to_string(),
             None => return,
         };
@@ -906,11 +1297,10 @@ impl EditorState {
     }
 
     /// 通知 LSP 服务器文档内容已变更。
-    /// 第一版使用全文档同步（range=None），简单且兼容所有编辑操作。
     /// 在 insert_char/delete_char/insert_newline/delete_forward 后调用。
     fn lsp_notify_change(&self) {
         // 1. 映射语言到 LSP language_id（无配置则跳过）
-        let language_id = match language_to_lsp_id(self.language) {
+        let language_id = match language_to_lsp_id_opt(self.language) {
             Some(id) => id.to_string(),
             None => return,
         };
@@ -925,15 +1315,8 @@ impl EditorState {
             Err(_) => return,
         };
 
-        // 3. 全文档同步（range=None 表示整个文档被替换）
-        // 第一版不追踪精确的变更范围，直接发送全文。虽然效率略低，
-        // 但对所有编辑操作（插入/删除/粘贴/撤销）都正确，且实现简单。
+        // 3. 全文档同步：直接发送全文，由 LspClient 内部计算增量变更
         let text = self.buffer.get_all_text();
-        let change = TextDocumentContentChangeEvent {
-            range: None,
-            range_length: None,
-            text,
-        };
 
         // 4. Spawn 异步任务发送 did_change
         let client = self.lsp_client.clone();
@@ -942,7 +1325,7 @@ impl EditorState {
             // 注意：notify_change 内部会检查 document_sync 是否有该文档，
             // 如果 did_open 尚未完成，change 会被静默丢弃。这在实践中可接受：
             // 用户在 server 启动后的第一次编辑会正常同步。
-            if let Err(e) = client.notify_change(&uri, vec![change]).await {
+            if let Err(e) = client.notify_change(&uri, &text).await {
                 eprintln!("LSP notify_change({}) failed: {}", lang_id, e);
             }
         });
@@ -951,7 +1334,7 @@ impl EditorState {
     /// Phase H1: 请求补全（Ctrl+Space 触发）。
     /// 异步调用 LSP request_completion，结果通过 LspEvent::Completion 回传。
     pub(crate) fn request_completion(&mut self) {
-        let language_id = match language_to_lsp_id(self.language) {
+        let language_id = match language_to_lsp_id_opt(self.language) {
             Some(id) => id.to_string(),
             None => return,
         };
@@ -989,7 +1372,7 @@ impl EditorState {
     /// 注意：触发逻辑（WM_MOUSEMOVE + 定时器去抖）尚未接线，此方法预留就绪。
     #[allow(dead_code)]
     pub(crate) fn request_hover(&mut self, line: usize, col: usize) {
-        let language_id = match language_to_lsp_id(self.language) {
+        let language_id = match language_to_lsp_id_opt(self.language) {
             Some(id) => id.to_string(),
             None => return,
         };
@@ -1193,6 +1576,9 @@ impl EditorState {
                 cached_tokens: Vec::new(),
                 line_cache_versions: Vec::new(),
                 buffer_version: 1,
+                is_large_file: false,
+                line_y_offsets: Vec::new(),
+                inline_completion: None,
                 language: Language::Image,
             };
             self.open_in_new_tab(tab);
@@ -1201,14 +1587,14 @@ impl EditorState {
     }
 
     /// 显示不支持的文件提示
-    fn show_unsupported_file(&mut self, path: &PathBuf) {
+    fn show_unsupported_file(&mut self, path: &Path) {
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("unknown");
         let message = format!("不支持的文件格式: .{}\n文件: {}", ext, path.display());
         if self.can_reuse_current_tab() {
-            self.file_path = Some(path.clone());
+            self.file_path = Some(path.to_path_buf());
             self.language = Language::PlainText;
             self.buffer = PieceTable::from_string(message);
             self.reset_editor_state();
@@ -1216,7 +1602,7 @@ impl EditorState {
             self.status_message = format!("不支持的文件格式: .{}", ext);
         } else {
             let tab = Tab {
-                file_path: Some(path.clone()),
+                file_path: Some(path.to_path_buf()),
                 buffer: PieceTable::from_string(message),
                 cursor_line: 0,
                 cursor_col: 0,
@@ -1230,6 +1616,9 @@ impl EditorState {
                 cached_tokens: Vec::new(),
                 line_cache_versions: Vec::new(),
                 buffer_version: 1,
+                is_large_file: false,
+                line_y_offsets: Vec::new(),
+                inline_completion: None,
                 language: Language::PlainText,
             };
             self.open_in_new_tab(tab);
@@ -1237,18 +1626,101 @@ impl EditorState {
         }
     }
 
-    /// 新建文件
-    pub fn new_file(&mut self) {
-        if self.can_reuse_current_tab() {
-            self.buffer = PieceTable::from_string(String::new());
-            self.file_path = None;
-            self.reset_editor_state();
-            self.sync_to_tab();
-            self.status_message = "新文件".to_string();
-        } else {
-            self.open_in_new_tab(Tab::new());
-            self.status_message = "新文件".to_string();
+    /// 新建项目：弹出对话框让用户输入项目名称，确认后在默认项目目录下创建文件夹并打开
+    pub fn new_project(&mut self) {
+        self.new_project_dialog.reset();
+        self.new_project_dialog.visible = true;
+        self.status_message = "新建项目...".to_string();
+        self.emit_event(crate::events::EditorEvent::DialogVisibilityChanged);
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(
+                self.hwnd,
+                crate::window::CARET_TIMER_ID,
+                530,
+                None,
+            );
         }
+    }
+
+    fn kill_caret_timer(&self) {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(
+                self.hwnd,
+                crate::window::CARET_TIMER_ID,
+            );
+        }
+    }
+
+    /// 关闭新建项目对话框
+    pub fn close_new_project_dialog(&mut self) {
+        self.new_project_dialog.visible = false;
+        self.kill_caret_timer();
+        self.emit_event(crate::events::EditorEvent::DialogVisibilityChanged);
+    }
+
+    /// 确认创建项目（由对话框调用）
+    pub fn confirm_new_project(&mut self) {
+        if let Err(e) = self.new_project_dialog.validate() {
+            self.new_project_dialog.error_message = Some(e);
+            return;
+        }
+
+        let project_path = self.new_project_dialog.project_path();
+        self.new_project_dialog.visible = false;
+        self.kill_caret_timer();
+        self.emit_event(crate::events::EditorEvent::DialogVisibilityChanged);
+
+        // 确保基础目录存在
+        if let Some(parent) = project_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                let msg = format!("创建项目目录失败: {}", e);
+                self.status_message = msg.clone();
+                Dialogs::show_error(self.hwnd, "新建项目", &msg);
+                return;
+            }
+        }
+
+        // 创建项目文件夹
+        match std::fs::create_dir(&project_path) {
+            Ok(()) => {
+                self.status_message = format!("项目已创建: {}", project_path.display());
+                // 打开项目文件夹作为工作区
+                self.open_folder(project_path);
+            }
+            Err(e) => {
+                let msg = format!("创建项目失败: {}", e);
+                self.status_message = msg.clone();
+                Dialogs::show_error(self.hwnd, "新建项目", &msg);
+            }
+        }
+    }
+
+    /// 处理新建项目对话框的鼠标点击
+    pub fn handle_new_project_dialog_click(
+        &mut self,
+        mouse_x: f32,
+        mouse_y: f32,
+    ) -> crate::new_project_dialog::NewProjectDialogAction {
+        use crate::new_project_dialog::NewProjectDialogAction;
+        let dialog = &mut self.new_project_dialog;
+
+        if let Some(rect) = &dialog.confirm_btn_rect {
+            if rect.contains(mouse_x, mouse_y) {
+                return NewProjectDialogAction::Confirm;
+            }
+        }
+        if let Some(rect) = &dialog.cancel_btn_rect {
+            if rect.contains(mouse_x, mouse_y) {
+                return NewProjectDialogAction::Cancel;
+            }
+        }
+        if let Some(rect) = &dialog.input_rect {
+            if rect.contains(mouse_x, mouse_y) {
+                dialog.focus_field = 0;
+                return NewProjectDialogAction::FocusInput;
+            }
+        }
+        NewProjectDialogAction::None
     }
 
     /// P4-2: 原子写入文件，避免写入中途崩溃导致文件损坏
@@ -1661,6 +2133,52 @@ impl EditorState {
         let editor_height = editor_region.height.max(1.0);
         let max_scroll = (total_height - editor_height).max(0.0);
         self.scroll_y = (self.scroll_y + delta_y).clamp(0.0, max_scroll);
+        self.emit_event(crate::events::EditorEvent::Scrolled);
+    }
+
+    /// P2.3: 大文件阈值（行数）
+    const LARGE_FILE_LINE_THRESHOLD: usize = 100_000;
+    /// P2.3: 大文件阈值（字节数）
+    const LARGE_FILE_BYTE_THRESHOLD: usize = 5 * 1024 * 1024;
+
+    /// P2.3: 根据当前 buffer 大小更新大文件标记
+    pub fn update_large_file_flag(&mut self) {
+        let line_count = self.buffer.len_lines();
+        let byte_count = self.buffer.len_bytes();
+        self.is_large_file = line_count > Self::LARGE_FILE_LINE_THRESHOLD
+            || byte_count > Self::LARGE_FILE_BYTE_THRESHOLD;
+    }
+
+    /// P2.3: 重建行 Y 偏移前缀和缓存
+    pub fn rebuild_line_y_offsets(&mut self) {
+        let total_lines = self.buffer.len_lines().max(1);
+        if self.line_y_offsets.len() != total_lines {
+            self.line_y_offsets.resize(total_lines, 0.0);
+        }
+        let line_height = self.text_renderer.line_height();
+        let mut y = 0.0;
+        for (i, offset) in self.line_y_offsets.iter_mut().enumerate() {
+            *offset = y;
+            y += line_height;
+            // 大文件时避免浮点误差累积：每 1000 行重新基线
+            if i % 1000 == 0 {
+                y = (i + 1) as f32 * line_height;
+            }
+        }
+    }
+
+    /// P2.1: 计算当前可见行范围 [start_line, end_line)
+    ///
+    /// 返回的行号已限制在 [0, total_lines) 内，end_line 为开区间。
+    pub fn visible_line_range(&self) -> (usize, usize) {
+        let line_height = self.text_renderer.line_height();
+        let editor_region = self.layout.editor_content_region(self.show_tab_bar());
+        let height = editor_region.height.max(line_height);
+        let total_lines = self.cached_lines.len().max(1);
+        let start_line = (self.scroll_y / line_height) as usize;
+        let visible_lines = (height / line_height) as usize + 2;
+        let end_line = (start_line + visible_lines).min(total_lines);
+        (start_line.min(total_lines), end_line)
     }
 
     /// P0-3: 水平滚动。
@@ -1696,6 +2214,7 @@ impl EditorState {
         let max_scroll_x = (max_content_width - text_visible_width).max(0.0);
 
         self.scroll_x = (self.scroll_x + delta_x).clamp(0.0, max_scroll_x);
+        self.emit_event(crate::events::EditorEvent::Scrolled);
     }
 
     /// P0-3: 重置水平滚动（光标跳转、文件加载时调用）
@@ -1732,6 +2251,68 @@ impl EditorState {
             // 光标在可视区右侧，向右滚动（留 1 字符余量）
             self.scroll_x = cursor_x - text_visible_width + char_width;
         }
+    }
+
+    /// REQ-P1-01: 确保光标在垂直方向可见，必要时调整 scroll_y。
+    /// 在光标上下移动后调用。
+    pub fn ensure_cursor_visible_vertical(&mut self) {
+        let line_height = self.text_renderer.line_height();
+        let editor_region = self.layout.editor_region();
+        let editor_height = editor_region.height.max(1.0);
+        let cursor_y = self.cursor_line as f32 * line_height;
+
+        if cursor_y < self.scroll_y {
+            self.scroll_y = cursor_y;
+        } else if cursor_y + line_height > self.scroll_y + editor_height {
+            self.scroll_y = (cursor_y + line_height - editor_height).max(0.0);
+        }
+    }
+
+    /// 跳转到指定 1-based 行/列位置，并确保光标可见。
+    ///
+    /// - line 和 column 均为 1-based（与用户输入一致）。
+    /// - 行号/列号越界时会自动钳制到有效范围。
+    pub fn goto_position(&mut self, line: usize, column: usize) {
+        if self.buffer.len_lines() == 0 {
+            return;
+        }
+
+        let max_line = self.buffer.len_lines().saturating_sub(1);
+        let target_line = line.saturating_sub(1).min(max_line);
+
+        let line_text = self.buffer.get_line(target_line).unwrap_or_default();
+        let target_col =
+            char_offset_to_byte_offset(&line_text, column.saturating_sub(1)).min(line_text.len());
+
+        self.cursor_line = target_line;
+        self.cursor_col = target_col;
+        self.selection_start = None;
+        self.selection_end = None;
+
+        // 同步到当前标签页
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.cursor_line = target_line;
+            tab.cursor_col = target_col;
+            tab.selection_start = None;
+            tab.selection_end = None;
+        }
+
+        // 垂直滚动：让目标行可见
+        let line_height = self.text_renderer.line_height();
+        let editor_region = self.layout.editor_region();
+        let editor_height = editor_region.height.max(1.0);
+        let cursor_y = target_line as f32 * line_height;
+
+        if cursor_y < self.scroll_y {
+            self.scroll_y = cursor_y;
+        } else if cursor_y + line_height > self.scroll_y + editor_height {
+            self.scroll_y = (cursor_y + line_height - editor_height).max(0.0);
+        }
+
+        // 水平滚动：让目标列可见
+        self.ensure_cursor_visible_horizontal();
+
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// 侧边栏滚动（文件树虚拟滚动）
@@ -1785,6 +2366,7 @@ impl EditorState {
             }
             _ => {}
         }
+        self.emit_event(crate::events::EditorEvent::SidebarChanged);
     }
 
     /// 设置剪贴板文本
@@ -1885,7 +2467,7 @@ impl EditorState {
     pub fn execute_command(&mut self, cmd: crate::menu_bar::CommandId, hwnd: HWND) {
         match cmd {
             crate::menu_bar::CommandId::FileNew => {
-                self.new_file();
+                self.new_project();
             }
             crate::menu_bar::CommandId::FileNewWindow => {
                 // 通过 PostMessage 通知窗口过程创建新窗口
@@ -1973,6 +2555,15 @@ impl EditorState {
             crate::menu_bar::CommandId::RunDebug => {
                 self.status_message = "调试功能即将推出".to_string();
             }
+            crate::menu_bar::CommandId::SearchGlobal => {
+                self.search_panel.toggle();
+                if self.search_panel.visible {
+                    self.search_panel.search(self.current_folder.as_deref());
+                }
+            }
+            crate::menu_bar::CommandId::AiFixDiagnostics => {
+                self.ai_fix_diagnostics();
+            }
             crate::menu_bar::CommandId::TerminalNew => {
                 self.layout.toggle_terminal_panel();
                 if self.layout.bottom_panel_visible {
@@ -2037,11 +2628,19 @@ impl EditorState {
         self.folder_generation = self.folder_generation.wrapping_add(1);
         let generation = self.folder_generation;
         self.current_folder = Some(path.clone());
+        // 立即持久化 last_workspace，避免仅在窗口关闭时保存导致下次启动恢复的是旧工作区
+        self.app_settings.ui.last_workspace = self.current_folder.clone();
+        if let Err(e) = self.app_settings.save() {
+            eprintln!("警告: 保存 last_workspace 失败: {}", e);
+        }
         self.status_message = format!("正在扫描: {}...", path.display());
         self.recent_projects.add(&path);
         self.file_tree = Some(FileTree::new());
         // UI-T01: 工作区切换后标题栏需要立即更新，标记全窗口重绘
         self.dirty_tracker.mark_full_window();
+
+        // 初始化 LSP 客户端（启动 rust-analyzer 等语言服务器）
+        self.init_lsp(&path);
 
         let hwnd = self.hwnd;
         let path_clone = path.clone();
@@ -2060,11 +2659,10 @@ impl EditorState {
                 let ptr = Box::into_raw(Box::new(batch));
                 let hwnd = windows::Win32::Foundation::HWND(send_hwnd.0 as *mut std::ffi::c_void);
                 unsafe {
-                    let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                    post_boxed_message_lparam(
                         hwnd,
                         windows::Win32::UI::WindowsAndMessaging::WM_APP + 7,
-                        windows::Win32::Foundation::WPARAM(0),
-                        windows::Win32::Foundation::LPARAM(ptr as isize),
+                        ptr,
                     );
                 }
             }
@@ -2076,11 +2674,10 @@ impl EditorState {
             let ptr = Box::into_raw(Box::new(complete));
             let hwnd = windows::Win32::Foundation::HWND(send_hwnd.0 as *mut std::ffi::c_void);
             unsafe {
-                let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                post_boxed_message_lparam(
                     hwnd,
                     windows::Win32::UI::WindowsAndMessaging::WM_APP + 7,
-                    windows::Win32::Foundation::WPARAM(0),
-                    windows::Win32::Foundation::LPARAM(ptr as isize),
+                    ptr,
                 );
             }
         });
@@ -2165,14 +2762,13 @@ impl EditorState {
                     error: Some(e),
                 },
             };
-            let raw = Box::into_raw(Box::new(result)) as usize;
+            let raw = Box::into_raw(Box::new(result));
             let hwnd = windows::Win32::Foundation::HWND(send_hwnd.0 as *mut std::ffi::c_void);
             unsafe {
-                let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                post_boxed_message_wparam(
                     hwnd,
                     windows::Win32::UI::WindowsAndMessaging::WM_APP + 4,
-                    windows::Win32::Foundation::WPARAM(raw),
-                    windows::Win32::Foundation::LPARAM(0),
+                    raw,
                 );
             }
         });
@@ -2230,14 +2826,13 @@ impl EditorState {
                 target_path: target_path.clone(),
                 error: result.err(),
             };
-            let raw = Box::into_raw(Box::new(payload)) as usize;
+            let raw = Box::into_raw(Box::new(payload));
             let hwnd = windows::Win32::Foundation::HWND(send_hwnd.0 as *mut std::ffi::c_void);
             unsafe {
-                let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                post_boxed_message_wparam(
                     hwnd,
                     windows::Win32::UI::WindowsAndMessaging::WM_APP + 5,
-                    windows::Win32::Foundation::WPARAM(raw),
-                    windows::Win32::Foundation::LPARAM(0),
+                    raw,
                 );
             }
         });
@@ -2458,7 +3053,7 @@ impl EditorState {
 
     /// 在打开的文件夹根目录查找 README 并自动加载
     /// P2-7: 仅在当前标签页为空且未修改时才自动加载，避免覆盖用户已有内容
-    fn try_open_readme(&mut self, folder: &PathBuf) {
+    fn try_open_readme(&mut self, folder: &Path) {
         // 当前标签页有内容或未保存的修改时，不自动加载 README
         if self.is_dirty || self.buffer.len_bytes() > 0 || self.file_path.is_some() {
             return;
@@ -2492,7 +3087,7 @@ impl EditorState {
         self.active_tab = 0;
         self.selected_file_node = None;
         self.welcome_focus_action = None;
-        self.git.detect(&std::path::Path::new("."));
+        self.git.detect(std::path::Path::new("."));
         self.status_bar.update_git_branch(None);
         self.status_message = "已关闭工作区".to_string();
         // UI-T01: 关闭工作区后标题栏需要立即恢复为应用名
@@ -2514,16 +3109,24 @@ impl EditorState {
         }
     }
 
-    fn handle_file_tree_click(&mut self, _mouse_x: f32, mouse_y: f32) -> bool {
+    fn handle_file_tree_click(&mut self, mouse_x: f32, mouse_y: f32) -> bool {
         let tree = match self.file_tree.as_ref() {
             Some(t) => t,
             None => return false,
         };
 
         let mut current_y = 34.0;
-        let result = Self::find_tree_click_target(tree, u32::MAX, mouse_y, &mut current_y);
+        let sidebar_width = self.layout.sidebar_width;
+        let result = Self::find_tree_click_target(
+            tree,
+            u32::MAX,
+            mouse_x,
+            mouse_y,
+            sidebar_width,
+            &mut current_y,
+        );
 
-        if let Some((node_idx, kind)) = result {
+        if let Some((node_idx, kind, part)) = result {
             match kind {
                 FileKind::Directory => {
                     // 读取当前展开状态以决定是否需要懒加载
@@ -2542,23 +3145,32 @@ impl EditorState {
                             node.is_expanded = !node.is_expanded;
                         }
                     }
+                    // 点击名称/图标区域时同时选中该目录
+                    if part == FileTreeClickPart::Label {
+                        self.selected_file_node = Some(node_idx);
+                    }
+                    self.emit_event(crate::events::EditorEvent::SidebarChanged);
                     return true;
                 }
                 FileKind::File => {
-                    self.selected_file_node = Some(node_idx);
-                    if let Some(path) = self.get_node_path(node_idx) {
-                        // 检查该文件是否已在某个标签页中打开
-                        if let Some(existing_tab) = self
-                            .tabs
-                            .iter()
-                            .position(|tab| tab.file_path.as_ref() == Some(&path))
-                        {
-                            // 切换到已打开的标签页
-                            self.switch_tab(existing_tab);
-                        } else {
-                            self.load_file(path);
+                    // 仅点击文件名称/图标区域才打开文件
+                    if part == FileTreeClickPart::Label {
+                        self.selected_file_node = Some(node_idx);
+                        self.emit_event(crate::events::EditorEvent::SidebarChanged);
+                        if let Some(path) = self.get_node_path(node_idx) {
+                            // 检查该文件是否已在某个标签页中打开
+                            if let Some(existing_tab) = self
+                                .tabs
+                                .iter()
+                                .position(|tab| tab.file_path.as_ref() == Some(&path))
+                            {
+                                // 切换到已打开的标签页
+                                self.switch_tab(existing_tab);
+                            } else {
+                                self.load_file(path);
+                            }
+                            return true;
                         }
-                        return true;
                     }
                 }
                 _ => {}
@@ -2584,7 +3196,7 @@ impl EditorState {
         // 检测按钮点击 (Commit, Refresh)
         let button_y = current_y;
         if mouse_y >= button_y && mouse_y < button_y + 26.0 {
-            if mouse_x >= 10.0 && mouse_x < 70.0 {
+            if (10.0..70.0).contains(&mouse_x) {
                 // Commit 按钮
                 if !self.git.commit_message.is_empty() {
                     let msg = self.git.commit_message.clone();
@@ -2592,7 +3204,7 @@ impl EditorState {
                     self.git.commit_message.clear();
                 }
                 return true;
-            } else if mouse_x >= 80.0 && mouse_x < 140.0 {
+            } else if (80.0..140.0).contains(&mouse_x) {
                 // Refresh 按钮
                 self.git.refresh();
                 return true;
@@ -2730,6 +3342,9 @@ impl EditorState {
                             cached_tokens: Vec::new(),
                             line_cache_versions: Vec::new(),
                             buffer_version: 1,
+                            is_large_file: false,
+                            line_y_offsets: Vec::new(),
+                            inline_completion: None,
                             language: Language::PlainText,
                         };
                         self.open_in_new_tab(tab);
@@ -2800,6 +3415,9 @@ impl EditorState {
                     cached_tokens: Vec::new(),
                     line_cache_versions: Vec::new(),
                     buffer_version: 1,
+                    is_large_file: false,
+                    line_y_offsets: Vec::new(),
+                    inline_completion: None,
                     language: Language::PlainText,
                 };
                 self.open_in_new_tab(tab);
@@ -2811,10 +3429,10 @@ impl EditorState {
     }
 
     /// 更新文件树悬停状态，返回是否需要重绘
-    pub fn update_file_tree_hover(&mut self, _mouse_x: f32, mouse_y: f32) -> bool {
+    pub fn update_file_tree_hover(&mut self, mouse_x: f32, mouse_y: f32) -> bool {
         match &self.sidebar_content {
             crate::layout::SidebarContent::FileTree => {
-                self.update_local_tree_hover(_mouse_x, mouse_y)
+                self.update_local_tree_hover(mouse_x, mouse_y)
             }
             crate::layout::SidebarContent::RemoteFileTree => self.update_remote_tree_hover(mouse_y),
             _ => {
@@ -2824,7 +3442,7 @@ impl EditorState {
         }
     }
 
-    fn update_local_tree_hover(&mut self, _mouse_x: f32, mouse_y: f32) -> bool {
+    fn update_local_tree_hover(&mut self, mouse_x: f32, mouse_y: f32) -> bool {
         let tree = match self.file_tree.as_ref() {
             Some(t) => t,
             None => {
@@ -2834,9 +3452,17 @@ impl EditorState {
         };
 
         let mut current_y = 34.0;
-        let result = Self::find_tree_click_target(tree, u32::MAX, mouse_y, &mut current_y);
+        let sidebar_width = self.layout.sidebar_width;
+        let result = Self::find_tree_click_target(
+            tree,
+            u32::MAX,
+            mouse_x,
+            mouse_y,
+            sidebar_width,
+            &mut current_y,
+        );
 
-        let new_hover = result.map(|(idx, _)| idx);
+        let new_hover = result.map(|(idx, _, _)| idx);
         let changed = self.hover_file_node != new_hover;
         self.hover_file_node = new_hover;
         changed
@@ -2854,13 +3480,39 @@ impl EditorState {
         let node_height = 20.0_f32;
         let mut current_y = 10.0 - self.remote_scroll_y;
         let new_hover =
-            match Self::find_remote_node_at_y(&tree.nodes, mouse_y, node_height, &mut current_y) {
-                Some((path, _)) => Some(path),
-                None => None,
-            };
+            Self::find_remote_node_at_y(&tree.nodes, mouse_y, node_height, &mut current_y)
+                .map(|(path, _)| path);
         let changed = self.hover_remote_node != new_hover;
         self.hover_remote_node = new_hover;
         changed
+    }
+
+    /// P3.4: 计算当前悬停文件树节点的 tooltip 文本。
+    ///
+    /// 返回 `Some(text)` 表示应显示 tooltip；`None` 表示无需显示。
+    /// 仅本地文件树有完整路径信息；远程节点 hover_remote_node 本身就是路径。
+    pub fn compute_hover_tooltip_text(&self) -> Option<String> {
+        match &self.sidebar_content {
+            crate::layout::SidebarContent::FileTree => {
+                let node_idx = self.hover_file_node?;
+                let tree = self.file_tree.as_ref()?;
+                let path = file_tree_node_path(tree, node_idx)?;
+                if path.is_empty() {
+                    None
+                } else {
+                    Some(path)
+                }
+            }
+            crate::layout::SidebarContent::RemoteFileTree => {
+                self.hover_remote_node.clone().filter(|s| !s.is_empty())
+            }
+            _ => None,
+        }
+    }
+
+    /// P3.4: 清除当前 hover tooltip
+    pub fn clear_hover_tooltip(&mut self) {
+        self.hover_tooltip = None;
     }
 
     /// 处理 SSH 对话框点击
@@ -2999,6 +3651,22 @@ impl EditorState {
         }
     }
 
+    /// 粘贴到新建项目对话框的项目名称输入框
+    pub fn paste_into_new_project_dialog(&mut self) {
+        if let Some(text) = Self::get_clipboard_text() {
+            // 移除路径分隔符和非法字符
+            self.new_project_dialog
+                .project_name
+                .extend(text.chars().filter(|c| {
+                    !matches!(
+                        c,
+                        '\\' | '/' | ':' | '*' | '?' | '\"' | '<' | '>' | '|' | '\n' | '\r'
+                    )
+                }));
+            self.new_project_dialog.error_message = None;
+        }
+    }
+
     /// 处理 SSH 对话框退格
     pub fn handle_ssh_dialog_backspace(&mut self) {
         match self.ssh_dialog.focus_field {
@@ -3051,7 +3719,7 @@ impl EditorState {
         }
     }
 
-    fn find_node_by_path(tree: &FileTree, target: &PathBuf, base: &PathBuf) -> Option<u32> {
+    fn find_node_by_path(tree: &FileTree, target: &Path, base: &Path) -> Option<u32> {
         // 获取相对于 base 的路径
         let rel_path = target.strip_prefix(base).ok()?;
         let components: Vec<_> = rel_path.components().collect();
@@ -3185,9 +3853,11 @@ impl EditorState {
     fn find_tree_click_target(
         tree: &FileTree,
         parent_idx: u32,
+        mouse_x: f32,
         mouse_y: f32,
+        sidebar_width: f32,
         current_y: &mut f32,
-    ) -> Option<(u32, FileKind)> {
+    ) -> Option<(u32, FileKind, FileTreeClickPart)> {
         let mut child_idx = if parent_idx == u32::MAX {
             tree.first_root_node()
         } else {
@@ -3204,16 +3874,54 @@ impl EditorState {
                     None
                 };
 
+                // 节点按 y 递增排列，鼠标在当前节点上方则后续不可能命中
+                if mouse_y < *current_y {
+                    return None;
+                }
+
                 if mouse_y >= *current_y && mouse_y < *current_y + 20.0 {
-                    return Some((idx, node.kind));
+                    // 计算该节点在渲染时的横向范围，与 render_tree_nodes 保持一致
+                    let base_x = 10.0;
+                    let indent = if node.parent_idx == u32::MAX {
+                        0.0
+                    } else {
+                        node.depth as f32 * 16.0
+                    };
+                    let item_left = base_x + indent;
+                    let item_right = sidebar_width - 10.0;
+
+                    // x 超出节点有效区域视为未命中（避免点击滚动条或空白处误触发）
+                    if mouse_x < item_left - 4.0 || mouse_x > item_right {
+                        return None;
+                    }
+
+                    // 判断点击的是目录展开箭头还是名称/图标区域
+                    let part = if node.kind == FileKind::Directory {
+                        // 箭头区域近似为节点左侧约 20px（"▶ " / "▼ "）
+                        let arrow_right = item_left + 20.0;
+                        if mouse_x < arrow_right {
+                            FileTreeClickPart::Arrow
+                        } else {
+                            FileTreeClickPart::Label
+                        }
+                    } else {
+                        FileTreeClickPart::Label
+                    };
+
+                    return Some((idx, node.kind, part));
                 }
                 *current_y += 20.0;
 
                 // 如果目录展开，递归查找子节点
                 if node.kind == FileKind::Directory && node.is_expanded {
-                    if let Some(result) =
-                        Self::find_tree_click_target(tree, idx, mouse_y, current_y)
-                    {
+                    if let Some(result) = Self::find_tree_click_target(
+                        tree,
+                        idx,
+                        mouse_x,
+                        mouse_y,
+                        sidebar_width,
+                        current_y,
+                    ) {
                         return Some(result);
                     }
                 }
@@ -3257,6 +3965,7 @@ impl EditorState {
             ch.len_utf8(),
         );
         self.status_message = "已修改".to_string();
+        self.emit_edit_events();
         self.lsp_notify_change();
     }
 
@@ -3300,25 +4009,19 @@ impl EditorState {
         };
 
         // 检查是否有选区
-        let has_selection = self
+        let selection = self
             .selection_start
             .zip(self.selection_end)
-            .map(|(s, e)| s != e)
-            .unwrap_or(false);
+            .filter(|(s, e)| s != e);
 
         let pos = self.cursor_byte_pos();
         let before_pieces = self.buffer.get_pieces();
         let before_add_len = self.buffer.add_buffer_len();
         let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
 
-        if has_selection {
+        // C-05: 使用模式匹配代替 unwrap，避免选择状态不一致时 panic
+        if let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) = selection {
             // 包裹选区：在选区开始处插入开括号，在选区结束处插入闭括号
-            // C-02: 使用 zip 一次性解构，避免独立 unwrap 在状态变更后 panic
-            let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) =
-                self.selection_start.zip(self.selection_end)
-            else {
-                return false;
-            };
             // 确保 start < end
             let (start_line, start_col, end_line, end_col) =
                 if (sel_start_line, sel_start_col) <= (sel_end_line, sel_end_col) {
@@ -3336,9 +4039,19 @@ impl EditorState {
             self.buffer.insert(end_byte, &close_str);
             self.buffer.insert(start_byte, &open_str);
 
+            // REQ-P1-05: 更新光标到选区末尾（闭括号之后）
+            // 开括号在 start_byte 插入，若与 end 同行则 end_col 需要加上开括号长度
+            let open_shift = if start_line == end_line {
+                ch.len_utf8()
+            } else {
+                0
+            };
+            self.cursor_line = end_line;
+            self.cursor_col = end_col + open_shift + close_ch.len_utf8();
+
             // 更新选区：保持选中文本不变，扩展到包含括号
             self.selection_start = Some((start_line, start_col));
-            self.selection_end = Some((end_line, end_col + close_ch.len_utf8()));
+            self.selection_end = Some((end_line, end_col + open_shift + close_ch.len_utf8()));
 
             self.is_dirty = true;
             if let Some(tab) = self.tabs.get_mut(self.active_tab) {
@@ -3357,6 +4070,7 @@ impl EditorState {
                 close_str.len() + open_str.len(),
             );
             self.status_message = "已修改".to_string();
+            self.emit_edit_events();
             return true;
         }
 
@@ -3383,6 +4097,7 @@ impl EditorState {
             pair_text.len(),
         );
         self.status_message = "已修改".to_string();
+        self.emit_edit_events();
         true
     }
 
@@ -3400,6 +4115,11 @@ impl EditorState {
         // 清除合成状态显示
         self.composition = None;
         if text.is_empty() {
+            return;
+        }
+        if self.new_project_dialog.visible {
+            self.new_project_dialog.project_name.push_str(&text);
+            self.new_project_dialog.error_message = None;
             return;
         }
         for ch in text.chars() {
@@ -3438,6 +4158,7 @@ impl EditorState {
             tab_text.len(),
         );
         self.status_message = "已修改".to_string();
+        self.emit_edit_events();
     }
 
     pub fn insert_newline(&mut self) {
@@ -3496,6 +4217,7 @@ impl EditorState {
             insert_text.len(),
         );
         self.status_message = "已修改".to_string();
+        self.emit_edit_events();
         self.lsp_notify_change();
     }
 
@@ -3527,6 +4249,8 @@ impl EditorState {
                     0,
                 );
                 self.status_message = "已修改".to_string();
+                // REQ-P1-02: 行内退格也需要触发编辑事件，确保脏矩形标记和即时刷新
+                self.emit_edit_events();
             }
         } else if self.cursor_line > 0 {
             let prev_line = self.cursor_line - 1;
@@ -3561,6 +4285,7 @@ impl EditorState {
                         0,
                     );
                     self.status_message = "已修改".to_string();
+                    self.emit_edit_events();
                 }
             }
         }
@@ -3593,6 +4318,7 @@ impl EditorState {
                 0,
             );
             self.status_message = "已修改".to_string();
+            self.emit_edit_events();
         }
         self.lsp_notify_change();
     }
@@ -3600,19 +4326,44 @@ impl EditorState {
     /// 多光标编辑操作广播
     /// 将插入、删除等操作应用到所有光标位置
     /// 从后往前执行，避免位置偏移问题
+    /// REQ-P0-03: 记录撤销历史，使用 begin_group/end_group 作为原子撤销组
     pub fn broadcast_insert_char(&mut self, ch: char) {
         if self.multi_cursor.cursor_count() <= 1 {
-            // 单光标模式，直接插入
             self.insert_char(ch);
             return;
         }
+
+        // REQ-P0-03: 记录操作前光标位置
+        let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+
+        // REQ-P0-03: 开始撤销组
+        self.history.begin_group();
 
         // 多光标模式：从后往前插入
         let cursors: Vec<_> = self.multi_cursor.cursors.clone();
         for cursor in cursors.iter().rev() {
             let pos = self.line_col_to_byte(cursor.line, cursor.col);
+
+            // REQ-P0-03: 记录缓冲区状态
+            let before_pieces = self.buffer.get_pieces();
+            let before_add_len = self.buffer.add_buffer_len();
+
             self.buffer.insert(pos, &ch.to_string());
+
+            // REQ-P0-03: 记录撤销历史
+            self.history.record(
+                before_pieces,
+                before_add_len,
+                cursor_before,
+                cursor_before,
+                OpType::Insert,
+                pos,
+                ch.len_utf8(),
+            );
         }
+
+        // REQ-P0-03: 结束撤销组
+        self.history.end_group();
 
         // 更新所有光标位置
         for cursor in &mut self.multi_cursor.cursors {
@@ -3620,11 +4371,16 @@ impl EditorState {
         }
 
         self.is_dirty = true;
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.is_dirty = true;
+        }
         self.buffer_version += 1;
         self.status_message = format!("已在 {} 个位置插入", self.multi_cursor.cursor_count());
+        self.emit_edit_events();
     }
 
     /// 多光标删除（退格）广播
+    /// REQ-P0-03: 记录撤销历史，使用 begin_group/end_group 作为原子撤销组
     pub fn broadcast_delete_char(&mut self) {
         if self.multi_cursor.cursor_count() <= 1 {
             self.delete_char();
@@ -3643,10 +4399,34 @@ impl EditorState {
             }
         }
 
+        // REQ-P0-03: 记录操作前光标位置
+        let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+
+        // REQ-P0-03: 开始撤销组
+        self.history.begin_group();
+
         // 执行删除
-        for (start, end) in delete_positions {
-            self.buffer.delete(start, end);
+        for (start, end) in &delete_positions {
+            // REQ-P0-03: 记录缓冲区状态
+            let before_pieces = self.buffer.get_pieces();
+            let before_add_len = self.buffer.add_buffer_len();
+
+            self.buffer.delete(*start, *end);
+
+            // REQ-P0-03: 记录撤销历史
+            self.history.record(
+                before_pieces,
+                before_add_len,
+                cursor_before,
+                cursor_before,
+                OpType::Delete,
+                *start,
+                0,
+            );
         }
+
+        // REQ-P0-03: 结束撤销组
+        self.history.end_group();
 
         // 更新所有光标位置（重新计算）
         for i in 0..self.multi_cursor.cursors.len() {
@@ -3660,21 +4440,51 @@ impl EditorState {
         }
 
         self.is_dirty = true;
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.is_dirty = true;
+        }
         self.buffer_version += 1;
+        self.emit_edit_events();
     }
 
     /// 多光标插入换行广播
+    /// REQ-P0-03: 记录撤销历史，使用 begin_group/end_group 作为原子撤销组
     pub fn broadcast_insert_newline(&mut self) {
         if self.multi_cursor.cursor_count() <= 1 {
             self.insert_newline();
             return;
         }
 
+        // REQ-P0-03: 记录操作前光标位置
+        let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+
+        // REQ-P0-03: 开始撤销组
+        self.history.begin_group();
+
         let cursors: Vec<_> = self.multi_cursor.cursors.clone();
         for cursor in cursors.iter().rev() {
             let pos = self.line_col_to_byte(cursor.line, cursor.col);
+
+            // REQ-P0-03: 记录缓冲区状态
+            let before_pieces = self.buffer.get_pieces();
+            let before_add_len = self.buffer.add_buffer_len();
+
             self.buffer.insert(pos, "\n");
+
+            // REQ-P0-03: 记录撤销历史
+            self.history.record(
+                before_pieces,
+                before_add_len,
+                cursor_before,
+                cursor_before,
+                OpType::Insert,
+                pos,
+                1,
+            );
         }
+
+        // REQ-P0-03: 结束撤销组
+        self.history.end_group();
 
         // 更新所有光标位置
         for cursor in &mut self.multi_cursor.cursors {
@@ -3683,7 +4493,11 @@ impl EditorState {
         }
 
         self.is_dirty = true;
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.is_dirty = true;
+        }
         self.buffer_version += 1;
+        self.emit_edit_events();
     }
 
     /// 撤销
@@ -3740,6 +4554,7 @@ impl EditorState {
                 self.cursor_col = text.len();
             }
         }
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     pub fn move_cursor_right(&mut self) {
@@ -3753,6 +4568,7 @@ impl EditorState {
                 self.cursor_col = 0;
             }
         }
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     pub fn move_cursor_up(&mut self) {
@@ -3762,6 +4578,9 @@ impl EditorState {
                 self.cursor_col = self.cursor_col.min(text.len());
             }
         }
+        // REQ-P1-01: 垂直滚动跟随，确保光标可见
+        self.ensure_cursor_visible_vertical();
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     pub fn move_cursor_down(&mut self) {
@@ -3771,16 +4590,21 @@ impl EditorState {
                 self.cursor_col = self.cursor_col.min(text.len());
             }
         }
+        // REQ-P1-01: 垂直滚动跟随，确保光标可见
+        self.ensure_cursor_visible_vertical();
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     pub fn move_cursor_home(&mut self) {
         self.cursor_col = 0;
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     pub fn move_cursor_end(&mut self) {
         if let Some(text) = self.buffer.get_line(self.cursor_line) {
             self.cursor_col = text.len();
         }
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// P1-6: Smart Home - 跳到行首首个非空白字符。
@@ -3789,6 +4613,7 @@ impl EditorState {
     pub fn move_cursor_smart_home(&mut self, already_at_smart_home: bool) {
         if already_at_smart_home {
             self.cursor_col = 0;
+            self.emit_event(crate::events::EditorEvent::CursorMoved);
             return;
         }
         if let Some(text) = self.buffer.get_line(self.cursor_line) {
@@ -3800,12 +4625,14 @@ impl EditorState {
                 .unwrap_or(text.len());
             self.cursor_col = first_non_ws;
         }
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// P1-6: 移动到文件首行
     pub fn move_cursor_file_start(&mut self) {
         self.cursor_line = 0;
         self.cursor_col = 0;
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// P1-6: 移动到文件末行末列
@@ -3815,17 +4642,22 @@ impl EditorState {
         if let Some(text) = self.buffer.get_line(self.cursor_line) {
             self.cursor_col = text.len();
         }
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// P1-6: 向左移动一个单词。
     /// 跳过当前空白，再跳到上一个单词边界。
+    /// REQ-P0-01: 修复字节/字符索引混淆——cursor_col 是字节偏移，
+    /// 必须先转为字符索引再用于 chars Vec 的索引。
     pub fn move_cursor_word_left(&mut self) {
         if let Some(text) = self.buffer.get_line(self.cursor_line) {
             let chars: Vec<char> = text.chars().collect();
-            let mut idx = self
-                .cursor_col
-                .min(text.len())
-                .saturating_sub(if self.cursor_col > 0 { 1 } else { 0 });
+            // REQ-P0-01: 将字节偏移转为字符索引
+            let byte_offset = self.cursor_col.min(text.len());
+            let mut idx = text[..byte_offset].chars().count();
+            if idx > 0 {
+                idx -= 1;
+            }
 
             // 跳过空白
             while idx > 0 && chars[idx - 1].is_whitespace() {
@@ -3837,9 +4669,9 @@ impl EditorState {
                 while idx > 0 && is_word_char(chars[idx - 1]) {
                     idx -= 1;
                 }
-            } else if idx > 0 {
+            } else {
                 // 非单词字符：跳过一个符号
-                idx -= 1;
+                idx = idx.saturating_sub(1);
             }
             // 转回字节偏移
             let mut byte_col = 0;
@@ -3854,6 +4686,7 @@ impl EditorState {
             self.cursor_line -= 1;
             self.move_cursor_end();
         }
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// P1-6: 向右移动一个单词。
@@ -3889,6 +4722,7 @@ impl EditorState {
             self.cursor_line += 1;
             self.cursor_col = 0;
         }
+        self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// P1-6: 切换行注释（按语言决定注释符号）。
@@ -4285,7 +5119,7 @@ impl EditorState {
         }
         let mut p = pos - 1;
         // P4-1: 使用 byte_at 替代 get_text(p, p+1).as_bytes()[0]，避免 String 堆分配
-        while p > 0 && self.buffer.byte_at(p).map_or(false, |b| (b & 0xC0) == 0x80) {
+        while p > 0 && self.buffer.byte_at(p).is_some_and(|b| (b & 0xC0) == 0x80) {
             p -= 1;
         }
         p
@@ -4298,7 +5132,7 @@ impl EditorState {
         }
         let mut p = pos + 1;
         // P4-1: 使用 byte_at 避免逐字节 String 分配
-        while p < total && self.buffer.byte_at(p).map_or(false, |b| (b & 0xC0) == 0x80) {
+        while p < total && self.buffer.byte_at(p).is_some_and(|b| (b & 0xC0) == 0x80) {
             p += 1;
         }
         p
@@ -4311,30 +5145,36 @@ impl EditorState {
         let ts_lang = language_to_ts_str(self.language);
         let total_lines = self.buffer.len_lines().max(1);
 
+        // P2.3: 大文件检测与行偏移缓存
+        self.update_large_file_flag();
+        self.rebuild_line_y_offsets();
+
         // 如果行数变化，重新调整缓存向量大小
         if self.cached_lines.len() != total_lines {
-            self.cached_lines.resize_with(total_lines, || String::new());
-            self.cached_tokens.resize_with(total_lines, || Vec::new());
+            self.cached_lines.resize_with(total_lines, String::new);
+            self.cached_tokens.resize_with(total_lines, Vec::new);
             self.line_cache_versions.resize(total_lines, 0);
         }
 
         // 调整行号 UTF-16 缓存大小
         if self.cached_line_numbers.len() != total_lines {
-            self.cached_line_numbers
-                .resize_with(total_lines, || Vec::new());
+            self.cached_line_numbers.resize_with(total_lines, Vec::new);
         }
 
         // 只重建可见行范围内的缓存（加上前后各2行的缓冲，避免滚动时闪烁）
         let cache_start = visible_start.saturating_sub(2);
         let cache_end = (visible_end + 2).min(total_lines);
 
+        // P2.3: 大文件模式下跳过语法高亮，只缓存行文本
         // 延迟创建 fallback lexer：仅在 tree-sitter 不支持且至少一行需要重建时才创建
         let mut lexer: Option<Box<dyn aether_core::lexer::Lexer>> = None;
 
         for i in cache_start..cache_end {
             if self.line_cache_versions[i] != self.buffer_version {
                 let line = self.buffer.get_line(i).unwrap_or_default();
-                let tokens = if let Some(lang) = ts_lang {
+                let tokens = if self.is_large_file {
+                    Vec::new()
+                } else if let Some(lang) = ts_lang {
                     // tree-sitter 高亮：返回 Vec<LexemeSpan>，类型与手写 lexer 完全一致
                     self.ts_highlighter.highlight_line(&line, lang)
                 } else {
@@ -4367,8 +5207,8 @@ impl EditorState {
         let total_lines = self.buffer.len_lines().max(1);
 
         if self.cached_lines.len() != total_lines {
-            self.cached_lines.resize_with(total_lines, || String::new());
-            self.cached_tokens.resize_with(total_lines, || Vec::new());
+            self.cached_lines.resize_with(total_lines, String::new);
+            self.cached_tokens.resize_with(total_lines, Vec::new);
             self.line_cache_versions.resize(total_lines, 0);
         }
 
@@ -4420,8 +5260,8 @@ impl EditorState {
 
         if result.line_delta != 0 {
             // 行数变化，重新调整缓存向量
-            self.cached_lines.resize_with(total_lines, || String::new());
-            self.cached_tokens.resize_with(total_lines, || Vec::new());
+            self.cached_lines.resize_with(total_lines, String::new);
+            self.cached_tokens.resize_with(total_lines, Vec::new);
             self.line_cache_versions.resize(total_lines, 0);
         }
 
@@ -4569,6 +5409,7 @@ impl EditorState {
     }
 
     /// 替换所有匹配
+    /// REQ-P0-02: 使用 begin_group/end_group 包裹，记录撤销历史
     pub fn replace_all(&mut self) -> usize {
         if self.find_query.is_empty() || self.find_query == self.replace_text {
             return 0;
@@ -4579,23 +5420,57 @@ impl EditorState {
             return 0;
         }
 
-        // 从后往前替换，避免位置偏移
-        let replacements = self.find_results.clone();
+        // REQ-P1-04: 转换为全局字节偏移，避免替换文本含换行符时行号偏移
         let query_len = self.find_query.len();
         let replace_text = self.replace_text.clone();
+        let mut global_offsets: Vec<usize> = self
+            .find_results
+            .iter()
+            .map(|(line, col)| self.line_byte_start(*line) + *col)
+            .collect();
+        // 降序排序：从文件末尾向前替换，前面的位置不受影响
+        global_offsets.sort_by(|a, b| b.cmp(a));
 
-        for (line, col) in replacements.iter().rev() {
-            let pos = self.line_byte_start(*line) + *col;
+        // REQ-P0-02: 记录替换前的光标位置，用于撤销后恢复
+        let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+
+        // REQ-P0-02: 开始撤销组，所有替换作为一个原子撤销单元
+        self.history.begin_group();
+
+        for pos in global_offsets {
             let end_pos = pos + query_len;
+
+            // REQ-P0-02: 每次替换前记录缓冲区状态
+            let before_pieces = self.buffer.get_pieces();
+            let before_add_len = self.buffer.add_buffer_len();
+
             self.buffer.delete(pos, end_pos);
             self.buffer.insert(pos, &replace_text);
+
+            // REQ-P0-02: 记录每次替换的编辑历史
+            self.history.record(
+                before_pieces,
+                before_add_len,
+                cursor_before,
+                cursor_before,
+                OpType::Replace,
+                pos,
+                replace_text.len(),
+            );
         }
 
+        // REQ-P0-02: 结束撤销组
+        self.history.end_group();
+
         self.is_dirty = true;
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.is_dirty = true;
+        }
         self.buffer_version += 1;
         self.find_results.clear();
         self.find_active_index = 0;
         self.status_message = format!("已替换 {} 处", count);
+        self.emit_edit_events();
         count
     }
 
@@ -4638,6 +5513,311 @@ impl EditorState {
         self.find_focus = FindReplaceFocus::None;
     }
 
+    /// 把当前文件的 LSP 诊断发送给 AI 修复
+    pub fn ai_fix_diagnostics(&mut self) {
+        let settings = self.app_settings.ai.clone();
+        let attachments = vec![
+            AiContextAttachment::CurrentFile,
+            AiContextAttachment::Diagnostics,
+        ];
+        let context = self.gather_context(&attachments);
+        self.ai_panel.clear_input();
+        self.ai_panel.clear_attachments();
+        self.ai_panel.attachments = attachments;
+        self.ai_panel.mode = AiMode::Edit;
+        self.ai_panel.input = "请分析并修复当前文件中的问题。".to_string();
+        let _ = self
+            .ai_panel
+            .send_message_with_prepared_context(&settings, context, AiMode::Edit);
+    }
+
+    /// 初始化 LSP 客户端（在打开工作区文件夹时调用）
+    pub fn init_lsp(&mut self, root_dir: &Path) {
+        // 如果已有 LSP 客户端，先清理
+        self.legacy_lsp_client = None;
+        self.lsp_rx = None;
+        self.lsp_runtime = None;
+
+        let root_uri = url::Url::from_directory_path(root_dir).ok();
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(_) => return,
+        };
+
+        let (client, rx) = aether_lsp::client::LspClient::new(root_uri.clone());
+
+        // 在 tokio 运行时中启动 Rust 语言服务器（如果 rust-analyzer 可用）
+        if let Some(config) = aether_lsp::client::default_server_config("rust") {
+            let config = aether_lsp::types::ServerConfig {
+                root_uri: root_uri.clone(),
+                ..config
+            };
+            let client_clone = std::sync::Arc::new(client);
+            let client_for_spawn = std::sync::Arc::clone(&client_clone);
+            runtime.spawn(async move {
+                let _ = client_for_spawn.start_server("rust", config).await;
+            });
+            self.legacy_lsp_client = Some(client_clone);
+        } else {
+            self.legacy_lsp_client = Some(std::sync::Arc::new(client));
+        }
+
+        self.lsp_rx = Some(rx);
+        self.lsp_runtime = Some(runtime);
+    }
+
+    /// 通知 LSP 服务器文档已打开
+    pub fn lsp_open_document(&mut self, path: &Path, text: &str) {
+        let Some(client) = self.legacy_lsp_client.clone() else {
+            return;
+        };
+        let Some(runtime) = self.lsp_runtime.as_ref() else {
+            return;
+        };
+        let Ok(uri) = url::Url::from_file_path(path) else {
+            return;
+        };
+        let language_id = language_to_lsp_id(self.language).to_string();
+        let text = text.to_string();
+        runtime.spawn(async move {
+            let _ = client.open_document(uri, language_id, text).await;
+        });
+    }
+
+    /// 轮询 LSP 事件，将诊断同步到 LspClient 缓存和 EditorState.diagnostics
+    /// 应在渲染循环中每帧调用
+    pub fn poll_lsp_events(&mut self) {
+        let Some(rx) = self.lsp_rx.as_mut() else {
+            return;
+        };
+        while let Ok(event) = rx.try_recv() {
+            use aether_lsp::client::LspEvent;
+            match event {
+                LspEvent::Diagnostics { uri, diagnostics } => {
+                    // 同时写入 LspClient 诊断缓存（供其他模块查询）
+                    if let Some(client) = self.legacy_lsp_client.as_ref() {
+                        client.update_diagnostics(&uri, diagnostics.clone());
+                    }
+
+                    let path_str = match uri.to_file_path() {
+                        Ok(p) => p.to_string_lossy().to_string(),
+                        Err(()) => uri.as_str().to_string(),
+                    };
+                    let items: Vec<DiagnosticItem> = diagnostics
+                        .iter()
+                        .map(|d| {
+                            use aether_lsp::lsp_types::DiagnosticSeverity;
+                            let severity = match d.severity {
+                                Some(DiagnosticSeverity::ERROR) => 1,
+                                Some(DiagnosticSeverity::WARNING) => 2,
+                                Some(DiagnosticSeverity::INFORMATION) => 3,
+                                Some(DiagnosticSeverity::HINT) => 4,
+                                _ => 1,
+                            };
+                            DiagnosticItem {
+                                severity,
+                                message: d.message.clone(),
+                                line: d.range.start.line as usize + 1,
+                                col: d.range.start.character as usize + 1,
+                                end_line: d.range.end.line as usize + 1,
+                                end_col: d.range.end.character as usize + 1,
+                            }
+                        })
+                        .collect();
+                    if items.is_empty() {
+                        self.diagnostics.remove(&path_str);
+                    } else {
+                        self.diagnostics.insert(path_str, items);
+                    }
+                }
+                LspEvent::ServerReady { language_id } => {
+                    self.status_message = format!("LSP 服务器就绪: {}", language_id);
+                }
+                LspEvent::Log { message, .. } => {
+                    tracing::debug!("LSP: {}", message);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// 根据附件列表收集 AI 上下文
+    pub fn gather_context(&self, attachments: &[AiContextAttachment]) -> String {
+        let mut parts = Vec::new();
+        let current_path = self
+            .file_path
+            .as_deref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "当前文件".to_string());
+        let current_lang = language_str(self.language);
+
+        for attachment in attachments {
+            match attachment {
+                AiContextAttachment::CurrentFile => {
+                    let text = self.buffer.get_text(0, self.buffer.len_bytes());
+                    parts.push(wrap_code_block(
+                        &current_path,
+                        current_lang,
+                        &truncate_middle(&text, 30_000),
+                    ));
+                }
+                AiContextAttachment::Selection => {
+                    if let Some(text) = self.selected_text() {
+                        parts.push(wrap_code_block(
+                            &format!("{} (选区)", current_path),
+                            current_lang,
+                            &truncate_middle(&text, 10_000),
+                        ));
+                    }
+                }
+                AiContextAttachment::OpenFiles => {
+                    let mut summary = String::from("打开的文件列表：\n");
+                    for (i, tab) in self.tabs.iter().enumerate() {
+                        let path = tab
+                            .file_path
+                            .as_deref()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|| format!("未命名-{}", i + 1));
+                        let lang = language_str(tab.language);
+                        let text = tab.buffer.get_text(0, tab.buffer.len_bytes());
+                        summary.push_str(&wrap_code_block(
+                            &path,
+                            lang,
+                            &truncate_middle(&text, 5_000),
+                        ));
+                    }
+                    parts.push(summary);
+                }
+                AiContextAttachment::Diagnostics => {
+                    let current_key = self
+                        .file_path
+                        .as_deref()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let mut all: Vec<&DiagnosticItem> =
+                        self.diagnostics.values().flatten().collect();
+                    // 优先显示当前文件，再按 severity 排序（1=Error, 2=Warning）
+                    all.sort_by_key(|d| {
+                        let is_current = self
+                            .file_path
+                            .as_deref()
+                            .map(|p| p.to_string_lossy().to_string() == current_key)
+                            .unwrap_or(false);
+                        (if is_current { 0 } else { 1 }, d.severity)
+                    });
+                    if all.is_empty() {
+                        parts.push("当前文件暂无 LSP 诊断信息。\n".to_string());
+                    } else {
+                        let mut text = String::from("当前 LSP 诊断：\n");
+                        for d in all.iter().take(20) {
+                            let severity = match d.severity {
+                                1 => "Error",
+                                2 => "Warning",
+                                3 => "Information",
+                                4 => "Hint",
+                                _ => "Diagnostic",
+                            };
+                            text.push_str(&format!(
+                                "[{}] {}:{} {}\n",
+                                severity, d.line, d.col, d.message
+                            ));
+                        }
+                        parts.push(text);
+                    }
+                }
+                AiContextAttachment::FileTree => {
+                    if let Some(tree) = &self.file_tree {
+                        parts.push(format!("工作区文件树：\n{}\n", self.format_file_tree(tree)));
+                    } else {
+                        parts.push("未加载工作区文件树。\n".to_string());
+                    }
+                }
+                AiContextAttachment::CustomText(text) => {
+                    parts.push(format!("用户附加文本：\n{}\n", text));
+                }
+            }
+        }
+
+        parts.join("\n")
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        let (start_line, start_col) = self.selection_start?;
+        let (end_line, end_col) = self.selection_end?;
+        let (first_line, first_col) = if start_line <= end_line {
+            (start_line, start_col)
+        } else {
+            (end_line, end_col)
+        };
+        let (last_line, last_col) = if start_line <= end_line {
+            (end_line, end_col)
+        } else {
+            (start_line, start_col)
+        };
+        let start_byte = self.line_byte_start(first_line) + first_col;
+        let end_byte = self.line_byte_start(last_line) + last_col;
+        if start_byte >= end_byte {
+            return None;
+        }
+        Some(self.buffer.get_text(start_byte, end_byte))
+    }
+
+    fn format_file_tree(&self, tree: &FileTree) -> String {
+        let mut lines = Vec::new();
+        let max_files = 200;
+        for (idx, node) in tree.nodes_iter().enumerate() {
+            if idx >= max_files {
+                lines.push("...".to_string());
+                break;
+            }
+            if node.kind != FileKind::File {
+                continue;
+            }
+            if let Some(path) = file_tree_node_path(tree, idx as u32) {
+                lines.push(path);
+            }
+        }
+        if lines.is_empty() {
+            "(空)".to_string()
+        } else {
+            lines.join("\n")
+        }
+    }
+}
+
+fn language_str(lang: Language) -> &'static str {
+    match lang {
+        Language::C => "c",
+        Language::Rust => "rust",
+        Language::Python => "python",
+        Language::JavaScript => "javascript",
+        Language::TypeScript => "typescript",
+        Language::Json => "json",
+        Language::Markdown => "markdown",
+        Language::Toml => "toml",
+        Language::Html => "html",
+        Language::Css => "css",
+        Language::PlainText => "text",
+        Language::Image => "image",
+    }
+}
+
+/// 将内部 Language 枚举映射为 LSP language_id 字符串
+fn language_to_lsp_id(lang: Language) -> &'static str {
+    match lang {
+        Language::Rust => "rust",
+        Language::Python => "python",
+        Language::JavaScript => "javascript",
+        Language::TypeScript => "typescript",
+        Language::C => "c",
+        _ => "plaintext",
+    }
+}
+
+impl EditorState {
     /// 应用 AI 生成的代码到当前编辑器
     pub fn apply_ai_code(&mut self, code: &str) -> bool {
         if code.is_empty() {
@@ -4730,7 +5910,121 @@ impl EditorState {
         self.status_message = "已插入 AI 代码".to_string();
         true
     }
+
+    /// 应用 AI 生成的工作区编辑（支持修改已打开/未打开的文件以及创建新文件）
+    pub fn apply_ai_workspace_edits(
+        &mut self,
+        edits: &[AiEdit],
+    ) -> std::result::Result<Vec<PathBuf>, String> {
+        let mut applied = Vec::new();
+        let original_tab = self.active_tab;
+
+        for edit in edits {
+            let full_path = self.resolve_edit_path(&edit.path);
+
+            // 找到或创建对应标签页
+            let tab_idx = self
+                .tabs
+                .iter()
+                .position(|t| t.file_path.as_ref() == Some(&full_path));
+            if let Some(idx) = tab_idx {
+                self.switch_tab(idx);
+            } else if full_path.exists() {
+                self.load_file(full_path.clone());
+            } else {
+                self.create_new_file_tab(&full_path);
+            }
+
+            // 应用单个编辑
+            let old_text = self.buffer.get_text(0, self.buffer.len_bytes());
+            let new_text = if edit.search.trim().is_empty() {
+                edit.replace.clone()
+            } else {
+                match old_text.find(&edit.search) {
+                    Some(pos) => {
+                        let mut replaced = old_text.clone();
+                        replaced.replace_range(pos..pos + edit.search.len(), &edit.replace);
+                        replaced
+                    }
+                    None => {
+                        return Err(format!(
+                            "无法在 {} 中找到要替换的代码片段",
+                            full_path.display()
+                        ));
+                    }
+                }
+            };
+
+            let len = self.buffer.len_bytes();
+            self.buffer.delete(0, len);
+            self.buffer.insert(0, &new_text);
+            self.is_dirty = true;
+            self.buffer_version += 1;
+            self.status_message = format!("已应用 AI 编辑: {}", full_path.display());
+            applied.push(full_path);
+        }
+
+        // 尽量回到原来的标签页
+        if original_tab < self.tabs.len() {
+            self.switch_tab(original_tab);
+        }
+
+        Ok(applied)
+    }
+
+    pub(crate) fn resolve_edit_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            return path.to_path_buf();
+        }
+        self.current_folder
+            .as_ref()
+            .map(|root| root.join(path))
+            .unwrap_or_else(|| path.to_path_buf())
+    }
+
+    fn create_new_file_tab(&mut self, path: &Path) {
+        let lang = Language::from_path(path);
+        let tab = Tab {
+            file_path: Some(path.to_path_buf()),
+            buffer: PieceTable::from_string(String::new()),
+            cursor_line: 0,
+            cursor_col: 0,
+            selection_start: None,
+            selection_end: None,
+            scroll_y: 0.0,
+            scroll_x: 0.0,
+            history: History::new(),
+            is_dirty: true,
+            cached_lines: Vec::new(),
+            cached_tokens: Vec::new(),
+            line_cache_versions: Vec::new(),
+            buffer_version: 1,
+            is_large_file: false,
+            line_y_offsets: Vec::new(),
+            inline_completion: None,
+            language: lang,
+        };
+        self.open_in_new_tab(tab);
+    }
 }
+
+/// 已知二进制文件扩展名（黑名单）
+const BINARY_EXTENSIONS: &[&str] = &[
+    // 图片
+    "png", "jpg", "jpeg", "gif", "bmp", "webp", "ico", "tiff", "tif", "raw", "psd", "ai", "sketch",
+    "fig", // 音视频
+    "mp4", "avi", "mov", "wmv", "flv", "mkv", "webm", "mp3", "wav", "flac", "aac", "ogg", "wma",
+    "m4a", // 压缩/归档
+    "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "lz4", "br", "deb", "rpm", "msi", "dmg", "pkg",
+    "apk", "ipa", // 可执行/库
+    "exe", "dll", "so", "dylib", "bin", "elf", "o", "obj", "lib", "a", "pdb", "ilk",
+    // 字体
+    "ttf", "otf", "woff", "woff2", "eot", // 文档/办公（二进制格式）
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
+    // 数据库/缓存
+    "db", "sqlite", "sqlite3", "mdb", "accdb", "cache", // 其他二进制
+    "class", "jar", "war", "ear", "pyc", "pyo", "o", "lo", "la",
+];
 
 /// 将 aether-core 的 Language 枚举映射到 tree-sitter highlighter 接受的语言字符串。
 /// 返回 None 的语言（Markdown/Html/Css/PlainText/Image）由调用方 fallback 到手写 lexer。
@@ -4749,10 +6043,10 @@ fn language_to_ts_str(lang: Language) -> Option<&'static str> {
     }
 }
 
-/// 将 Language 枚举映射到 LSP language_id 字符串。
+/// 将 Language 枚举映射到 LSP language_id 字符串（Option 版本，供新 LSP 集成使用）。
 /// 仅返回有默认 server 配置的语言（rust/python/typescript/javascript/c）。
 /// 其他语言（Json/Toml/Markdown/Html/Css/PlainText/Image）返回 None，不启动 LSP。
-fn language_to_lsp_id(lang: Language) -> Option<&'static str> {
+fn language_to_lsp_id_opt(lang: Language) -> Option<&'static str> {
     match lang {
         Language::Rust => Some("rust"),
         Language::Python => Some("python"),
@@ -4795,74 +6089,117 @@ fn extract_hover_text(hover: &lsp_types::Hover) -> Option<String> {
     }
 }
 
-/// 检查文件是否为文本文件
-pub(crate) fn is_text_file(path: &std::path::Path) -> bool {
-    // 已知的文本文件扩展名
-    let text_extensions = [
-        "txt",
-        "rs",
-        "c",
-        "h",
-        "cpp",
-        "hpp",
-        "cc",
-        "cxx",
-        "js",
-        "jsx",
-        "mjs",
-        "cjs",
-        "ts",
-        "tsx",
-        "mts",
-        "cts",
-        "json",
-        "md",
-        "markdown",
-        "py",
-        "pyw",
-        "pyi",
-        "toml",
-        "yaml",
-        "yml",
-        "xml",
-        "html",
-        "htm",
-        "css",
-        "scss",
-        "sass",
-        "less",
-        "java",
-        "kt",
-        "go",
-        "rb",
-        "php",
-        "swift",
-        "sh",
-        "bash",
-        "zsh",
-        "ps1",
-        "bat",
-        "cmd",
-        "sql",
-        "lua",
-        "r",
-        "pl",
-        "pm",
-        "t",
-        "ini",
-        "cfg",
-        "conf",
-        "properties",
-        "log",
-        "csv",
-        "tsv",
-    ];
+/// 已知文本扩展名白名单：跳过内容探测，直接视为文本文件。
+/// 避免对常见代码/标记文件做不必要的 UTF-8 扫描和磁盘读取。
+const TEXT_EXTENSIONS: &[&str] = &[
+    // 网页/模板/小程序标记
+    "html",
+    "htm",
+    "xhtml",
+    "xml",
+    "svg",
+    "vue",
+    "svelte",
+    "wxml",
+    "axml",
+    "ftl",
+    "jinja",
+    "j2",
+    "njk",
+    "mustache",
+    "handlebars",
+    "hbs",
+    "ejs",
+    "erb",
+    "haml",
+    "pug",
+    "jade",
+    "liquid",
+    "razor",
+    "cshtml",
+    "wxml",
+    "wxss",
+    // 样式
+    "css",
+    "scss",
+    "sass",
+    "less",
+    "styl",
+    "stylus",
+    "acss",
+    // 脚本/语言
+    "js",
+    "jsx",
+    "mjs",
+    "cjs",
+    "ts",
+    "tsx",
+    "rs",
+    "py",
+    "pyw",
+    "pyi",
+    "pyx",
+    "pxd",
+    "c",
+    "h",
+    "cpp",
+    "hpp",
+    "cc",
+    "cxx",
+    "m",
+    "mm",
+    "go",
+    "java",
+    "kt",
+    "swift",
+    "rb",
+    "php",
+    "cs",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "ps1",
+    "psm1",
+    "psd1",
+    "bat",
+    "cmd",
+    "vbs",
+    // 数据/配置
+    "json",
+    "jsonc",
+    "jsonl",
+    "toml",
+    "ini",
+    "cfg",
+    "conf",
+    "config",
+    "yaml",
+    "yml",
+    "properties",
+    // 文档
+    "md",
+    "markdown",
+    "mdx",
+    "txt",
+    "text",
+    "log",
+];
 
+/// 检查文件是否为文本文件
+/// 策略：
+/// 1. 已知文本扩展名直接视为文本（避免磁盘读取）。
+/// 2. 已知二进制扩展名直接排除。
+/// 3. 否则读取前 8KB：有效 UTF-8 或高比例 ASCII 可打印字符视为文本。
+pub(crate) fn is_text_file(path: &std::path::Path) -> bool {
     if let Some(ext) = path.extension() {
         if let Some(ext_str) = ext.to_str() {
             let ext_lower = ext_str.to_lowercase();
-            if text_extensions.contains(&ext_lower.as_str()) {
+            if TEXT_EXTENSIONS.contains(&ext_lower.as_str()) {
                 return true;
+            }
+            if BINARY_EXTENSIONS.contains(&ext_lower.as_str()) {
+                return false;
             }
         }
     }
@@ -4877,7 +6214,11 @@ pub(crate) fn is_text_file(path: &std::path::Path) -> bool {
             if sample.contains(&0) {
                 return false;
             }
-            // 检查是否主要是可打印字符
+            // 若样本是有效 UTF-8，则视为文本文件（支持中文、emoji 等多字节内容）
+            if std::str::from_utf8(sample).is_ok() {
+                return true;
+            }
+            // 回退：检查是否主要是可打印 ASCII 字符
             let printable_count = sample
                 .iter()
                 .filter(|&&b| {
@@ -4890,5 +6231,215 @@ pub(crate) fn is_text_file(path: &std::path::Path) -> bool {
         }
     }
 
-    false
+    // 无扩展名且无法读取内容时，保守视为文本（如 UNIX 可执行脚本）
+    path.extension().is_none()
+}
+
+/// 将字符偏移量转换为字节偏移量。
+///
+/// 编辑器内部使用字节偏移表示光标列，但用户输入的列号是字符位置。
+/// 该函数按 Unicode 标量值计数，返回对应字符起始位置的字节索引。
+fn char_offset_to_byte_offset(text: &str, char_offset: usize) -> usize {
+    if char_offset == 0 {
+        return 0;
+    }
+
+    text.char_indices()
+        .nth(char_offset)
+        .map(|(byte_idx, _)| byte_idx)
+        .unwrap_or(text.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aether_core::workspace::file_tree::FileTree;
+
+    #[test]
+    fn test_hover_tooltip_new_and_is_empty() {
+        let t = HoverTooltip::new("hello", 10.0, 20.0, 300.0);
+        assert_eq!(t.text, "hello");
+        assert_eq!(t.x, 10.0);
+        assert_eq!(t.y, 20.0);
+        assert_eq!(t.max_width, 300.0);
+        assert!(!t.is_empty());
+
+        let empty = HoverTooltip::new(String::new(), 0.0, 0.0, 0.0);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_hover_tooltip_equality() {
+        let a = HoverTooltip::new("x", 1.0, 2.0, 3.0);
+        let b = HoverTooltip::new("x", 1.0, 2.0, 3.0);
+        let c = HoverTooltip::new("y", 1.0, 2.0, 3.0);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn test_file_tree_node_path_single_root() {
+        let mut tree = FileTree::new();
+        let root = tree.add_node("src", FileKind::Directory, u32::MAX, 0);
+        let path = file_tree_node_path(&tree, root).expect("应返回路径");
+        assert_eq!(path, "src");
+    }
+
+    #[test]
+    fn test_file_tree_node_path_nested() {
+        let mut tree = FileTree::new();
+        let src = tree.add_node("src", FileKind::Directory, u32::MAX, 0);
+        let main = tree.add_node("main.rs", FileKind::File, src, 1);
+        let path = file_tree_node_path(&tree, main).expect("应返回路径");
+        assert_eq!(path, "src/main.rs");
+    }
+
+    #[test]
+    fn test_file_tree_node_path_deep_nested() {
+        let mut tree = FileTree::new();
+        let a = tree.add_node("a", FileKind::Directory, u32::MAX, 0);
+        let b = tree.add_node("b", FileKind::Directory, a, 1);
+        let c = tree.add_node("c", FileKind::Directory, b, 2);
+        let f = tree.add_node("f.txt", FileKind::File, c, 3);
+        let path = file_tree_node_path(&tree, f).expect("应返回路径");
+        assert_eq!(path, "a/b/c/f.txt");
+    }
+
+    #[test]
+    fn test_file_tree_node_path_invalid_index_returns_none() {
+        let tree = FileTree::new();
+        assert!(file_tree_node_path(&tree, 999).is_none());
+    }
+
+    #[test]
+    fn test_language_str() {
+        assert_eq!(language_str(Language::Rust), "rust");
+        assert_eq!(language_str(Language::C), "c");
+        assert_eq!(language_str(Language::Python), "python");
+        assert_eq!(language_str(Language::PlainText), "text");
+        assert_eq!(language_str(Language::Image), "image");
+    }
+
+    #[test]
+    fn test_language_to_lsp_id() {
+        assert_eq!(language_to_lsp_id(Language::Rust), "rust");
+        assert_eq!(language_to_lsp_id(Language::Python), "python");
+        assert_eq!(language_to_lsp_id(Language::JavaScript), "javascript");
+        assert_eq!(language_to_lsp_id(Language::TypeScript), "typescript");
+        assert_eq!(language_to_lsp_id(Language::C), "c");
+        assert_eq!(language_to_lsp_id(Language::PlainText), "plaintext");
+        assert_eq!(language_to_lsp_id(Language::Markdown), "plaintext");
+    }
+
+    #[test]
+    fn test_char_offset_to_byte_offset() {
+        assert_eq!(char_offset_to_byte_offset("hello", 0), 0);
+        assert_eq!(char_offset_to_byte_offset("hello", 2), 2);
+        assert_eq!(char_offset_to_byte_offset("héllo", 3), 4); // é 占 2 字节
+        assert_eq!(char_offset_to_byte_offset("héllo", 10), 6); // 越界返回末尾
+        assert_eq!(char_offset_to_byte_offset("", 1), 0);
+    }
+
+    #[test]
+    fn test_is_text_file_by_extension() {
+        assert!(is_text_file(Path::new("main.rs")));
+        assert!(is_text_file(Path::new("README.md")));
+        assert!(is_text_file(Path::new("config.yaml")));
+        assert!(!is_text_file(Path::new("image.png")));
+        assert!(!is_text_file(Path::new("archive.zip")));
+    }
+
+    #[test]
+    fn test_is_text_file_by_content() {
+        let dir = std::env::temp_dir().join(format!("aether_text_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let text_file = dir.join("plain");
+        std::fs::write(&text_file, "hello world\n中文\n").unwrap();
+        assert!(is_text_file(&text_file));
+
+        let bin_file = dir.join("binary");
+        std::fs::write(&bin_file, vec![0u8, 1, 2, 3, 0, 5]).unwrap();
+        assert!(!is_text_file(&bin_file));
+
+        let no_ext = dir.join("script");
+        std::fs::write(&no_ext, "#!/bin/sh\necho hi\n").unwrap();
+        assert!(is_text_file(&no_ext));
+
+        let missing = dir.join("does_not_exist");
+        assert!(is_text_file(&missing)); // 无扩展名且无法读取，保守视为文本
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_language_str_all_variants() {
+        use Language::*;
+        assert_eq!(language_str(C), "c");
+        assert_eq!(language_str(Rust), "rust");
+        assert_eq!(language_str(Python), "python");
+        assert_eq!(language_str(JavaScript), "javascript");
+        assert_eq!(language_str(TypeScript), "typescript");
+        assert_eq!(language_str(Json), "json");
+        assert_eq!(language_str(Markdown), "markdown");
+        assert_eq!(language_str(Toml), "toml");
+        assert_eq!(language_str(Html), "html");
+        assert_eq!(language_str(Css), "css");
+        assert_eq!(language_str(PlainText), "text");
+        assert_eq!(language_str(Image), "image");
+    }
+
+    #[test]
+    fn test_language_to_lsp_id_other_languages() {
+        use Language::*;
+        assert_eq!(language_to_lsp_id(Markdown), "plaintext");
+        assert_eq!(language_to_lsp_id(Json), "plaintext");
+        assert_eq!(language_to_lsp_id(Html), "plaintext");
+        assert_eq!(language_to_lsp_id(Image), "plaintext");
+    }
+
+    #[test]
+    fn test_atomic_write() {
+        let dir = std::env::temp_dir().join(format!("aether_atomic_write_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("out.txt");
+        EditorState::atomic_write(&target, b"atomic data").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "atomic data");
+        EditorState::atomic_write(&target, b"updated").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "updated");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_find_node_by_path() {
+        let mut tree = FileTree::new();
+        let root = tree.add_node("project", FileKind::Directory, u32::MAX, 0);
+        let src = tree.add_node("src", FileKind::Directory, root, 1);
+        let main = tree.add_node("main.rs", FileKind::File, src, 2);
+        let _lib = tree.add_node("lib.rs", FileKind::File, src, 2);
+
+        // find_node_by_path 以第一个根节点为起点，base 应为该根节点对应的路径
+        let base = Path::new("/workspace/project");
+        let target = Path::new("/workspace/project/src/main.rs");
+        assert_eq!(
+            EditorState::find_node_by_path(&tree, target, base),
+            Some(main)
+        );
+
+        assert!(EditorState::find_node_by_path(
+            &tree,
+            Path::new("/workspace/project/src/missing.rs"),
+            base
+        )
+        .is_none());
+        assert!(EditorState::find_node_by_path(
+            &tree,
+            Path::new("/other/project/src/main.rs"),
+            base
+        )
+        .is_none());
+        assert!(EditorState::find_node_by_path(&tree, base, base).is_none());
+    }
 }

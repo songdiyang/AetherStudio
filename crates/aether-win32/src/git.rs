@@ -62,8 +62,8 @@ impl GitRepository {
         let head_path = path.join(".git").join("HEAD");
         if let Ok(content) = std::fs::read_to_string(&head_path) {
             let content = content.trim();
-            if content.starts_with("ref: refs/heads/") {
-                return Some(content[16..].to_string());
+            if let Some(branch) = content.strip_prefix("ref: refs/heads/") {
+                return Some(branch.to_string());
             }
             // 分离 HEAD（detached HEAD）
             return Some(content.get(..7).unwrap_or(content).to_string());
@@ -86,7 +86,7 @@ impl GitRepository {
         let mut untracked = Vec::new();
 
         if let Ok(output) = Command::new("git")
-            .args(&["status", "--porcelain", "-u"])
+            .args(["status", "--porcelain", "-u"])
             .current_dir(path)
             .output()
         {
@@ -96,7 +96,7 @@ impl GitRepository {
                     if line.len() >= 3 {
                         let bytes = line.as_bytes();
                         // H-29: 使用字节索引获取状态字符，避免多字节 UTF-8 panic
-                        let index_status = bytes.get(0).copied().map(|b| b as char).unwrap_or(' ');
+                        let index_status = bytes.first().copied().map(|b| b as char).unwrap_or(' ');
                         let worktree_status =
                             bytes.get(1).copied().map(|b| b as char).unwrap_or(' ');
                         // H-30: 处理重命名文件的箭头标记，取最后一个路径

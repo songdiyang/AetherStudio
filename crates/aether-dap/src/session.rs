@@ -1,3 +1,5 @@
+#![allow(clippy::items_after_test_module)]
+
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::process::Child;
@@ -41,15 +43,14 @@ impl DebugSession {
         event_tx: mpsc::UnboundedSender<DapEventUi>,
     ) -> std::io::Result<Self> {
         let mut process = spawn_adapter(&config).await?;
-        let stdin = process.stdin.take().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::Other, "Failed to capture adapter stdin")
-        })?;
-        let stdout = process.stdout.take().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to capture adapter stdout",
-            )
-        })?;
+        let stdin = process
+            .stdin
+            .take()
+            .ok_or_else(|| std::io::Error::other("Failed to capture adapter stdin"))?;
+        let stdout = process
+            .stdout
+            .take()
+            .ok_or_else(|| std::io::Error::other("Failed to capture adapter stdout"))?;
         // H-04: 单独取出 stderr，保留 Child 句柄以便后续 kill
         let stderr = process.stderr.take().ok_or_else(|| {
             std::io::Error::new(
@@ -95,6 +96,7 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
+            message_type: "request".into(),
             command: "initialize".to_string(),
             arguments: Some(args),
         });
@@ -110,10 +112,10 @@ impl DebugSession {
                         if resp.success {
                             break Ok(());
                         } else {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("initialize failed: {}", resp.message.unwrap_or_default()),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "initialize failed: {}",
+                                resp.message.unwrap_or_default()
+                            )));
                         }
                     }
                     DapMessage::Event(evt) => {
@@ -159,6 +161,7 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
+            message_type: "request".into(),
             command: "launch".to_string(),
             arguments: Some(launch_args),
         });
@@ -175,10 +178,10 @@ impl DebugSession {
                             self.state = DebugSessionState::Running;
                             break;
                         } else {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("launch failed: {}", resp.message.unwrap_or_default()),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "launch failed: {}",
+                                resp.message.unwrap_or_default()
+                            )));
                         }
                     }
                     DapMessage::Event(evt) => {
@@ -216,6 +219,7 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
+            message_type: "request".into(),
             command: "setBreakpoints".to_string(),
             arguments: Some(args),
         });
@@ -228,13 +232,10 @@ impl DebugSession {
                 match message {
                     DapMessage::Response(resp) if resp.command == "setBreakpoints" => {
                         if !resp.success {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!(
-                                    "setBreakpoints failed: {}",
-                                    resp.message.unwrap_or_default()
-                                ),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "setBreakpoints failed: {}",
+                                resp.message.unwrap_or_default()
+                            )));
                         }
                         let body = resp.body.unwrap_or(serde_json::json!({"breakpoints": []}));
                         let breakpoints: Vec<Breakpoint> = serde_json::from_value(
@@ -295,6 +296,7 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
+            message_type: "request".into(),
             command: "stackTrace".to_string(),
             arguments: Some(args),
         });
@@ -307,10 +309,10 @@ impl DebugSession {
                 match message {
                     DapMessage::Response(resp) if resp.command == "stackTrace" => {
                         if !resp.success {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("stackTrace failed: {}", resp.message.unwrap_or_default()),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "stackTrace failed: {}",
+                                resp.message.unwrap_or_default()
+                            )));
                         }
                         let body = resp.body.unwrap_or(serde_json::json!({"stackFrames": []}));
                         let frames: Vec<StackFrame> = serde_json::from_value(
@@ -341,6 +343,7 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
+            message_type: "request".into(),
             command: "scopes".to_string(),
             arguments: Some(args),
         });
@@ -353,10 +356,10 @@ impl DebugSession {
                 match message {
                     DapMessage::Response(resp) if resp.command == "scopes" => {
                         if !resp.success {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("scopes failed: {}", resp.message.unwrap_or_default()),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "scopes failed: {}",
+                                resp.message.unwrap_or_default()
+                            )));
                         }
                         let body = resp.body.unwrap_or(serde_json::json!({"scopes": []}));
                         let scopes: Vec<Scope> = serde_json::from_value(
@@ -387,6 +390,7 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
+            message_type: "request".into(),
             command: "variables".to_string(),
             arguments: Some(args),
         });
@@ -399,10 +403,10 @@ impl DebugSession {
                 match message {
                     DapMessage::Response(resp) if resp.command == "variables" => {
                         if !resp.success {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("variables failed: {}", resp.message.unwrap_or_default()),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "variables failed: {}",
+                                resp.message.unwrap_or_default()
+                            )));
                         }
                         let body = resp.body.unwrap_or(serde_json::json!({"variables": []}));
                         let variables: Vec<Variable> = serde_json::from_value(
@@ -444,6 +448,7 @@ impl DebugSession {
 
         let request = DapMessage::Request(DapRequest {
             seq,
+            message_type: "request".into(),
             command: "evaluate".to_string(),
             arguments: Some(args),
         });
@@ -456,10 +461,10 @@ impl DebugSession {
                 match message {
                     DapMessage::Response(resp) if resp.command == "evaluate" => {
                         if !resp.success {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("evaluate failed: {}", resp.message.unwrap_or_default()),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "evaluate failed: {}",
+                                resp.message.unwrap_or_default()
+                            )));
                         }
                         let body = resp.body.unwrap_or(serde_json::json!({"result": ""}));
                         let result = body
@@ -553,6 +558,7 @@ impl DebugSession {
         let seq = self.seq_generator.next();
         let request = DapMessage::Request(DapRequest {
             seq,
+            message_type: "request".into(),
             command: command.to_string(),
             arguments: Some(arguments),
         });
@@ -567,10 +573,11 @@ impl DebugSession {
                         if resp.success {
                             break;
                         } else {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("{} failed: {}", command, resp.message.unwrap_or_default()),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "{} failed: {}",
+                                command,
+                                resp.message.unwrap_or_default()
+                            )));
                         }
                     }
                     DapMessage::Event(evt) => {
@@ -674,6 +681,436 @@ impl DebugSession {
             _ => {}
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::DapTransport;
+    use tokio::io::duplex;
+
+    fn setup() -> (
+        DebugSession,
+        DapTransport,
+        mpsc::UnboundedReceiver<DapEventUi>,
+    ) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (client_in, adapter_in) = duplex(64 * 1024);
+        let (adapter_out, client_out) = duplex(64 * 1024);
+        let transport = DapTransport::new_from_parts(client_in, client_out);
+        let session = DebugSession::with_transport(transport, tx);
+        let fake = DapTransport::new_from_parts(adapter_out, adapter_in);
+        (session, fake, rx)
+    }
+
+    fn success_response(command: &str, body: Option<serde_json::Value>) -> DapMessage {
+        DapMessage::Response(DapResponse {
+            seq: 100,
+            message_type: "response".into(),
+            request_seq: 1,
+            success: true,
+            command: command.into(),
+            body,
+            message: None,
+        })
+    }
+
+    fn failure_response(command: &str, message: &str) -> DapMessage {
+        DapMessage::Response(DapResponse {
+            seq: 100,
+            message_type: "response".into(),
+            request_seq: 1,
+            success: false,
+            command: command.into(),
+            body: None,
+            message: Some(message.into()),
+        })
+    }
+
+    fn event_message(event: &str, body: serde_json::Value) -> DapMessage {
+        DapMessage::Event(DapEvent {
+            seq: 200,
+            message_type: "event".into(),
+            event: event.into(),
+            body: Some(body),
+        })
+    }
+
+    #[tokio::test]
+    async fn start_fails_without_command() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let config = AdapterConfig::default();
+        match DebugSession::start(config, tx).await {
+            Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput),
+            Ok(_) => panic!("expected start to fail"),
+        }
+    }
+
+    #[tokio::test]
+    async fn initialize_success_sets_running() {
+        let (mut session, mut fake, _rx) = setup();
+        fake.send(&success_response("initialize", None))
+            .await
+            .unwrap();
+        session.initialize().await.unwrap();
+        assert_eq!(*session.state(), DebugSessionState::Running);
+    }
+
+    #[tokio::test]
+    async fn initialize_failure_returns_error() {
+        let (mut session, mut fake, _rx) = setup();
+        fake.send(&failure_response("initialize", "unsupported"))
+            .await
+            .unwrap();
+        let err = session.initialize().await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Other);
+    }
+
+    #[tokio::test]
+    async fn initialize_routes_events_before_response() {
+        let (mut session, mut fake, mut rx) = setup();
+        fake.send(&event_message(
+            "stopped",
+            serde_json::json!({"reason": "breakpoint", "threadId": 7}),
+        ))
+        .await
+        .unwrap();
+        fake.send(&success_response("initialize", None))
+            .await
+            .unwrap();
+
+        session.initialize().await.unwrap();
+        assert_eq!(*session.state(), DebugSessionState::Running);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(DapEventUi::Stopped {
+                reason,
+                thread_id: Some(7)
+            }) if reason == "breakpoint"
+        ));
+    }
+
+    #[tokio::test]
+    async fn launch_success() {
+        let (mut session, mut fake, _rx) = setup();
+        fake.send(&success_response("launch", None)).await.unwrap();
+        session.launch("/bin/app", vec![], None).await.unwrap();
+        assert_eq!(*session.state(), DebugSessionState::Running);
+    }
+
+    #[tokio::test]
+    async fn launch_failure_returns_error() {
+        let (mut session, mut fake, _rx) = setup();
+        fake.send(&failure_response("launch", "program not found"))
+            .await
+            .unwrap();
+        let err = session.launch("/bin/app", vec![], None).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Other);
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_success() {
+        let (mut session, mut fake, _rx) = setup();
+        let body = serde_json::json!({
+            "breakpoints": [
+                {"id": 1, "verified": true, "line": 10},
+                {"id": 2, "verified": false, "line": 20},
+            ]
+        });
+        fake.send(&success_response("setBreakpoints", Some(body)))
+            .await
+            .unwrap();
+        let bps = session
+            .set_breakpoints("/src/main.rs", vec![10, 20])
+            .await
+            .unwrap();
+        assert_eq!(bps.len(), 2);
+        assert_eq!(bps[0].id, Some(1));
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_failure_returns_error() {
+        let (mut session, mut fake, _rx) = setup();
+        fake.send(&failure_response("setBreakpoints", "invalid source"))
+            .await
+            .unwrap();
+        let err = session
+            .set_breakpoints("/src/main.rs", vec![10])
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Other);
+    }
+
+    #[tokio::test]
+    async fn continue_execution_success() {
+        let (mut session, mut fake, _rx) = setup();
+        fake.send(&success_response("continue", None))
+            .await
+            .unwrap();
+        session.continue_execution(1).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn next_failure_returns_error() {
+        let (mut session, mut fake, _rx) = setup();
+        fake.send(&failure_response("next", "not paused"))
+            .await
+            .unwrap();
+        let err = session.next(1).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Other);
+    }
+
+    #[tokio::test]
+    async fn step_in_success() {
+        let (mut session, mut fake, _rx) = setup();
+        fake.send(&success_response("stepIn", None)).await.unwrap();
+        session.step_in(1).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn step_out_failure_returns_error() {
+        let (mut session, mut fake, _rx) = setup();
+        fake.send(&failure_response("stepOut", "not paused"))
+            .await
+            .unwrap();
+        let err = session.step_out(1).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Other);
+    }
+
+    #[tokio::test]
+    async fn pause_success() {
+        let (mut session, mut fake, _rx) = setup();
+        fake.send(&success_response("pause", None)).await.unwrap();
+        session.pause(1).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stack_trace_success() {
+        let (mut session, mut fake, _rx) = setup();
+        let body = serde_json::json!({
+            "stackFrames": [
+                {"id": 1, "name": "main", "line": 10, "column": 1},
+                {"id": 2, "name": "foo", "line": 20, "column": 1},
+            ]
+        });
+        fake.send(&success_response("stackTrace", Some(body)))
+            .await
+            .unwrap();
+        let frames = session.stack_trace(1).await.unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].name, "main");
+    }
+
+    #[tokio::test]
+    async fn scopes_success() {
+        let (mut session, mut fake, _rx) = setup();
+        let body = serde_json::json!({
+            "scopes": [
+                {"name": "Locals", "variables_reference": 100, "expensive": false},
+            ]
+        });
+        fake.send(&success_response("scopes", Some(body)))
+            .await
+            .unwrap();
+        let scopes = session.scopes(1).await.unwrap();
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].name, "Locals");
+    }
+
+    #[tokio::test]
+    async fn variables_success() {
+        let (mut session, mut fake, _rx) = setup();
+        let body = serde_json::json!({
+            "variables": [
+                {"name": "x", "value": "42", "variablesReference": 0},
+            ]
+        });
+        fake.send(&success_response("variables", Some(body)))
+            .await
+            .unwrap();
+        let vars = session.variables(100).await.unwrap();
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0].value, "42");
+    }
+
+    #[tokio::test]
+    async fn evaluate_success() {
+        let (mut session, mut fake, _rx) = setup();
+        let body = serde_json::json!({"result": "hello"});
+        fake.send(&success_response("evaluate", Some(body)))
+            .await
+            .unwrap();
+        let result = session.evaluate("x", Some(1)).await.unwrap();
+        assert_eq!(result, "hello");
+    }
+
+    #[tokio::test]
+    async fn evaluate_failure_returns_error() {
+        let (mut session, mut fake, _rx) = setup();
+        fake.send(&failure_response("evaluate", "cannot evaluate"))
+            .await
+            .unwrap();
+        let err = session.evaluate("x", None).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Other);
+    }
+
+    #[tokio::test]
+    async fn disconnect_terminates_state() {
+        let (mut session, mut fake, _rx) = setup();
+        fake.send(&success_response("disconnect", None))
+            .await
+            .unwrap();
+        session.disconnect().await.unwrap();
+        assert_eq!(*session.state(), DebugSessionState::Terminated);
+    }
+
+    #[tokio::test]
+    async fn detach_terminates_state() {
+        let (mut session, mut fake, _rx) = setup();
+        fake.send(&success_response("disconnect", None))
+            .await
+            .unwrap();
+        session.detach().await.unwrap();
+        assert_eq!(*session.state(), DebugSessionState::Terminated);
+    }
+
+    #[tokio::test]
+    async fn handle_event_stopped_sets_paused_and_sends_ui_event() {
+        let (mut session, _fake, mut rx) = setup();
+        let event = DapEvent {
+            seq: 1,
+            message_type: "event".into(),
+            event: "stopped".into(),
+            body: Some(serde_json::json!({"reason": "step", "threadId": 5})),
+        };
+        session.handle_event(event).await.unwrap();
+        assert_eq!(*session.state(), DebugSessionState::Paused);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(DapEventUi::Stopped {
+                reason,
+                thread_id: Some(5)
+            }) if reason == "step"
+        ));
+    }
+
+    #[tokio::test]
+    async fn handle_event_continued_sets_running() {
+        let (mut session, _fake, mut rx) = setup();
+        session.state = DebugSessionState::Paused;
+        let event = DapEvent {
+            seq: 1,
+            message_type: "event".into(),
+            event: "continued".into(),
+            body: Some(serde_json::json!({"threadId": 5})),
+        };
+        session.handle_event(event).await.unwrap();
+        assert_eq!(*session.state(), DebugSessionState::Running);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(DapEventUi::Continued { thread_id: 5 })
+        ));
+    }
+
+    #[tokio::test]
+    async fn handle_event_terminated_sets_terminated() {
+        let (mut session, _fake, mut rx) = setup();
+        let event = DapEvent {
+            seq: 1,
+            message_type: "event".into(),
+            event: "terminated".into(),
+            body: None,
+        };
+        session.handle_event(event).await.unwrap();
+        assert_eq!(*session.state(), DebugSessionState::Terminated);
+        assert!(matches!(rx.try_recv(), Ok(DapEventUi::Terminated)));
+    }
+
+    #[tokio::test]
+    async fn handle_event_exited_sends_ui_event() {
+        let (mut session, _fake, mut rx) = setup();
+        let event = DapEvent {
+            seq: 1,
+            message_type: "event".into(),
+            event: "exited".into(),
+            body: Some(serde_json::json!({"exitCode": 42})),
+        };
+        session.handle_event(event).await.unwrap();
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(DapEventUi::Exited { exit_code: 42 })
+        ));
+    }
+
+    #[tokio::test]
+    async fn handle_event_output_sends_ui_event() {
+        let (mut session, _fake, mut rx) = setup();
+        let event = DapEvent {
+            seq: 1,
+            message_type: "event".into(),
+            event: "output".into(),
+            body: Some(serde_json::json!({"category": "stdout", "output": "hello"})),
+        };
+        session.handle_event(event).await.unwrap();
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(DapEventUi::Output { category, output }) if category == "stdout" && output == "hello"
+        ));
+    }
+
+    #[tokio::test]
+    async fn handle_event_breakpoint_validated_sends_ui_event() {
+        let (mut session, _fake, mut rx) = setup();
+        let event = DapEvent {
+            seq: 1,
+            message_type: "event".into(),
+            event: "breakpoint".into(),
+            body: Some(serde_json::json!({"id": 9, "verified": true, "line": 15})),
+        };
+        session.handle_event(event).await.unwrap();
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(DapEventUi::BreakpointValidated { breakpoint }) if breakpoint.id == Some(9)
+        ));
+    }
+
+    #[tokio::test]
+    async fn handle_event_unknown_is_noop() {
+        let (mut session, _fake, mut rx) = setup();
+        let event = DapEvent {
+            seq: 1,
+            message_type: "event".into(),
+            event: "custom".into(),
+            body: None,
+        };
+        session.handle_event(event).await.unwrap();
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn state_returns_current_state() {
+        let (session, _fake, _rx) = setup();
+        assert_eq!(*session.state(), DebugSessionState::Initializing);
+    }
+}
+
+#[cfg(test)]
+impl DebugSession {
+    /// 使用已有传输层构造会话，仅用于测试。
+    pub fn with_transport(
+        transport: DapTransport,
+        event_tx: mpsc::UnboundedSender<DapEventUi>,
+    ) -> Self {
+        Self {
+            transport,
+            state: DebugSessionState::Initializing,
+            breakpoints: HashMap::new(),
+            event_tx,
+            seq_generator: RequestIdGenerator::new(),
+            child: None,
+            stderr_drain: None,
+        }
     }
 }
 

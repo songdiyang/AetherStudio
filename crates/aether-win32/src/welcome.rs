@@ -1,3 +1,5 @@
+#![allow(clippy::items_after_test_module, clippy::useless_vec)]
+
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE;
 use windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT_CENTER;
@@ -8,7 +10,7 @@ use crate::editor::EditorState;
 #[derive(Clone, Debug, PartialEq)]
 pub enum WelcomeAction {
     OpenFolder,
-    NewFile,
+    NewProject,
     CloneRepo,
     OpenRemote,
     OpenRecentProject(String),
@@ -104,9 +106,9 @@ impl EditorState {
             },
             WelcomeActionItem {
                 icon_kind: crate::icons::IconKind::NewFile,
-                label: "新建文件",
+                label: "新建项目",
                 shortcut: "Ctrl+N",
-                action: WelcomeAction::NewFile,
+                action: WelcomeAction::NewProject,
             },
             WelcomeActionItem {
                 icon_kind: crate::icons::IconKind::Clone,
@@ -519,7 +521,7 @@ impl EditorState {
                     eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
                     panic!("D2D device lost")
                 });
-            let tip_text: Vec<u16> = "💡 提示：按 Ctrl+K 快速打开文件夹，Ctrl+N 新建文件"
+            let tip_text: Vec<u16> = "💡 提示：按 Ctrl+K 快速打开文件夹，Ctrl+N 新建项目"
                 .encode_utf16()
                 .chain(Some(0))
                 .collect();
@@ -688,7 +690,7 @@ impl EditorState {
                 let path_str = ellipsize_path(
                     &project.path,
                     &project_path_format,
-                    &dwrite,
+                    dwrite,
                     layout.right_col_width - 52.0,
                 );
                 let path_text: Vec<u16> = path_str.encode_utf16().chain(Some(0)).collect();
@@ -852,6 +854,64 @@ fn color_f(
     a: f32,
 ) -> windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
     windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F { r, g, b, a }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_welcome_layout_compute() {
+        let layout = WelcomeLayout::compute(0.0, 0.0, 1000.0, 600.0, 3);
+        assert_eq!(layout.action_item_h, 44.0);
+        assert_eq!(layout.project_item_h, 52.0);
+        assert!(layout.left_col_x >= 0.0);
+        assert!(layout.right_col_x > layout.left_col_x);
+        assert!(layout.more_y.is_some());
+    }
+
+    #[test]
+    fn test_welcome_layout_no_projects() {
+        let layout = WelcomeLayout::compute(0.0, 0.0, 1000.0, 600.0, 0);
+        assert!(layout.more_y.is_none());
+    }
+
+    #[test]
+    fn test_welcome_action_equality() {
+        let a = WelcomeAction::OpenFolder;
+        let b = WelcomeAction::OpenFolder;
+        let c = WelcomeAction::NewProject;
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn test_welcome_layout_zero_and_small_size() {
+        let layout = WelcomeLayout::compute(0.0, 0.0, 0.0, 0.0, 0);
+        assert_eq!(layout.action_item_h, 44.0);
+        assert!(layout.more_y.is_none());
+
+        let layout = WelcomeLayout::compute(0.0, 0.0, 100.0, 100.0, 5);
+        assert!(layout.more_y.is_some());
+        assert!(layout.left_col_width > 0.0);
+        assert!(layout.right_col_width > 0.0);
+    }
+
+    #[test]
+    fn test_welcome_action_variants() {
+        let actions = vec![
+            WelcomeAction::OpenFolder,
+            WelcomeAction::NewProject,
+            WelcomeAction::CloneRepo,
+            WelcomeAction::OpenRemote,
+            WelcomeAction::OpenRecentProject("/p".to_string()),
+            WelcomeAction::OpenRecentProject("/p".to_string()),
+            WelcomeAction::MoreRecentProjects,
+        ];
+        assert_eq!(actions[0], actions[0]);
+        assert_eq!(actions[4], actions[5]);
+        assert_ne!(actions[0], actions[1]);
+    }
 }
 
 /// 长路径中段省略：测量文本宽度，若超过 max_width 则折叠为 `D:\…\project_name` 形式。

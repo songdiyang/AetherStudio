@@ -32,12 +32,18 @@ pub struct BrushCache {
     brushes: HashMap<u32, ID2D1SolidColorBrush>,
 }
 
-impl BrushCache {
-    pub fn new() -> Self {
+impl Default for BrushCache {
+    fn default() -> Self {
         Self {
             precomputed: Vec::with_capacity(PRECOMPUTED_BRUSH_SLOTS),
             brushes: HashMap::new(),
         }
+    }
+}
+
+impl BrushCache {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// 预初始化常用颜色画笔（在渲染目标就绪后调用一次）
@@ -309,4 +315,54 @@ fn color_key(color: &D2D1_COLOR_F) -> u32 {
     let b = (color.b * 255.0).round() as u32;
     let a = (color.a * 255.0).round() as u32;
     (r << 24) | (g << 16) | (b << 8) | a
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_color_key_basic() {
+        let color = D2D1_COLOR_F {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        };
+        assert_eq!(color_key(&color), 0xFF0000FF);
+    }
+
+    #[test]
+    fn test_color_key_uses_rounding() {
+        // 0.47 * 255 = 119.85，round 后为 120（0x78）
+        let color = D2D1_COLOR_F {
+            r: 0.0,
+            g: 0.47,
+            b: 0.0,
+            a: 1.0,
+        };
+        assert_eq!(color_key(&color), 0x007800FF);
+    }
+
+    #[test]
+    fn test_color_key_transparent() {
+        let color = D2D1_COLOR_F {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.5,
+        };
+        assert_eq!(color_key(&color), 0x00000080);
+    }
+
+    #[test]
+    fn test_color_key_components_are_packed() {
+        let color = D2D1_COLOR_F {
+            r: 1.0,
+            g: 0.5,
+            b: 0.25,
+            a: 0.75,
+        };
+        assert_eq!(color_key(&color), 0xFF8040BF);
+    }
 }

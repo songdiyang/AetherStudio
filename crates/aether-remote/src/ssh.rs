@@ -164,7 +164,7 @@ impl SshRemoteFs {
     }
 
     /// 构造 ssh 命令的基础参数(用户名、端口、密钥)
-    fn base_args(&self) -> Vec<String> {
+    pub(crate) fn base_args(&self) -> Vec<String> {
         let mut args = vec![
             "-o".to_string(),
             "BatchMode=yes".to_string(),

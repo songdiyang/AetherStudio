@@ -1,0 +1,313 @@
+# Aether Studio UX 优化 — 类图
+
+```mermaid
+classDiagram
+    class FocusManager {
+        -current: FocusTarget
+        -history: Vec~FocusTarget~
+        -window_focused: bool
+        +new() FocusManager
+        +current() FocusTarget
+        +set(target: FocusTarget) void
+        +push(target: FocusTarget) void
+        +pop() Option~FocusTarget~
+        +is_window_focused() bool
+        +on_set_focus() void
+        +on_kill_focus() void
+        +route_keyboard(wparam: u32, lparam: isize) bool
+    }
+
+    class FocusTarget {
+        <<enumeration>>
+        Editor
+        Terminal
+        AiPanel
+        FindReplace(FindReplaceFocus)
+        CommandPalette
+        Settings
+        Dialog
+        None
+    }
+
+    class FindReplaceFocus {
+        <<enumeration>>
+        None
+        FindQuery
+        ReplaceText
+    }
+
+    class EditorState {
+        -focus_manager: FocusManager
+        +hwnd: HWND
+        +d2d_factory: D2DFactory
+        +render_ctx: RenderContext
+        +text_renderer: TextRenderer
+        +theme: Theme
+        +tabs: Vec~Tab~
+        +active_tab: usize
+        +multi_cursor: MultiCursorState
+        +dirty_tracker: DirtyRectTracker
+        +event_queue: EventQueue
+        +status_bar: StatusBar
+        +layout: LayoutManager
+        +ime: ImeIntegration
+        +composition: Option~String~
+        +window_width: u32
+        +window_height: u32
+        +dpi_scale: f32
+        +active_tab() Option~Tab~
+        +active_tab_mut() Option~mut Tab~
+        +cursor_line() usize
+        +cursor_col() usize
+        +buffer() ~PieceTable~
+        +history() ~History~
+        +set_cursor_line(line: usize) void
+        +set_cursor_col(col: usize) void
+        +switch_to_tab(index: usize) void
+        +insert_char(ch: char) void
+        +delete_char() void
+        +replace_all() usize
+        +broadcast_insert_char(ch: char) void
+        +broadcast_delete_char() void
+        +broadcast_insert_newline() void
+        +move_cursor_up() void
+        +move_cursor_down() void
+        +move_cursor_word_left() void
+        +move_cursor_word_right() void
+        +ensure_cursor_visible() void
+        +ensure_cursor_visible_horizontal() void
+        +emit_event(event: EditorEvent) void
+        +emit_edit_events() void
+        +flush_events_to_dirty_tracker() void
+        +render() void
+    }
+
+    class Tab {
+        +file_path: Option~PathBuf~
+        +buffer: PieceTable
+        +cursor_line: usize
+        +cursor_col: usize
+        +selection_start: Option~(usize, usize)~
+        +selection_end: Option~(usize, usize)~
+        +scroll_y: f32
+        +scroll_x: f32
+        +history: History
+        +is_dirty: bool
+        +cached_lines: Vec~String~
+        +cached_tokens: Vec~Vec~LexemeSpan~~
+        +line_cache_versions: Vec~u64~
+        +buffer_version: u64
+        +is_large_file: bool
+        +line_y_offsets: Vec~f32~
+        +inline_completion: Option~InlineCompletion~
+        +language: Language
+        +new() Tab
+        +from_file(path: PathBuf) Result~Tab~
+    }
+
+    class StatusBar {
+        +sections: Vec~StatusBarSection~
+        +hover_index: Option~usize~
+        +new() StatusBar
+        +update_cursor_position(line: usize, col: usize) void
+        +update_git_branch(branch: Option~str~) void
+        +update_language(lang: str) void
+        +update_status(message: str) void
+        +section_regions(total_width: f32) Vec~(usize, f32, f32, f32, f32)~
+        +hit_test(x: f32, y: f32, total_width: f32) Option~usize~
+    }
+
+    class StatusBarSection {
+        +label: String
+        +width: f32
+        +clickable: bool
+        +icon: Option~IconKind~
+    }
+
+    class StatusBarIndex {
+        <<enumeration>>
+        Status = 0
+        Errors = 1
+        CursorPos = 2
+        Encoding = 3
+        Language = 4
+        GitBranch = 5
+    }
+
+    class DirtyRectTracker {
+        -rects: Vec~DirtyRect~
+        -full_window_dirty: bool
+        -window_width: f32
+        -window_height: f32
+        -merge_threshold: usize
+        -max_rects: usize
+        +new(w: f32, h: f32) DirtyRectTracker
+        +mark_full_window() void
+        +mark_region(x, y, w, h, type) void
+        +has_dirty() bool
+        +is_full_window() bool
+        +dirty_count() usize
+        +clear() void
+        +merge_all() void
+    }
+
+    class DirtyRect {
+        +x: f32
+        +y: f32
+        +width: f32
+        +height: f32
+        +region_type: DirtyRegionType
+        +intersects(other: DirtyRect) bool
+        +merge(other: DirtyRect) DirtyRect
+        +contains(px: f32, py: f32) bool
+    }
+
+    class DirtyRegionType {
+        <<enumeration>>
+        TitleBar
+        MenuBar
+        ActivityBar
+        Sidebar
+        EditorContent
+        TabBar
+        StatusBar
+        RightPanel
+        BottomPanel
+        FindReplace
+        Dialog
+        FullWindow
+    }
+
+    class RenderCommand {
+        <<enumeration>>
+        EditorOnly
+        EditorAndStatus
+        SidebarOnly
+        RightPanelOnly
+        BottomPanelOnly
+        FullRedraw
+        None
+        +infer_from_state(...) RenderCommand
+    }
+
+    class History {
+        -undos: VecDeque~EditRecord~
+        -redos: VecDeque~EditRecord~
+        -merge_state: MergeState
+        -max_records: usize
+        +new() History
+        +record(pieces, add_len, cursor_before, cursor_after, op_type, pos) void
+        +begin_group() void
+        +end_group() void
+        +undo() Option~EditRecord~
+        +redo() Option~EditRecord~
+    }
+
+    class EditRecord {
+        -prev_pieces: Vec~Piece~
+        -prev_add_len: usize
+        +cursor_before: CursorPosition
+        +cursor_after: CursorPosition
+        -timestamp: Instant
+        -op_type: OpType
+    }
+
+    class OpType {
+        <<enumeration>>
+        Insert
+        Delete
+        Replace
+        ReplaceAll
+    }
+
+    class MergeState {
+        <<enumeration>>
+        Idle
+        Inserting { last_time, last_pos }
+        Deleting { last_time, last_pos }
+        GroupStart
+        Grouping { first_time, first_pos }
+    }
+
+    class EventQueue {
+        -events: Vec~EditorEvent~
+        -has_full_window: bool
+        +new() EventQueue
+        +push(event: EditorEvent) void
+        +extend(events: impl Iterator) void
+        +drain_to_dirty_tracker(tracker, callback) void
+        +clear() void
+        +is_empty() bool
+    }
+
+    class EditorEvent {
+        <<enumeration>>
+        TextChanged { start_line, end_line }
+        CursorMoved
+        SelectionChanged
+        Scrolled
+        TabChanged
+        SidebarChanged
+        RightPanelChanged
+        BottomPanelChanged
+        StatusBarChanged
+        WindowResized
+        FindReplaceChanged
+        DialogVisibilityChanged
+        UndoPerformed
+        RedoPerformed
+        +region_type() DirtyRegionType
+        +is_full_window() bool
+    }
+
+    class PieceTable {
+        +pieces: Vec~Piece~
+        +add_buffer: String
+        +original: String
+        +insert(pos: usize, text: str) void
+        +delete(start: usize, end: usize) void
+        +get_line(line: usize) Option~str~
+        +len_lines() usize
+        +get_pieces() Vec~Piece~
+    }
+
+    class MultiCursorState {
+        +cursors: Vec~Cursor~
+        +cursor_count() usize
+    }
+
+    class Cursor {
+        +line: usize
+        +col: usize
+    }
+
+    %% Relationships
+    EditorState --> FocusManager : 拥有
+    EditorState --> Tab : 通过 active_tab_mut 代理
+    EditorState --> StatusBar : 拥有
+    EditorState --> DirtyRectTracker : 拥有
+    EditorState --> EventQueue : 拥有
+    EditorState --> MultiCursorState : 拥有
+    EditorState --> History : 通过 Tab 代理
+    
+    FocusManager --> FocusTarget : 管理
+    FocusTarget --> FindReplaceFocus : 包含
+    
+    StatusBar --> StatusBarSection : sections
+    StatusBar --> StatusBarIndex : 使用索引
+    
+    DirtyRectTracker --> DirtyRect : rects
+    DirtyRect --> DirtyRegionType : region_type
+    RenderCommand --> DirtyRectTracker : 指导渲染
+    
+    History --> EditRecord : undos/redos
+    EditRecord --> OpType : op_type
+    History --> MergeState : merge_state
+    
+    EventQueue --> EditorEvent : events
+    EditorEvent --> DirtyRegionType : 映射
+    
+    Tab --> PieceTable : buffer
+    Tab --> History : history
+    MultiCursorState --> Cursor : cursors
+```

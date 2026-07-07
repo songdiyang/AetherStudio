@@ -1,3 +1,5 @@
+#![allow(clippy::items_after_test_module)]
+
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
@@ -392,7 +394,8 @@ impl PieceTable {
             .sum::<usize>()
             + 1;
         self.edit_count += 1;
-        self.update_line_index_for_delete(start, end);
+        // C-03: 在修改 pieces 前已计算 end_line，避免使用修改后的状态
+        self.update_line_index_for_delete(start, end, end_line_before);
         if self.edit_count >= self.coalesce_threshold {
             self.coalesce_pieces();
             self.edit_count = 0;
@@ -741,14 +744,14 @@ impl PieceTable {
     }
 
     /// 增量更新行索引 - 在指定字节范围删除后更新
-    fn update_line_index_for_delete(&mut self, start: usize, end: usize) {
+    /// `end_line` 必须在修改 pieces 前计算好，避免使用已损坏的 byte 映射
+    fn update_line_index_for_delete(&mut self, start: usize, end: usize, end_line: usize) {
         let delete_len = end - start;
         if delete_len == 0 {
             return;
         }
 
         let start_line = self.byte_to_line(start);
-        let end_line = self.byte_to_line(end);
 
         // 确定需要删除的行范围 [start_line+1, drain_end)
         // start_line+1..end_line 的行起始必在 [start, end) 内，必删
@@ -834,6 +837,221 @@ mod tests {
             pt.insert(pt.len_bytes(), &format!("line {}\n", i));
         }
         assert_eq!(pt.len_lines(), 1001);
+    }
+
+    #[test]
+    fn test_delete_line_index_consistency() {
+        // C-03: 删除跨行文本后，行索引应与重新构建一致
+        let mut pt = PieceTable::from_string("line1\nline2\nline3\nline4\n".to_string());
+
+        // 先插入一些文本，制造多个 piece
+        pt.insert(6, "inserted\n"); // "line1\ninserted\nline2\n..."
+        assert_eq!(pt.len_lines(), 6);
+
+        // 删除从 "inserted" 中间到 "line3" 中间的内容
+        // 位置：line1\n(7) i(8) n(9) ... inserted\n(17) line2\n(23) l(24) i(25) n(26) e(27) 3(28) \n(29) line4...
+        let start = 10; // "inserted\n" 内部
+        let end = 26; // "line3" 内部
+        pt.delete(start, end);
+
+        // 重新构建行索引作为参考
+        let pt_rebuild = PieceTable::from_string(pt.get_all_text());
+        assert_eq!(pt.len_lines(), pt_rebuild.len_lines());
+        for i in 0..pt.len_lines() {
+            assert_eq!(
+                pt.get_line(i),
+                pt_rebuild.get_line(i),
+                "line {} mismatch",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_empty_piece_table() {
+        let pt = PieceTable::from_string("".to_string());
+        assert_eq!(pt.len_bytes(), 0);
+        assert_eq!(pt.len_lines(), 1);
+        assert_eq!(pt.get_line(0), Some("".to_string()));
+        assert_eq!(pt.get_line(1), None);
+    }
+
+    #[test]
+    fn test_insert_at_end_and_beginning() {
+        let mut pt = PieceTable::from_string("middle".to_string());
+        pt.insert(0, "start ");
+        pt.insert(pt.len_bytes(), " end");
+        assert_eq!(pt.get_all_text(), "start middle end");
+    }
+
+    #[test]
+    fn test_insert_middle_of_piece() {
+        let mut pt = PieceTable::from_string("abcdef".to_string());
+        pt.insert(3, "XYZ");
+        assert_eq!(pt.get_all_text(), "abcXYZdef");
+        // 跨 piece 边界读取
+        assert_eq!(pt.get_line(0), Some("abcXYZdef".to_string()));
+    }
+
+    #[test]
+    fn test_delete_whole_and_partial_piece() {
+        let mut pt = PieceTable::from_string("hello world".to_string());
+        pt.delete(0, 5);
+        assert_eq!(pt.get_all_text(), " world");
+        pt.delete(1, 3);
+        assert_eq!(pt.get_all_text(), " rld");
+    }
+
+    #[test]
+    fn test_delete_across_multiple_pieces() {
+        let mut pt = PieceTable::from_string("abcdef".to_string());
+        pt.insert(3, "XYZ"); // abcXYZdef
+        pt.insert(6, "123"); // abcXYZ123def
+                             // 删除从第1个 piece 到第3个 piece 的部分内容 [1,9)
+        pt.delete(1, 9);
+        assert_eq!(pt.get_all_text(), "adef");
+    }
+
+    #[test]
+    fn test_insert_and_delete_empty() {
+        let mut pt = PieceTable::from_string("abc".to_string());
+        pt.insert(1, "");
+        assert_eq!(pt.get_all_text(), "abc");
+        pt.delete(1, 1);
+        assert_eq!(pt.get_all_text(), "abc");
+    }
+
+    #[test]
+    fn test_delete_beyond_end_clamped() {
+        let mut pt = PieceTable::from_string("abc".to_string());
+        pt.delete(1, 100);
+        assert_eq!(pt.get_all_text(), "a");
+    }
+
+    #[test]
+    fn test_crlf_line_endings() {
+        let pt = PieceTable::from_string("line1\r\nline2\r\n".to_string());
+        assert_eq!(pt.len_lines(), 3);
+        assert_eq!(pt.get_line(0), Some("line1".to_string()));
+        assert_eq!(pt.get_line(1), Some("line2".to_string()));
+    }
+
+    #[test]
+    fn test_byte_at() {
+        let mut pt = PieceTable::from_string("abcdef".to_string());
+        assert_eq!(pt.byte_at(0), Some(b'a'));
+        assert_eq!(pt.byte_at(5), Some(b'f'));
+        assert_eq!(pt.byte_at(6), None);
+        pt.insert(3, "XYZ");
+        assert_eq!(pt.byte_at(3), Some(b'X'));
+        assert_eq!(pt.byte_at(5), Some(b'Z'));
+        assert_eq!(pt.byte_at(6), Some(b'd'));
+    }
+
+    #[test]
+    fn test_get_text_bytes_and_cross_piece_fallback() {
+        let mut pt = PieceTable::from_string("abcdef".to_string());
+        pt.insert(3, "XYZ");
+        // 插入后第0行跨多个 piece，零拷贝路径应返回 None，走 get_text 拼接
+        let line_bytes = pt.get_line_bytes(0);
+        assert!(line_bytes.is_none());
+        assert_eq!(pt.get_text(2, 7), "cXYZd");
+    }
+
+    #[test]
+    fn test_restore_and_snapshot() {
+        let mut pt = PieceTable::from_string("abcdef".to_string());
+        let pieces = pt.get_pieces();
+        let add_len = pt.add_buffer_len();
+        pt.insert(3, "XYZ");
+        assert_ne!(pt.get_all_text(), "abcdef");
+        pt.restore(pieces, add_len);
+        assert_eq!(pt.get_all_text(), "abcdef");
+
+        let snapshot = pt.create_snapshot();
+        assert_eq!(snapshot.full_text(), "abcdef");
+        assert_eq!(snapshot.byte_len(), 6);
+    }
+
+    #[test]
+    fn test_save_restore_state() {
+        let mut pt = PieceTable::from_string("abc\ndef\n".to_string());
+        let state = pt.save_state();
+        pt.insert(3, "XYZ");
+        assert_ne!(pt.get_all_text(), "abc\ndef\n");
+        pt.restore_state(state);
+        assert_eq!(pt.get_all_text(), "abc\ndef\n");
+        assert_eq!(pt.len_lines(), 3);
+    }
+
+    #[test]
+    fn test_get_line_bytes_single_piece() {
+        let pt = PieceTable::from_string("single line".to_string());
+        assert_eq!(pt.get_line_bytes(0), Some("single line".as_bytes()));
+    }
+
+    #[test]
+    fn test_line_col_to_byte_and_byte_to_line_col() {
+        let pt = PieceTable::from_string("abc\ndefgh\nij".to_string());
+        assert_eq!(pt.line_col_to_byte(0, 2), 2);
+        assert_eq!(pt.line_col_to_byte(1, 3), 7);
+        assert_eq!(pt.line_col_to_byte(2, 10), pt.len_bytes());
+        assert_eq!(pt.byte_to_line_col(0), (0, 0));
+        assert_eq!(pt.byte_to_line_col(4), (1, 0));
+        assert_eq!(pt.byte_to_line_col(8), (1, 4));
+        assert_eq!(pt.byte_to_line_col(pt.len_bytes()), (2, 2));
+    }
+
+    #[test]
+    fn test_insert_with_result_line_delta() {
+        let mut pt = PieceTable::from_string("abc\ndef".to_string());
+        let result = pt.insert_with_result(3, "\nxyz\n");
+        assert_eq!(result.line_delta, 2);
+        assert_eq!(pt.len_lines(), 4);
+    }
+
+    #[test]
+    fn test_delete_with_result_line_delta() {
+        let mut pt = PieceTable::from_string("a\nb\nc\nd".to_string());
+        let result = pt.delete_with_result(1, 5);
+        assert_eq!(result.line_delta, -2);
+        assert_eq!(pt.get_all_text(), "a\nd");
+    }
+
+    #[test]
+    fn test_coalesce_threshold() {
+        let mut pt = PieceTable::from_string("".to_string());
+        for i in 0..50 {
+            pt.insert(pt.len_bytes(), &format!("x{}", i));
+        }
+        // 合并后 piece 数量应远小于 50
+        assert!(pt.get_pieces().len() < 50);
+    }
+
+    #[test]
+    fn test_large_file_lines() {
+        let mut text = String::new();
+        for i in 0..1000 {
+            text.push_str(&format!("line {}\n", i));
+        }
+        let pt = PieceTable::from_string(text);
+        assert_eq!(pt.len_lines(), 1001);
+        assert_eq!(pt.get_line(0), Some("line 0".to_string()));
+        assert_eq!(pt.get_line(999), Some("line 999".to_string()));
+    }
+
+    #[test]
+    fn test_text_buffer_trait_methods() {
+        use super::super::text_buffer::TextBuffer;
+        let mut pt = PieceTable::from_string("hello\nworld".to_string());
+        assert_eq!(pt.byte_len(), 11);
+        assert_eq!(pt.line_count(), 2);
+        assert_eq!(pt.line_text(1), Some("world".to_string()));
+        assert_eq!(pt.slice(0, 5), "hello");
+        assert_eq!(pt.full_text(), "hello\nworld");
+        pt.insert(5, "!");
+        pt.delete(0, 1);
+        assert_eq!(pt.full_text(), "ello!\nworld");
     }
 }
 
@@ -1083,11 +1301,11 @@ impl PieceTable {
         let original_len = self.original.as_ref().map(|m| m.len()).unwrap_or(0usize);
         let add_len = self.add_buffer.len();
 
-        // 2) 交叉校验 add_buffer 长度：state 中保存的应当与当前一致
-        //    （restore_state 不恢复 add_buffer 内容，二者必须匹配）
-        if state.add_buffer_len != add_len {
+        // 2) 交叉校验 add_buffer 长度：add_buffer 只追加不收缩，
+        //    保存时的长度必须 <= 当前长度，否则说明 add_buffer 已被异常截断
+        if state.add_buffer_len > add_len {
             return Err(format!(
-                "add_buffer_len 不匹配: state={} current={}（add_buffer 内容未同步恢复）",
+                "add_buffer_len 异常: state={} current={}（add_buffer 不应收缩）",
                 state.add_buffer_len, add_len
             ));
         }
@@ -1175,10 +1393,10 @@ impl PieceTable {
                     }
                 }
                 Source::Add => {
-                    if end > add_len {
+                    if end > state.add_buffer_len {
                         return Err(format!(
                             "piece {} Add 越界: start+len={} > add_buffer_len={}",
-                            i, end, add_len
+                            i, end, state.add_buffer_len
                         ));
                     }
                 }

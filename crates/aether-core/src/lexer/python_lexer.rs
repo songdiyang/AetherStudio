@@ -1,3 +1,4 @@
+use super::common::{skip_quoted, skip_whitespace};
 use super::{LexemeSpan, Lexer, TokenKind};
 
 /// Python 词法分析器
@@ -76,7 +77,7 @@ impl PythonLexer {
                         end,
                     )
                 } else {
-                    let end = skip_string(bytes, pos, b'"');
+                    let end = skip_quoted(bytes, pos, b'"');
                     (
                         LexemeSpan {
                             start: pos,
@@ -101,7 +102,7 @@ impl PythonLexer {
                         end,
                     )
                 } else {
-                    let end = skip_string(bytes, pos, b'\'');
+                    let end = skip_quoted(bytes, pos, b'\'');
                     (
                         LexemeSpan {
                             start: pos,
@@ -132,7 +133,7 @@ impl PythonLexer {
                     && (bytes[pos + 1] == b'"' || bytes[pos + 1] == b'\'')
                 {
                     let quote = bytes[pos + 1];
-                    let end = skip_string(bytes, pos + 1, quote);
+                    let end = skip_quoted(bytes, pos + 1, quote);
                     (
                         LexemeSpan {
                             start: pos,
@@ -144,10 +145,10 @@ impl PythonLexer {
                     )
                 } else {
                     let end = skip_identifier(bytes, pos);
-                    let text = std::str::from_utf8(&bytes[pos..end]).unwrap_or("");
-                    let kind = if is_keyword(text) {
+                    let ident = &bytes[pos..end];
+                    let kind = if is_keyword_bytes(ident) {
                         TokenKind::Keyword
-                    } else if is_builtin(text) {
+                    } else if is_builtin_bytes(ident) {
                         TokenKind::TypeName
                     } else {
                         TokenKind::Identifier
@@ -185,22 +186,25 @@ impl PythonLexer {
                 },
                 pos + 1,
             ),
-            _ => (
-                LexemeSpan {
-                    start: pos,
-                    len: 1,
-                    kind: TokenKind::Unknown,
-                    flags: 0,
-                },
-                pos + 1,
-            ),
+            _ => {
+                let len = crate::lexer::utf8_char_len(bytes[pos]);
+                (
+                    LexemeSpan {
+                        start: pos,
+                        len,
+                        kind: TokenKind::Unknown,
+                        flags: 0,
+                    },
+                    pos + len,
+                )
+            }
         }
     }
 }
 
 impl Lexer for PythonLexer {
     fn lex_full(&self, text: &str) -> Vec<LexemeSpan> {
-        let mut tokens = Vec::new();
+        let mut tokens = Vec::with_capacity(text.len() / 4 + 1);
         let bytes = text.as_bytes();
         let mut pos = 0;
 
@@ -220,90 +224,82 @@ impl Default for PythonLexer {
     }
 }
 
-fn is_keyword(text: &str) -> bool {
+fn is_keyword_bytes(bytes: &[u8]) -> bool {
     matches!(
-        text,
-        "False"
-            | "None"
-            | "True"
-            | "and"
-            | "as"
-            | "assert"
-            | "async"
-            | "await"
-            | "break"
-            | "class"
-            | "continue"
-            | "def"
-            | "del"
-            | "elif"
-            | "else"
-            | "except"
-            | "finally"
-            | "for"
-            | "from"
-            | "global"
-            | "if"
-            | "import"
-            | "in"
-            | "is"
-            | "lambda"
-            | "nonlocal"
-            | "not"
-            | "or"
-            | "pass"
-            | "raise"
-            | "return"
-            | "try"
-            | "while"
-            | "with"
-            | "yield"
+        bytes,
+        b"False"
+            | b"None"
+            | b"True"
+            | b"and"
+            | b"as"
+            | b"assert"
+            | b"async"
+            | b"await"
+            | b"break"
+            | b"class"
+            | b"continue"
+            | b"def"
+            | b"del"
+            | b"elif"
+            | b"else"
+            | b"except"
+            | b"finally"
+            | b"for"
+            | b"from"
+            | b"global"
+            | b"if"
+            | b"import"
+            | b"in"
+            | b"is"
+            | b"lambda"
+            | b"nonlocal"
+            | b"not"
+            | b"or"
+            | b"pass"
+            | b"raise"
+            | b"return"
+            | b"try"
+            | b"while"
+            | b"with"
+            | b"yield"
     )
 }
 
-fn is_builtin(text: &str) -> bool {
+fn is_builtin_bytes(bytes: &[u8]) -> bool {
     matches!(
-        text,
-        "int"
-            | "float"
-            | "str"
-            | "bool"
-            | "list"
-            | "dict"
-            | "tuple"
-            | "set"
-            | "frozenset"
-            | "bytes"
-            | "bytearray"
-            | "memoryview"
-            | "object"
-            | "type"
-            | "range"
-            | "enumerate"
-            | "zip"
-            | "map"
-            | "filter"
-            | "len"
-            | "print"
-            | "input"
-            | "open"
-            | "super"
-            | "self"
-            | "Exception"
-            | "BaseException"
-            | "ValueError"
-            | "TypeError"
-            | "KeyError"
-            | "IndexError"
+        bytes,
+        b"int"
+            | b"float"
+            | b"str"
+            | b"bool"
+            | b"list"
+            | b"dict"
+            | b"tuple"
+            | b"set"
+            | b"frozenset"
+            | b"bytes"
+            | b"bytearray"
+            | b"memoryview"
+            | b"object"
+            | b"type"
+            | b"range"
+            | b"enumerate"
+            | b"zip"
+            | b"map"
+            | b"filter"
+            | b"len"
+            | b"print"
+            | b"input"
+            | b"open"
+            | b"super"
+            | b"self"
+            | b"Exception"
+            | b"BaseException"
+            | b"ValueError"
+            | b"TypeError"
+            | b"KeyError"
+            | b"IndexError"
     )
-}
-
-fn skip_whitespace(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos;
-    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r') {
-        i += 1;
-    }
-    i
 }
 
 fn skip_line_comment(bytes: &[u8], pos: usize) -> usize {
@@ -325,34 +321,35 @@ fn skip_triple_quoted(bytes: &[u8], pos: usize, quote: u8) -> usize {
     bytes.len()
 }
 
-fn skip_string(bytes: &[u8], pos: usize, quote: u8) -> usize {
-    let mut i = pos + 1;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' {
-            i += 2;
-        } else if bytes[i] == quote {
-            return i + 1;
-        } else {
-            i += 1;
-        }
-    }
-    bytes.len()
-}
-
 fn skip_number(bytes: &[u8], pos: usize) -> usize {
     let mut i = pos;
-    while i < bytes.len()
-        && (bytes[i].is_ascii_digit()
-            || bytes[i] == b'.'
-            || bytes[i] == b'e'
-            || bytes[i] == b'E'
-            || bytes[i] == b'+'
-            || bytes[i] == b'-'
-            || bytes[i] == b'j'
-            || bytes[i] == b'J'
-            || bytes[i] == b'_')
-    {
-        i += 1;
+    let mut dot_count = 0;
+    let mut exponent_seen = false;
+    let mut imaginary = false;
+
+    while i < bytes.len() {
+        let ch = bytes[i];
+        if ch.is_ascii_digit() || ch == b'_' {
+            i += 1;
+        } else if ch == b'.' {
+            // 阻止 1..2 被合并
+            if dot_count > 0 || (i + 1 < bytes.len() && bytes[i + 1] == b'.') {
+                break;
+            }
+            dot_count += 1;
+            i += 1;
+        } else if matches!(ch, b'e' | b'E') && !exponent_seen {
+            exponent_seen = true;
+            i += 1;
+            if i < bytes.len() && matches!(bytes[i], b'+' | b'-') {
+                i += 1;
+            }
+        } else if matches!(ch, b'j' | b'J') && !imaginary {
+            imaginary = true;
+            i += 1;
+        } else {
+            break;
+        }
     }
     i
 }
@@ -365,6 +362,7 @@ fn skip_identifier(bytes: &[u8], pos: usize) -> usize {
     i
 }
 
+#[allow(clippy::collapsible_match)]
 fn skip_operator(bytes: &[u8], pos: usize) -> usize {
     let mut i = pos;
     let ch = bytes[pos];
@@ -425,12 +423,7 @@ fn skip_operator(bytes: &[u8], pos: usize) -> usize {
                     i += 1;
                 }
             }
-            b'|' => {
-                if next == b'=' {
-                    i += 1;
-                }
-            }
-            b'^' => {
+            b'|' | b'^' => {
                 if next == b'=' {
                     i += 1;
                 }
@@ -471,5 +464,81 @@ mod tests {
         let tokens = lexer.lex_full("f'Hello {name}'");
         let kind = tokens.iter().find(|t| t.start == 0).map(|t| t.kind);
         assert_eq!(kind, Some(TokenKind::FormatString));
+    }
+
+    #[test]
+    fn test_python_empty() {
+        assert!(PythonLexer::new().lex_full("").is_empty());
+    }
+
+    #[test]
+    fn test_python_comments() {
+        let tokens = PythonLexer::new().lex_full("# comment\nx");
+        assert_eq!(tokens[0].kind, TokenKind::LineComment);
+        assert_eq!(tokens[1].kind, TokenKind::Newline);
+    }
+
+    #[test]
+    fn test_python_strings() {
+        let tokens = PythonLexer::new().lex_full("\"double\" 'single' \"\"\"triple\"\"\"");
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::StringLiteral)
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn test_python_fstring_triple() {
+        let tokens = PythonLexer::new().lex_full("f\"\"\"x{y}\"\"\"");
+        assert_eq!(tokens[0].kind, TokenKind::FormatString);
+    }
+
+    #[test]
+    fn test_python_numbers() {
+        let tokens = PythonLexer::new().lex_full("1 2.3 4j 5e-2 1_000");
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::NumberLiteral)
+                .count(),
+            5
+        );
+    }
+
+    #[test]
+    fn test_python_operators() {
+        let tokens = PythonLexer::new().lex_full("+ - * ** / // % == != <= >= ->");
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::Operator)
+                .count(),
+            12
+        );
+    }
+
+    #[test]
+    fn test_python_punctuation_and_unknown() {
+        let tokens = PythonLexer::new().lex_full("(){}[],;:.@");
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::Punctuation)
+                .count(),
+            11
+        );
+        let tokens = PythonLexer::new().lex_full("中文");
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Unknown));
+    }
+
+    #[test]
+    fn test_python_keywords_and_builtins() {
+        let tokens = PythonLexer::new().lex_full("def len(x): return True");
+        let ks: Vec<_> = tokens.iter().map(|t| t.kind).collect();
+        assert!(ks.contains(&TokenKind::Keyword));
+        assert!(ks.contains(&TokenKind::TypeName)); // len builtin
     }
 }

@@ -238,6 +238,61 @@ mod tests {
         // 对话框测试需要GUI环境，这里仅验证结构
         let _dialogs = Dialogs;
     }
+
+    use std::sync::Mutex;
+
+    static APPDATA_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_temp_appdata<F, R>(f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let _lock = APPDATA_LOCK.lock().unwrap();
+        let old = std::env::var("APPDATA").ok();
+        let temp = std::env::temp_dir().join(format!("aether_dialogs_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).unwrap();
+        std::env::set_var("APPDATA", &temp);
+
+        struct Restore(Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(v) => std::env::set_var("APPDATA", v),
+                    None => std::env::remove_var("APPDATA"),
+                }
+            }
+        }
+        let _restore = Restore(old);
+        f()
+    }
+
+    #[test]
+    fn test_last_folder_get_set() {
+        with_temp_appdata(|| {
+            let path = std::path::Path::new("D:\\Projects\\Aether");
+            last_folder::set(path);
+            let got = last_folder::get().expect("应能读取上次目录");
+            let s = String::from_utf16(&got[..got.len() - 1]).unwrap();
+            assert_eq!(s, path.to_string_lossy());
+
+            last_folder::set(std::path::Path::new(""));
+            assert!(last_folder::get().is_none());
+        });
+    }
+
+    #[test]
+    fn test_trusted_folders_add_and_check() {
+        with_temp_appdata(|| {
+            let path = std::path::Path::new("D:\\Trusted\\Project");
+            assert!(!trusted_folders::is_trusted(path));
+            trusted_folders::add_trusted(path);
+            assert!(trusted_folders::is_trusted(path));
+            // 重复添加不应导致错误
+            trusted_folders::add_trusted(path);
+            assert!(trusted_folders::is_trusted(path));
+        });
+    }
 }
 
 /// 上次打开的文件夹持久化（与 recent_projects 共用 APPDATA/Aether 目录）
