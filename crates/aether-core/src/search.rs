@@ -300,9 +300,21 @@ mod tests {
             ..Default::default()
         };
         let root = std::path::Path::new("/proj");
-        assert!(is_excluded(std::path::Path::new("/proj/target/debug/foo"), root, &q));
-        assert!(is_excluded(std::path::Path::new("/proj/.git/config"), root, &q));
-        assert!(!is_excluded(std::path::Path::new("/proj/src/main.rs"), root, &q));
+        assert!(is_excluded(
+            std::path::Path::new("/proj/target/debug/foo"),
+            root,
+            &q
+        ));
+        assert!(is_excluded(
+            std::path::Path::new("/proj/.git/config"),
+            root,
+            &q
+        ));
+        assert!(!is_excluded(
+            std::path::Path::new("/proj/src/main.rs"),
+            root,
+            &q
+        ));
     }
 
     #[test]
@@ -312,8 +324,16 @@ mod tests {
             ..Default::default()
         };
         let root = std::path::Path::new("/proj");
-        assert!(is_included(std::path::Path::new("/proj/src/main.rs"), root, &q));
-        assert!(!is_included(std::path::Path::new("/proj/tests/t.rs"), root, &q));
+        assert!(is_included(
+            std::path::Path::new("/proj/src/main.rs"),
+            root,
+            &q
+        ));
+        assert!(!is_included(
+            std::path::Path::new("/proj/tests/t.rs"),
+            root,
+            &q
+        ));
 
         let empty = SearchQuery::default();
         assert!(is_included(std::path::Path::new("/proj/any"), root, &empty));

@@ -10,10 +10,7 @@ use crate::dirty_rect::{DirtyRectTracker, DirtyRegionType};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditorEvent {
     /// 文本内容变化（插入/删除）
-    TextChanged {
-        start_line: usize,
-        end_line: usize,
-    },
+    TextChanged { start_line: usize, end_line: usize },
     /// 光标移动
     CursorMoved,
     /// 选择变化
@@ -224,7 +221,11 @@ mod tests {
             end_line: 9,
         });
         assert_eq!(q.len(), 1);
-        if let EditorEvent::TextChanged { start_line, end_line } = q.events[0] {
+        if let EditorEvent::TextChanged {
+            start_line,
+            end_line,
+        } = q.events[0]
+        {
             assert_eq!(start_line, 3);
             assert_eq!(end_line, 9);
         } else {
@@ -235,19 +236,53 @@ mod tests {
     #[test]
     fn event_region_type_mapping() {
         assert_eq!(
-            EditorEvent::TextChanged { start_line: 0, end_line: 1 }.region_type(),
+            EditorEvent::TextChanged {
+                start_line: 0,
+                end_line: 1
+            }
+            .region_type(),
             DirtyRegionType::EditorContent
         );
-        assert_eq!(EditorEvent::CursorMoved.region_type(), DirtyRegionType::EditorContent);
-        assert_eq!(EditorEvent::SelectionChanged.region_type(), DirtyRegionType::EditorContent);
-        assert_eq!(EditorEvent::Scrolled.region_type(), DirtyRegionType::EditorContent);
-        assert_eq!(EditorEvent::TabChanged.region_type(), DirtyRegionType::TabBar);
-        assert_eq!(EditorEvent::SidebarChanged.region_type(), DirtyRegionType::Sidebar);
-        assert_eq!(EditorEvent::RightPanelChanged.region_type(), DirtyRegionType::RightPanel);
-        assert_eq!(EditorEvent::BottomPanelChanged.region_type(), DirtyRegionType::BottomPanel);
-        assert_eq!(EditorEvent::StatusBarChanged.region_type(), DirtyRegionType::StatusBar);
-        assert_eq!(EditorEvent::WindowResized.region_type(), DirtyRegionType::FullWindow);
-        assert_eq!(EditorEvent::FindReplaceChanged.region_type(), DirtyRegionType::FindReplace);
+        assert_eq!(
+            EditorEvent::CursorMoved.region_type(),
+            DirtyRegionType::EditorContent
+        );
+        assert_eq!(
+            EditorEvent::SelectionChanged.region_type(),
+            DirtyRegionType::EditorContent
+        );
+        assert_eq!(
+            EditorEvent::Scrolled.region_type(),
+            DirtyRegionType::EditorContent
+        );
+        assert_eq!(
+            EditorEvent::TabChanged.region_type(),
+            DirtyRegionType::TabBar
+        );
+        assert_eq!(
+            EditorEvent::SidebarChanged.region_type(),
+            DirtyRegionType::Sidebar
+        );
+        assert_eq!(
+            EditorEvent::RightPanelChanged.region_type(),
+            DirtyRegionType::RightPanel
+        );
+        assert_eq!(
+            EditorEvent::BottomPanelChanged.region_type(),
+            DirtyRegionType::BottomPanel
+        );
+        assert_eq!(
+            EditorEvent::StatusBarChanged.region_type(),
+            DirtyRegionType::StatusBar
+        );
+        assert_eq!(
+            EditorEvent::WindowResized.region_type(),
+            DirtyRegionType::FullWindow
+        );
+        assert_eq!(
+            EditorEvent::FindReplaceChanged.region_type(),
+            DirtyRegionType::FindReplace
+        );
         assert_eq!(
             EditorEvent::DialogVisibilityChanged.region_type(),
             DirtyRegionType::FullWindow
@@ -259,7 +294,11 @@ mod tests {
         assert!(EditorEvent::WindowResized.is_full_window());
         assert!(EditorEvent::DialogVisibilityChanged.is_full_window());
         assert!(!EditorEvent::CursorMoved.is_full_window());
-        assert!(!EditorEvent::TextChanged { start_line: 0, end_line: 1 }.is_full_window());
+        assert!(!EditorEvent::TextChanged {
+            start_line: 0,
+            end_line: 1
+        }
+        .is_full_window());
     }
 
     #[test]
@@ -289,7 +328,10 @@ mod tests {
     fn queue_drain_to_dirty_tracker() {
         let mut q = EventQueue::new();
         q.push(EditorEvent::CursorMoved);
-        q.push(EditorEvent::TextChanged { start_line: 1, end_line: 3 });
+        q.push(EditorEvent::TextChanged {
+            start_line: 1,
+            end_line: 3,
+        });
         q.push(EditorEvent::StatusBarChanged);
 
         let mut tracker = DirtyRectTracker::new(800.0, 600.0);
@@ -316,7 +358,9 @@ mod tests {
 
         let mut tracker = DirtyRectTracker::new(800.0, 600.0);
         tracker.clear();
-        q.drain_to_dirty_tracker(&mut tracker, |_event| unreachable!("全窗口事件不应调用转换回调"));
+        q.drain_to_dirty_tracker(&mut tracker, |_event| {
+            unreachable!("全窗口事件不应调用转换回调")
+        });
         assert!(tracker.is_full_window());
     }
 

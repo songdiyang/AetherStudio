@@ -318,8 +318,14 @@ mod tests {
         assert_eq!(RecentProjectsManager::unescape_json(&escaped), raw);
 
         // 未知转义字符保留原字符（x）
-        assert_eq!(RecentProjectsManager::unescape_json("hello\\xworld"), "helloxworld");
-        assert_eq!(RecentProjectsManager::unescape_json("trailing\\"), "trailing");
+        assert_eq!(
+            RecentProjectsManager::unescape_json("hello\\xworld"),
+            "helloxworld"
+        );
+        assert_eq!(
+            RecentProjectsManager::unescape_json("trailing\\"),
+            "trailing"
+        );
     }
 
     #[test]

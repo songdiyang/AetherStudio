@@ -159,7 +159,11 @@ mod tests {
 
         let mut registry = PluginRegistry::new().unwrap();
         let err = registry.register(&path).unwrap_err();
-        assert!(err.contains("不是有效的 WASM 格式"), "错误应提示 WASM 格式无效: {}", err);
+        assert!(
+            err.contains("不是有效的 WASM 格式"),
+            "错误应提示 WASM 格式无效: {}",
+            err
+        );
         assert_eq!(registry.plugin_count(), 0);
 
         cleanup(&path);
@@ -213,7 +217,11 @@ mod tests {
         assert_eq!(results[0].0, id);
         // 默认 L1 权限，event 非预定义 hook，需要 L1，权限通过但 WASM 未集成
         let err = results[0].1.as_ref().unwrap_err();
-        assert!(err.contains("WASM 运行时尚未集成"), "应返回 WASM 未集成错误: {}", err);
+        assert!(
+            err.contains("WASM 运行时尚未集成"),
+            "应返回 WASM 未集成错误: {}",
+            err
+        );
 
         cleanup(&path);
     }

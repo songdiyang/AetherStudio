@@ -663,8 +663,14 @@ mod tests {
 
         let diagnostics = vec![Diagnostic {
             range: Range {
-                start: Position { line: 0, character: 0 },
-                end: Position { line: 0, character: 1 },
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 1,
+                },
             },
             severity: None,
             code: None,
@@ -717,7 +723,10 @@ mod tests {
         let uri = Url::parse("file:///test.rs").unwrap();
 
         // 没有对应语言服务器时不应 panic/报错
-        assert!(client.open_document(uri.clone(), "rust".to_string(), "fn main() {}".to_string()).await.is_ok());
+        assert!(client
+            .open_document(uri.clone(), "rust".to_string(), "fn main() {}".to_string())
+            .await
+            .is_ok());
         assert!(client.close_document(&uri).await.is_ok());
     }
 
@@ -726,7 +735,10 @@ mod tests {
         let (client, _) = LspClient::new(None);
         let uri = Url::parse("file:///test.rs").unwrap();
 
-        client.open_document(uri.clone(), "rust".to_string(), "fn main() {}".to_string()).await.unwrap();
+        client
+            .open_document(uri.clone(), "rust".to_string(), "fn main() {}".to_string())
+            .await
+            .unwrap();
         assert!(client.notify_change(&uri, "fn main() {\n}\n").await.is_ok());
     }
 
@@ -736,7 +748,10 @@ mod tests {
         let uri = Url::parse("file:///test.rs").unwrap();
 
         let text = "fn main() {}".to_string();
-        client.open_document(uri.clone(), "rust".to_string(), text.clone()).await.unwrap();
+        client
+            .open_document(uri.clone(), "rust".to_string(), text.clone())
+            .await
+            .unwrap();
         assert!(client.notify_change(&uri, &text).await.is_ok());
     }
 
@@ -744,19 +759,88 @@ mod tests {
     async fn test_request_methods_without_server_return_none() {
         let (client, _) = LspClient::new(None);
         let uri = Url::parse("file:///test.rs").unwrap();
-        let pos = Position { line: 0, character: 0 };
+        let pos = Position {
+            line: 0,
+            character: 0,
+        };
 
-        assert!(client.request_completion(&uri, pos).await.unwrap().is_none());
+        assert!(client
+            .request_completion(&uri, pos)
+            .await
+            .unwrap()
+            .is_none());
         assert!(client.request_hover(&uri, pos).await.unwrap().is_none());
-        assert!(client.request_definition(&uri, pos).await.unwrap().is_none());
-        assert!(client.request_references(&uri, pos, true).await.unwrap().is_none());
-        assert!(client.request_rename(&uri, pos, "new".to_string()).await.unwrap().is_none());
-        assert!(client.request_code_actions(&uri, Range { start: pos, end: pos }, vec![]).await.unwrap().is_none());
-        assert!(client.request_formatting(&uri, FormattingOptions { tab_size: 4, insert_spaces: true, ..Default::default() }).await.unwrap().is_none());
-        assert!(client.request_semantic_tokens_full(&uri).await.unwrap().is_none());
-        assert!(client.request_semantic_tokens_delta(&uri, "1".to_string()).await.unwrap().is_none());
-        assert!(client.request_semantic_tokens_range(&uri, Range { start: pos, end: pos }).await.unwrap().is_none());
-        assert!(client.request_inlay_hints(&uri, Range { start: pos, end: pos }).await.unwrap().is_none());
+        assert!(client
+            .request_definition(&uri, pos)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(client
+            .request_references(&uri, pos, true)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(client
+            .request_rename(&uri, pos, "new".to_string())
+            .await
+            .unwrap()
+            .is_none());
+        assert!(client
+            .request_code_actions(
+                &uri,
+                Range {
+                    start: pos,
+                    end: pos
+                },
+                vec![]
+            )
+            .await
+            .unwrap()
+            .is_none());
+        assert!(client
+            .request_formatting(
+                &uri,
+                FormattingOptions {
+                    tab_size: 4,
+                    insert_spaces: true,
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap()
+            .is_none());
+        assert!(client
+            .request_semantic_tokens_full(&uri)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(client
+            .request_semantic_tokens_delta(&uri, "1".to_string())
+            .await
+            .unwrap()
+            .is_none());
+        assert!(client
+            .request_semantic_tokens_range(
+                &uri,
+                Range {
+                    start: pos,
+                    end: pos
+                }
+            )
+            .await
+            .unwrap()
+            .is_none());
+        assert!(client
+            .request_inlay_hints(
+                &uri,
+                Range {
+                    start: pos,
+                    end: pos
+                }
+            )
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -781,7 +865,10 @@ mod tests {
     async fn test_notify_change_raw_without_server() {
         let (client, _) = LspClient::new(None);
         let uri = Url::parse("file:///test.rs").unwrap();
-        client.open_document(uri.clone(), "rust".to_string(), "fn main() {}".to_string()).await.unwrap();
+        client
+            .open_document(uri.clone(), "rust".to_string(), "fn main() {}".to_string())
+            .await
+            .unwrap();
         assert!(client.notify_change_raw(&uri, vec![]).await.is_ok());
     }
 

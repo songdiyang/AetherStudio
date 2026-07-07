@@ -227,22 +227,78 @@ impl Default for PythonLexer {
 fn is_keyword_bytes(bytes: &[u8]) -> bool {
     matches!(
         bytes,
-        b"False" | b"None" | b"True" | b"and" | b"as" | b"assert" | b"async" | b"await"
-            | b"break" | b"class" | b"continue" | b"def" | b"del" | b"elif" | b"else"
-            | b"except" | b"finally" | b"for" | b"from" | b"global" | b"if" | b"import"
-            | b"in" | b"is" | b"lambda" | b"nonlocal" | b"not" | b"or" | b"pass" | b"raise"
-            | b"return" | b"try" | b"while" | b"with" | b"yield"
+        b"False"
+            | b"None"
+            | b"True"
+            | b"and"
+            | b"as"
+            | b"assert"
+            | b"async"
+            | b"await"
+            | b"break"
+            | b"class"
+            | b"continue"
+            | b"def"
+            | b"del"
+            | b"elif"
+            | b"else"
+            | b"except"
+            | b"finally"
+            | b"for"
+            | b"from"
+            | b"global"
+            | b"if"
+            | b"import"
+            | b"in"
+            | b"is"
+            | b"lambda"
+            | b"nonlocal"
+            | b"not"
+            | b"or"
+            | b"pass"
+            | b"raise"
+            | b"return"
+            | b"try"
+            | b"while"
+            | b"with"
+            | b"yield"
     )
 }
 
 fn is_builtin_bytes(bytes: &[u8]) -> bool {
     matches!(
         bytes,
-        b"int" | b"float" | b"str" | b"bool" | b"list" | b"dict" | b"tuple" | b"set"
-            | b"frozenset" | b"bytes" | b"bytearray" | b"memoryview" | b"object" | b"type"
-            | b"range" | b"enumerate" | b"zip" | b"map" | b"filter" | b"len" | b"print"
-            | b"input" | b"open" | b"super" | b"self" | b"Exception" | b"BaseException"
-            | b"ValueError" | b"TypeError" | b"KeyError" | b"IndexError"
+        b"int"
+            | b"float"
+            | b"str"
+            | b"bool"
+            | b"list"
+            | b"dict"
+            | b"tuple"
+            | b"set"
+            | b"frozenset"
+            | b"bytes"
+            | b"bytearray"
+            | b"memoryview"
+            | b"object"
+            | b"type"
+            | b"range"
+            | b"enumerate"
+            | b"zip"
+            | b"map"
+            | b"filter"
+            | b"len"
+            | b"print"
+            | b"input"
+            | b"open"
+            | b"super"
+            | b"self"
+            | b"Exception"
+            | b"BaseException"
+            | b"ValueError"
+            | b"TypeError"
+            | b"KeyError"
+            | b"IndexError"
     )
 }
 
@@ -425,7 +481,13 @@ mod tests {
     #[test]
     fn test_python_strings() {
         let tokens = PythonLexer::new().lex_full("\"double\" 'single' \"\"\"triple\"\"\"");
-        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::StringLiteral).count(), 3);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::StringLiteral)
+                .count(),
+            3
+        );
     }
 
     #[test]
@@ -437,19 +499,37 @@ mod tests {
     #[test]
     fn test_python_numbers() {
         let tokens = PythonLexer::new().lex_full("1 2.3 4j 5e-2 1_000");
-        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::NumberLiteral).count(), 5);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::NumberLiteral)
+                .count(),
+            5
+        );
     }
 
     #[test]
     fn test_python_operators() {
         let tokens = PythonLexer::new().lex_full("+ - * ** / // % == != <= >= ->");
-        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::Operator).count(), 12);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::Operator)
+                .count(),
+            12
+        );
     }
 
     #[test]
     fn test_python_punctuation_and_unknown() {
         let tokens = PythonLexer::new().lex_full("(){}[],;:.@");
-        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::Punctuation).count(), 11);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::Punctuation)
+                .count(),
+            11
+        );
         let tokens = PythonLexer::new().lex_full("中文");
         assert!(tokens.iter().any(|t| t.kind == TokenKind::Unknown));
     }

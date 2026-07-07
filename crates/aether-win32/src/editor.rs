@@ -1043,81 +1043,82 @@ impl EditorState {
             .get_line(self.cursor_line)
             .map(|line| line[..self.cursor_col.min(line.len())].chars().count())
             .unwrap_or(0);
-        let cursor_x = editor_region.x + 60.0 + 5.0
-            + char_col as f32 * self.text_renderer.char_width()
-            - self.scroll_x;
+        let cursor_x =
+            editor_region.x + 60.0 + 5.0 + char_col as f32 * self.text_renderer.char_width()
+                - self.scroll_x;
         let cursor_y = editor_region.y + self.cursor_line as f32 * line_height - self.scroll_y;
 
-        self.event_queue.drain_to_dirty_tracker(&mut self.dirty_tracker, |event| {
-            use crate::events::EditorEvent;
-            match event {
-                EditorEvent::TextChanged { .. } => Some((
-                    editor_region.x,
-                    editor_region.y,
-                    editor_region.width,
-                    editor_region.height,
-                )),
-                EditorEvent::CursorMoved => Some((cursor_x, cursor_y, 2.0, line_height)),
-                EditorEvent::SelectionChanged => Some((
-                    editor_region.x,
-                    editor_region.y,
-                    editor_region.width,
-                    editor_region.height,
-                )),
-                EditorEvent::Scrolled => Some((
-                    editor_region.x,
-                    editor_region.y,
-                    editor_region.width,
-                    editor_region.height,
-                )),
-                EditorEvent::TabChanged => None, // 由 switch_tab 显式标记局部区域
-                EditorEvent::SidebarChanged => {
-                    if sidebar_region.width > 0.0 {
-                        Some((
-                            sidebar_region.x,
-                            sidebar_region.y,
-                            sidebar_region.width,
-                            sidebar_region.height,
-                        ))
-                    } else {
-                        None
+        self.event_queue
+            .drain_to_dirty_tracker(&mut self.dirty_tracker, |event| {
+                use crate::events::EditorEvent;
+                match event {
+                    EditorEvent::TextChanged { .. } => Some((
+                        editor_region.x,
+                        editor_region.y,
+                        editor_region.width,
+                        editor_region.height,
+                    )),
+                    EditorEvent::CursorMoved => Some((cursor_x, cursor_y, 2.0, line_height)),
+                    EditorEvent::SelectionChanged => Some((
+                        editor_region.x,
+                        editor_region.y,
+                        editor_region.width,
+                        editor_region.height,
+                    )),
+                    EditorEvent::Scrolled => Some((
+                        editor_region.x,
+                        editor_region.y,
+                        editor_region.width,
+                        editor_region.height,
+                    )),
+                    EditorEvent::TabChanged => None, // 由 switch_tab 显式标记局部区域
+                    EditorEvent::SidebarChanged => {
+                        if sidebar_region.width > 0.0 {
+                            Some((
+                                sidebar_region.x,
+                                sidebar_region.y,
+                                sidebar_region.width,
+                                sidebar_region.height,
+                            ))
+                        } else {
+                            None
+                        }
                     }
-                }
-                EditorEvent::RightPanelChanged => {
-                    if right_panel_region.width > 0.0 {
-                        Some((
-                            right_panel_region.x,
-                            right_panel_region.y,
-                            right_panel_region.width,
-                            right_panel_region.height,
-                        ))
-                    } else {
-                        None
+                    EditorEvent::RightPanelChanged => {
+                        if right_panel_region.width > 0.0 {
+                            Some((
+                                right_panel_region.x,
+                                right_panel_region.y,
+                                right_panel_region.width,
+                                right_panel_region.height,
+                            ))
+                        } else {
+                            None
+                        }
                     }
-                }
-                EditorEvent::BottomPanelChanged => {
-                    if bottom_region.height > 0.0 {
-                        Some((
-                            bottom_region.x,
-                            bottom_region.y,
-                            bottom_region.width,
-                            bottom_region.height,
-                        ))
-                    } else {
-                        None
+                    EditorEvent::BottomPanelChanged => {
+                        if bottom_region.height > 0.0 {
+                            Some((
+                                bottom_region.x,
+                                bottom_region.y,
+                                bottom_region.width,
+                                bottom_region.height,
+                            ))
+                        } else {
+                            None
+                        }
                     }
+                    EditorEvent::StatusBarChanged => Some((
+                        status_region.x,
+                        status_region.y,
+                        status_region.width,
+                        status_region.height,
+                    )),
+                    EditorEvent::WindowResized => None, // 全窗口事件在内部处理
+                    EditorEvent::FindReplaceChanged => None, // 由调用方显式标记
+                    EditorEvent::DialogVisibilityChanged => None, // 全窗口事件在内部处理
                 }
-                EditorEvent::StatusBarChanged => Some((
-                    status_region.x,
-                    status_region.y,
-                    status_region.width,
-                    status_region.height,
-                )),
-                EditorEvent::WindowResized => None, // 全窗口事件在内部处理
-                EditorEvent::FindReplaceChanged => None, // 由调用方显式标记
-                EditorEvent::DialogVisibilityChanged => None, // 全窗口事件在内部处理
-            }
-        });
+            });
     }
 
     /// 检查当前标签页是否可以重用（空文件且未修改）
@@ -1643,7 +1644,10 @@ impl EditorState {
 
     fn kill_caret_timer(&self) {
         unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(self.hwnd, crate::window::CARET_TIMER_ID);
+            let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(
+                self.hwnd,
+                crate::window::CARET_TIMER_ID,
+            );
         }
     }
 
@@ -2277,8 +2281,8 @@ impl EditorState {
         let target_line = line.saturating_sub(1).min(max_line);
 
         let line_text = self.buffer.get_line(target_line).unwrap_or_default();
-        let target_col = char_offset_to_byte_offset(&line_text, column.saturating_sub(1))
-            .min(line_text.len());
+        let target_col =
+            char_offset_to_byte_offset(&line_text, column.saturating_sub(1)).min(line_text.len());
 
         self.cursor_line = target_line;
         self.cursor_col = target_col;
@@ -3113,8 +3117,14 @@ impl EditorState {
 
         let mut current_y = 34.0;
         let sidebar_width = self.layout.sidebar_width;
-        let result =
-            Self::find_tree_click_target(tree, u32::MAX, mouse_x, mouse_y, sidebar_width, &mut current_y);
+        let result = Self::find_tree_click_target(
+            tree,
+            u32::MAX,
+            mouse_x,
+            mouse_y,
+            sidebar_width,
+            &mut current_y,
+        );
 
         if let Some((node_idx, kind, part)) = result {
             match kind {
@@ -3443,8 +3453,14 @@ impl EditorState {
 
         let mut current_y = 34.0;
         let sidebar_width = self.layout.sidebar_width;
-        let result =
-            Self::find_tree_click_target(tree, u32::MAX, mouse_x, mouse_y, sidebar_width, &mut current_y);
+        let result = Self::find_tree_click_target(
+            tree,
+            u32::MAX,
+            mouse_x,
+            mouse_y,
+            sidebar_width,
+            &mut current_y,
+        );
 
         let new_hover = result.map(|(idx, _, _)| idx);
         let changed = self.hover_file_node != new_hover;
@@ -3641,7 +3657,12 @@ impl EditorState {
             // 移除路径分隔符和非法字符
             self.new_project_dialog
                 .project_name
-                .extend(text.chars().filter(|c| !matches!(c, '\\' | '/' | ':' | '*' | '?' | '\"' | '<' | '>' | '|' | '\n' | '\r')));
+                .extend(text.chars().filter(|c| {
+                    !matches!(
+                        c,
+                        '\\' | '/' | ':' | '*' | '?' | '\"' | '<' | '>' | '|' | '\n' | '\r'
+                    )
+                }));
             self.new_project_dialog.error_message = None;
         }
     }
@@ -5137,8 +5158,7 @@ impl EditorState {
 
         // 调整行号 UTF-16 缓存大小
         if self.cached_line_numbers.len() != total_lines {
-            self.cached_line_numbers
-                .resize_with(total_lines, Vec::new);
+            self.cached_line_numbers.resize_with(total_lines, Vec::new);
         }
 
         // 只重建可见行范围内的缓存（加上前后各2行的缓冲，避免滚动时闪烁）
@@ -5677,7 +5697,8 @@ impl EditorState {
                         .as_deref()
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    let mut all: Vec<&DiagnosticItem> = self.diagnostics.values().flatten().collect();
+                    let mut all: Vec<&DiagnosticItem> =
+                        self.diagnostics.values().flatten().collect();
                     // 优先显示当前文件，再按 severity 排序（1=Error, 2=Warning）
                     all.sort_by_key(|d| {
                         let is_current = self
@@ -5990,23 +6011,18 @@ impl EditorState {
 /// 已知二进制文件扩展名（黑名单）
 const BINARY_EXTENSIONS: &[&str] = &[
     // 图片
-    "png", "jpg", "jpeg", "gif", "bmp", "webp", "ico", "tiff", "tif", "raw", "psd", "ai",
-    "sketch", "fig",
-    // 音视频
-    "mp4", "avi", "mov", "wmv", "flv", "mkv", "webm", "mp3", "wav", "flac", "aac", "ogg",
-    "wma", "m4a",
-    // 压缩/归档
-    "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "lz4", "br", "deb", "rpm", "msi", "dmg",
-    "pkg", "apk", "ipa",
-    // 可执行/库
+    "png", "jpg", "jpeg", "gif", "bmp", "webp", "ico", "tiff", "tif", "raw", "psd", "ai", "sketch",
+    "fig", // 音视频
+    "mp4", "avi", "mov", "wmv", "flv", "mkv", "webm", "mp3", "wav", "flac", "aac", "ogg", "wma",
+    "m4a", // 压缩/归档
+    "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "lz4", "br", "deb", "rpm", "msi", "dmg", "pkg",
+    "apk", "ipa", // 可执行/库
     "exe", "dll", "so", "dylib", "bin", "elf", "o", "obj", "lib", "a", "pdb", "ilk",
     // 字体
-    "ttf", "otf", "woff", "woff2", "eot",
-    // 文档/办公（二进制格式）
+    "ttf", "otf", "woff", "woff2", "eot", // 文档/办公（二进制格式）
     "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
     // 数据库/缓存
-    "db", "sqlite", "sqlite3", "mdb", "accdb", "cache",
-    // 其他二进制
+    "db", "sqlite", "sqlite3", "mdb", "accdb", "cache", // 其他二进制
     "class", "jar", "war", "ear", "pyc", "pyo", "o", "lo", "la",
 ];
 
@@ -6077,20 +6093,97 @@ fn extract_hover_text(hover: &lsp_types::Hover) -> Option<String> {
 /// 避免对常见代码/标记文件做不必要的 UTF-8 扫描和磁盘读取。
 const TEXT_EXTENSIONS: &[&str] = &[
     // 网页/模板/小程序标记
-    "html", "htm", "xhtml", "xml", "svg", "vue", "svelte", "wxml", "axml", "ftl", "jinja",
-    "j2", "njk", "mustache", "handlebars", "hbs", "ejs", "erb", "haml", "pug", "jade",
-    "liquid", "razor", "cshtml", "wxml", "wxss",
+    "html",
+    "htm",
+    "xhtml",
+    "xml",
+    "svg",
+    "vue",
+    "svelte",
+    "wxml",
+    "axml",
+    "ftl",
+    "jinja",
+    "j2",
+    "njk",
+    "mustache",
+    "handlebars",
+    "hbs",
+    "ejs",
+    "erb",
+    "haml",
+    "pug",
+    "jade",
+    "liquid",
+    "razor",
+    "cshtml",
+    "wxml",
+    "wxss",
     // 样式
-    "css", "scss", "sass", "less", "styl", "stylus", "acss",
+    "css",
+    "scss",
+    "sass",
+    "less",
+    "styl",
+    "stylus",
+    "acss",
     // 脚本/语言
-    "js", "jsx", "mjs", "cjs", "ts", "tsx", "rs", "py", "pyw", "pyi", "pyx", "pxd", "c",
-    "h", "cpp", "hpp", "cc", "cxx", "m", "mm", "go", "java", "kt", "swift", "rb", "php",
-    "cs", "sh", "bash", "zsh", "fish", "ps1", "psm1", "psd1", "bat", "cmd", "vbs",
+    "js",
+    "jsx",
+    "mjs",
+    "cjs",
+    "ts",
+    "tsx",
+    "rs",
+    "py",
+    "pyw",
+    "pyi",
+    "pyx",
+    "pxd",
+    "c",
+    "h",
+    "cpp",
+    "hpp",
+    "cc",
+    "cxx",
+    "m",
+    "mm",
+    "go",
+    "java",
+    "kt",
+    "swift",
+    "rb",
+    "php",
+    "cs",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "ps1",
+    "psm1",
+    "psd1",
+    "bat",
+    "cmd",
+    "vbs",
     // 数据/配置
-    "json", "jsonc", "jsonl", "toml", "ini", "cfg", "conf", "config", "yaml", "yml",
+    "json",
+    "jsonc",
+    "jsonl",
+    "toml",
+    "ini",
+    "cfg",
+    "conf",
+    "config",
+    "yaml",
+    "yml",
     "properties",
     // 文档
-    "md", "markdown", "mdx", "txt", "text", "log",
+    "md",
+    "markdown",
+    "mdx",
+    "txt",
+    "text",
+    "log",
 ];
 
 /// 检查文件是否为文本文件
@@ -6330,10 +6423,23 @@ mod tests {
         // find_node_by_path 以第一个根节点为起点，base 应为该根节点对应的路径
         let base = Path::new("/workspace/project");
         let target = Path::new("/workspace/project/src/main.rs");
-        assert_eq!(EditorState::find_node_by_path(&tree, target, base), Some(main));
+        assert_eq!(
+            EditorState::find_node_by_path(&tree, target, base),
+            Some(main)
+        );
 
-        assert!(EditorState::find_node_by_path(&tree, Path::new("/workspace/project/src/missing.rs"), base).is_none());
-        assert!(EditorState::find_node_by_path(&tree, Path::new("/other/project/src/main.rs"), base).is_none());
+        assert!(EditorState::find_node_by_path(
+            &tree,
+            Path::new("/workspace/project/src/missing.rs"),
+            base
+        )
+        .is_none());
+        assert!(EditorState::find_node_by_path(
+            &tree,
+            Path::new("/other/project/src/main.rs"),
+            base
+        )
+        .is_none());
         assert!(EditorState::find_node_by_path(&tree, base, base).is_none());
     }
 }

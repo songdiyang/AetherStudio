@@ -5,8 +5,8 @@ pub mod diff_view;
 pub mod dirty_rect;
 pub mod events;
 pub mod focus_manager;
-pub mod render_context;
 pub mod launch;
+pub mod render_context;
 
 pub mod activity_bar;
 pub mod ai_agent;

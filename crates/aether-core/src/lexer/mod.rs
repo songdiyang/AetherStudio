@@ -116,15 +116,13 @@ impl Language {
             "toml" | "ini" | "cfg" | "conf" | "config" => Language::Toml,
             // HTML / 模板 / 类 XML 标记
             "html" | "htm" | "xhtml" | "vue" | "svelte" | "wxml" | "axml" | "ftl" | "jinja"
-            | "j2" | "njk" | "mustache" | "handlebars" | "hbs" | "ejs" | "erb" | "haml"
-            | "pug" | "jade" | "liquid" | "razor" | "cshtml" => Language::Html,
+            | "j2" | "njk" | "mustache" | "handlebars" | "hbs" | "ejs" | "erb" | "haml" | "pug"
+            | "jade" | "liquid" | "razor" | "cshtml" => Language::Html,
             // CSS / 样式
-            "css" | "scss" | "sass" | "less" | "styl" | "stylus" | "wxss" | "acss" => {
-                Language::Css
-            }
+            "css" | "scss" | "sass" | "less" | "styl" | "stylus" | "wxss" | "acss" => Language::Css,
             // 图片（仅用于文件树图标/路由，不用于lexer）
-            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "svg" | "tiff"
-            | "tif" | "raw" | "psd" => Language::Image,
+            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "svg" | "tiff" | "tif"
+            | "raw" | "psd" => Language::Image,
             _ => Language::PlainText,
         }
     }

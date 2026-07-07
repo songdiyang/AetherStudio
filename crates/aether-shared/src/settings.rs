@@ -267,7 +267,7 @@ impl AppSettings {
 #[cfg(windows)]
 fn encrypt_api_key(api_key: &str) -> std::io::Result<Vec<u8>> {
     use windows::Win32::Security::Cryptography::{
-        CryptProtectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_LOCAL_MACHINE,
+        CryptProtectData, CRYPTPROTECT_LOCAL_MACHINE, CRYPT_INTEGER_BLOB,
     };
 
     let bytes = api_key.as_bytes();
@@ -291,7 +291,9 @@ fn encrypt_api_key(api_key: &str) -> std::io::Result<Vec<u8>> {
 
         let slice = std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize);
         let result = slice.to_vec();
-        windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(data_out.pbData as *mut _));
+        windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
+            data_out.pbData as *mut _,
+        ));
         Ok(result)
     }
 }
@@ -306,7 +308,7 @@ fn encrypt_api_key(api_key: &str) -> std::io::Result<Vec<u8>> {
 #[cfg(windows)]
 fn decrypt_api_key(data: &[u8]) -> std::io::Result<String> {
     use windows::Win32::Security::Cryptography::{
-        CryptUnprotectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_LOCAL_MACHINE,
+        CryptUnprotectData, CRYPTPROTECT_LOCAL_MACHINE, CRYPT_INTEGER_BLOB,
     };
 
     let data_in = CRYPT_INTEGER_BLOB {
@@ -330,7 +332,9 @@ fn decrypt_api_key(data: &[u8]) -> std::io::Result<String> {
         let slice = std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize);
         let result = String::from_utf8(slice.to_vec())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(data_out.pbData as *mut _));
+        windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
+            data_out.pbData as *mut _,
+        ));
         Ok(result)
     }
 }
@@ -407,7 +411,10 @@ mod tests {
         let mut settings = AppSettings::default();
         settings.ai.api_key = "secret-key".to_string();
         let json = serde_json::to_string(&settings).expect("序列化失败");
-        assert!(!json.contains("secret-key"), "api_key 不应以明文出现在 JSON 中");
+        assert!(
+            !json.contains("secret-key"),
+            "api_key 不应以明文出现在 JSON 中"
+        );
     }
 
     #[test]
@@ -456,7 +463,8 @@ mod tests {
 
     #[test]
     fn test_ssh_server_config_defaults() {
-        let cfg: SshServerConfig = serde_json::from_str(r#"{"name":"x","host":"h","username":"u"}"#).unwrap();
+        let cfg: SshServerConfig =
+            serde_json::from_str(r#"{"name":"x","host":"h","username":"u"}"#).unwrap();
         assert_eq!(cfg.port, 22);
         assert_eq!(cfg.auth_type, "agent");
         assert!(cfg.key_path.is_empty());

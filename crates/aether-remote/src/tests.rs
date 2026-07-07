@@ -7,7 +7,9 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::{
-        container::{parse_devcontainer_json, ContainerBackend, ContainerConfig, ContainerRemoteFs},
+        container::{
+            parse_devcontainer_json, ContainerBackend, ContainerConfig, ContainerRemoteFs,
+        },
         workspace::{self, RemoteWorkspace},
         FsEvent, GitError, GitRemoteInfo, GitRepoConfig, GitRepoType, GitRepository, GitSshRepo,
         RemoteDirEntry, RemoteFs, SshAuth, SshConfig, SshRemoteFs,
@@ -110,8 +112,12 @@ mod tests {
             assert!(!s.is_empty());
             // 每个错误消息都应包含操作失败的中文提示或下载链接
             assert!(
-                s.contains("失败") || s.contains("无效") || s.contains("错误")
-                    || s.contains("未安装") || s.contains("认证") || s.contains("git-scm.com"),
+                s.contains("失败")
+                    || s.contains("无效")
+                    || s.contains("错误")
+                    || s.contains("未安装")
+                    || s.contains("认证")
+                    || s.contains("git-scm.com"),
                 "unexpected error message: {}",
                 s
             );
@@ -672,7 +678,10 @@ mod tests {
         let write_log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = write_log.clone();
 
-        let fs = Box::new(MockRemoteFsWithWrite { files, write_log: log });
+        let fs = Box::new(MockRemoteFsWithWrite {
+            files,
+            write_log: log,
+        });
         let mut ws = RemoteWorkspace::new(fs, cache.clone());
 
         let local = ws.open_file("/readme.md").unwrap();
@@ -694,10 +703,16 @@ mod tests {
 
     impl RemoteFs for MockRemoteFsWithWrite {
         fn read_file(&self, path: &str) -> crate::Result<Vec<u8>> {
-            self.files.get(path).cloned().ok_or_else(|| "not found".to_string())
+            self.files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| "not found".to_string())
         }
         fn write_file(&self, path: &str, content: &[u8]) -> crate::Result<()> {
-            self.write_log.lock().unwrap().push((path.to_string(), content.to_vec()));
+            self.write_log
+                .lock()
+                .unwrap()
+                .push((path.to_string(), content.to_vec()));
             Ok(())
         }
         fn list_dir(&self, _path: &str) -> crate::Result<Vec<RemoteDirEntry>> {
@@ -720,10 +735,30 @@ mod tests {
         dirs.insert(
             "/project".to_string(),
             vec![
-                RemoteDirEntry { name: "src".to_string(), is_dir: true, size: 0, modified: None },
-                RemoteDirEntry { name: "Cargo.toml".to_string(), is_dir: false, size: 0, modified: None },
-                RemoteDirEntry { name: "..".to_string(), is_dir: true, size: 0, modified: None },
-                RemoteDirEntry { name: "bad/name".to_string(), is_dir: true, size: 0, modified: None },
+                RemoteDirEntry {
+                    name: "src".to_string(),
+                    is_dir: true,
+                    size: 0,
+                    modified: None,
+                },
+                RemoteDirEntry {
+                    name: "Cargo.toml".to_string(),
+                    is_dir: false,
+                    size: 0,
+                    modified: None,
+                },
+                RemoteDirEntry {
+                    name: "..".to_string(),
+                    is_dir: true,
+                    size: 0,
+                    modified: None,
+                },
+                RemoteDirEntry {
+                    name: "bad/name".to_string(),
+                    is_dir: true,
+                    size: 0,
+                    modified: None,
+                },
             ],
         );
         let fs = Box::new(MockRemoteFsForSync { dirs });
@@ -752,7 +787,10 @@ mod tests {
             Ok(())
         }
         fn list_dir(&self, path: &str) -> crate::Result<Vec<RemoteDirEntry>> {
-            self.dirs.get(path).cloned().ok_or_else(|| "not found".to_string())
+            self.dirs
+                .get(path)
+                .cloned()
+                .ok_or_else(|| "not found".to_string())
         }
         fn watch(&self, _path: &str) -> crate::Result<std::sync::mpsc::Receiver<FsEvent>> {
             Err("unsupported".to_string())
@@ -763,7 +801,10 @@ mod tests {
     fn test_parse_remote_uri_edge_cases() {
         assert_eq!(
             workspace::parse_remote_uri("container://mycontainer/path/to/file"),
-            Some(("container".to_string(), "mycontainer/path/to/file".to_string()))
+            Some((
+                "container".to_string(),
+                "mycontainer/path/to/file".to_string()
+            ))
         );
         assert!(workspace::parse_remote_uri("container://name").is_none());
         assert!(workspace::parse_remote_uri("ftp://host/path").is_none());
@@ -903,7 +944,10 @@ mod tests {
             }
             fn exec(&self, command: &str) -> crate::Result<(String, String)> {
                 if command.contains("remote -v") {
-                    Ok(("origin  git@github.com:user/repo.git (fetch)\n".to_string(), String::new()))
+                    Ok((
+                        "origin  git@github.com:user/repo.git (fetch)\n".to_string(),
+                        String::new(),
+                    ))
                 } else if command.contains("branch --show-current") {
                     Ok(("main\n".to_string(), String::new()))
                 } else if command.contains("status --porcelain") {
@@ -942,7 +986,9 @@ mod tests {
                 Err("unsupported".to_string())
             }
         }
-        let (cmd, _) = GitExecFs.git_exec("path with space", &["status", "README.md"]).unwrap();
+        let (cmd, _) = GitExecFs
+            .git_exec("path with space", &["status", "README.md"])
+            .unwrap();
         assert!(cmd.starts_with("git -C "));
         assert!(cmd.contains("status"));
         assert!(cmd.contains("README.md"));
@@ -950,7 +996,8 @@ mod tests {
 
     #[test]
     fn test_git_ssh_repo_from_url_without_user() {
-        let repo = GitSshRepo::from_url("ssh://host:22/repo.git", PathBuf::from("/tmp/repo")).unwrap();
+        let repo =
+            GitSshRepo::from_url("ssh://host:22/repo.git", PathBuf::from("/tmp/repo")).unwrap();
         assert_eq!(repo.ssh_host, "host");
         assert_eq!(repo.ssh_port, 22);
     }

@@ -13,8 +13,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_TEXT_ALIGNMENT_TRAILING,
 };
 
-use crate::editor::EditorState;
 use crate::ai_prompt::AiMode;
+use crate::editor::EditorState;
 use crate::layout::Region;
 
 /// 绘制输入框的四条边框
@@ -26,10 +26,30 @@ unsafe fn draw_input_borders(
     h: f32,
     brush: &ID2D1SolidColorBrush,
 ) {
-    let top = D2D_RECT_F { left: x, top: y, right: x + w, bottom: y + 1.0 };
-    let bottom = D2D_RECT_F { left: x, top: y + h - 1.0, right: x + w, bottom: y + h };
-    let left = D2D_RECT_F { left: x, top: y, right: x + 1.0, bottom: y + h };
-    let right = D2D_RECT_F { left: x + w - 1.0, top: y, right: x + w, bottom: y + h };
+    let top = D2D_RECT_F {
+        left: x,
+        top: y,
+        right: x + w,
+        bottom: y + 1.0,
+    };
+    let bottom = D2D_RECT_F {
+        left: x,
+        top: y + h - 1.0,
+        right: x + w,
+        bottom: y + h,
+    };
+    let left = D2D_RECT_F {
+        left: x,
+        top: y,
+        right: x + 1.0,
+        bottom: y + h,
+    };
+    let right = D2D_RECT_F {
+        left: x + w - 1.0,
+        top: y,
+        right: x + w,
+        bottom: y + h,
+    };
     target.FillRectangle(&top, brush);
     target.FillRectangle(&bottom, brush);
     target.FillRectangle(&left, brush);
@@ -273,8 +293,7 @@ impl EditorState {
             match render_cmd {
                 crate::dirty_rect::RenderCommand::EditorOnly => {
                     let line_height = self.text_renderer.line_height();
-                    let editor_content_region =
-                        self.layout.editor_content_region(show_tab_bar);
+                    let editor_content_region = self.layout.editor_content_region(show_tab_bar);
                     let cursor_y = editor_content_region.y + self.cursor_line as f32 * line_height
                         - self.scroll_y;
                     self.dirty_tracker.mark_cursor(
@@ -3781,10 +3800,30 @@ impl EditorState {
                 // 1px 边框
                 let b = 1.0;
                 let border_rects = [
-                    D2D_RECT_F { left: input_rect.left, top: input_rect.top, right: input_rect.right, bottom: input_rect.top + b },
-                    D2D_RECT_F { left: input_rect.left, top: input_rect.bottom - b, right: input_rect.right, bottom: input_rect.bottom },
-                    D2D_RECT_F { left: input_rect.left, top: input_rect.top, right: input_rect.left + b, bottom: input_rect.bottom },
-                    D2D_RECT_F { left: input_rect.right - b, top: input_rect.top, right: input_rect.right, bottom: input_rect.bottom },
+                    D2D_RECT_F {
+                        left: input_rect.left,
+                        top: input_rect.top,
+                        right: input_rect.right,
+                        bottom: input_rect.top + b,
+                    },
+                    D2D_RECT_F {
+                        left: input_rect.left,
+                        top: input_rect.bottom - b,
+                        right: input_rect.right,
+                        bottom: input_rect.bottom,
+                    },
+                    D2D_RECT_F {
+                        left: input_rect.left,
+                        top: input_rect.top,
+                        right: input_rect.left + b,
+                        bottom: input_rect.bottom,
+                    },
+                    D2D_RECT_F {
+                        left: input_rect.right - b,
+                        top: input_rect.top,
+                        right: input_rect.right,
+                        bottom: input_rect.bottom,
+                    },
                 ];
                 for r in &border_rects {
                     target.FillRectangle(r, &input_border_brush);
@@ -3834,8 +3873,16 @@ impl EditorState {
                 );
 
                 // 选项标签：Aa（大小写）、.*（正则）
-                let case_label = if self.search_panel.case_sensitive { "Aa✓" } else { "Aa" };
-                let regex_label = if self.search_panel.regex { ".*✓" } else { ".*" };
+                let case_label = if self.search_panel.case_sensitive {
+                    "Aa✓"
+                } else {
+                    "Aa"
+                };
+                let regex_label = if self.search_panel.regex {
+                    ".*✓"
+                } else {
+                    ".*"
+                };
                 let opts_x = input_rect.right - 90.0;
                 let case_wide: Vec<u16> = case_label.encode_utf16().chain(Some(0)).collect();
                 let case_rect = D2D_RECT_F {
@@ -3848,7 +3895,11 @@ impl EditorState {
                     &case_wide,
                     &ui_format,
                     &case_rect,
-                    if self.search_panel.case_sensitive { &active_brush } else { &dim_brush },
+                    if self.search_panel.case_sensitive {
+                        &active_brush
+                    } else {
+                        &dim_brush
+                    },
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
@@ -3863,7 +3914,11 @@ impl EditorState {
                     &regex_wide,
                     &ui_format,
                     &regex_rect,
-                    if self.search_panel.regex { &active_brush } else { &dim_brush },
+                    if self.search_panel.regex {
+                        &active_brush
+                    } else {
+                        &dim_brush
+                    },
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
@@ -3936,7 +3991,11 @@ impl EditorState {
                         right: x + width - 12.0,
                         bottom: line_y + line_h,
                     };
-                    let header_brush = if i == selected { &active_brush } else { &output_brush };
+                    let header_brush = if i == selected {
+                        &active_brush
+                    } else {
+                        &output_brush
+                    };
                     target.DrawText(
                         &header_wide,
                         &mono_format,
@@ -4330,10 +4389,11 @@ impl EditorState {
                     } else {
                         color_f(0.15, 0.20, 0.28, 1.0)
                     };
-                    let chip_brush = match self.render_ctx.brush_cache.get_brush(target, &chip_color) {
-                        Ok(b) => b,
-                        Err(_) => continue,
-                    };
+                    let chip_brush =
+                        match self.render_ctx.brush_cache.get_brush(target, &chip_color) {
+                            Ok(b) => b,
+                            Err(_) => continue,
+                        };
                     let chip_rect = D2D_RECT_F {
                         left: chip_x,
                         top: chip_y,
@@ -4801,11 +4861,19 @@ impl EditorState {
                     right: reject_x + reject_all_w,
                     bottom: changes_y + btn_h2,
                 };
-                let accept_brush = match self.render_ctx.brush_cache.get_brush(target, &color_f(0.0, 0.55, 0.3, 1.0)) {
+                let accept_brush = match self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &color_f(0.0, 0.55, 0.3, 1.0))
+                {
                     Ok(b) => b,
                     Err(_) => return,
                 };
-                let reject_brush = match self.render_ctx.brush_cache.get_brush(target, &color_f(0.6, 0.2, 0.2, 1.0)) {
+                let reject_brush = match self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &color_f(0.6, 0.2, 0.2, 1.0))
+                {
                     Ok(b) => b,
                     Err(_) => return,
                 };
@@ -4813,10 +4881,34 @@ impl EditorState {
                 target.FillRectangle(&reject_rect, &reject_brush);
                 let accept_t: Vec<u16> = "全部接受".encode_utf16().chain(Some(0)).collect();
                 let reject_t: Vec<u16> = "全部拒绝".encode_utf16().chain(Some(0)).collect();
-                let accept_tr = D2D_RECT_F { left: accept_x, top: changes_y + 3.0, right: accept_x + accept_all_w, bottom: changes_y + btn_h2 - 1.0 };
-                let reject_tr = D2D_RECT_F { left: reject_x, top: changes_y + 3.0, right: reject_x + reject_all_w, bottom: changes_y + btn_h2 - 1.0 };
-                target.DrawText(&accept_t, &small_format, &accept_tr, &white_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
-                target.DrawText(&reject_t, &small_format, &reject_tr, &white_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                let accept_tr = D2D_RECT_F {
+                    left: accept_x,
+                    top: changes_y + 3.0,
+                    right: accept_x + accept_all_w,
+                    bottom: changes_y + btn_h2 - 1.0,
+                };
+                let reject_tr = D2D_RECT_F {
+                    left: reject_x,
+                    top: changes_y + 3.0,
+                    right: reject_x + reject_all_w,
+                    bottom: changes_y + btn_h2 - 1.0,
+                };
+                target.DrawText(
+                    &accept_t,
+                    &small_format,
+                    &accept_tr,
+                    &white_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+                target.DrawText(
+                    &reject_t,
+                    &small_format,
+                    &reject_tr,
+                    &white_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
 
                 // 文件列表
                 let list_y = changes_y + 24.0;
@@ -4826,8 +4918,18 @@ impl EditorState {
                         break;
                     }
                     let (del, ins) = file.change_count();
-                    let file_name = file.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                    let status = if file.accepted { "✓" } else if file.rejected { "✗" } else { "○" };
+                    let file_name = file
+                        .path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let status = if file.accepted {
+                        "✓"
+                    } else if file.rejected {
+                        "✗"
+                    } else {
+                        "○"
+                    };
                     let line = format!("{} {} (+{} -{})", status, file_name, ins, del);
                     let line_wide: Vec<u16> = line.encode_utf16().chain(Some(0)).collect();
                     let line_rect = D2D_RECT_F {
@@ -4840,7 +4942,13 @@ impl EditorState {
                         &line_wide,
                         &small_format,
                         &line_rect,
-                        if file.accepted { &green_brush } else if file.rejected { &dim_brush } else { text_brush },
+                        if file.accepted {
+                            &green_brush
+                        } else if file.rejected {
+                            &dim_brush
+                        } else {
+                            text_brush
+                        },
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
                         DWRITE_MEASURING_MODE_NATURAL,
                     );
@@ -4851,7 +4959,12 @@ impl EditorState {
                     let act_start = x + width - margin - (act_w * 3.0 + act_gap * 2.0);
                     for (ai, label) in ["预览", "接受", "拒绝"].iter().enumerate() {
                         let ax = act_start + ai as f32 * (act_w + act_gap);
-                        let arect = D2D_RECT_F { left: ax, top: item_y, right: ax + act_w, bottom: item_y + 16.0 };
+                        let arect = D2D_RECT_F {
+                            left: ax,
+                            top: item_y,
+                            right: ax + act_w,
+                            bottom: item_y + 16.0,
+                        };
                         let acolor = match ai {
                             0 => color_f(0.2, 0.2, 0.25, 1.0),
                             1 => color_f(0.0, 0.45, 0.25, 1.0),
@@ -4863,9 +4976,23 @@ impl EditorState {
                         };
                         target.FillRectangle(&arect, &abrush);
                         let at: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
-                        let atr = D2D_RECT_F { left: ax, top: item_y + 2.0, right: ax + act_w, bottom: item_y + 14.0 };
-                        target.DrawText(&at, &small_format, &atr, &white_brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
-                        self.ai_panel.change_action_regions.push((idx, ai as u8, ax, item_y, act_w, 16.0));
+                        let atr = D2D_RECT_F {
+                            left: ax,
+                            top: item_y + 2.0,
+                            right: ax + act_w,
+                            bottom: item_y + 14.0,
+                        };
+                        target.DrawText(
+                            &at,
+                            &small_format,
+                            &atr,
+                            &white_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        self.ai_panel
+                            .change_action_regions
+                            .push((idx, ai as u8, ax, item_y, act_w, 16.0));
                     }
                     item_y += 18.0;
                 }
@@ -6529,7 +6656,14 @@ impl EditorState {
                 bottom: cy + input_h,
             };
             target.FillRectangle(&maxtok_rect, &maxtok_bg_brush);
-            draw_input_borders(target, x + margin, cy, input_w, input_h, &maxtok_border_brush);
+            draw_input_borders(
+                target,
+                x + margin,
+                cy,
+                input_w,
+                input_h,
+                &maxtok_border_brush,
+            );
             let maxtok_text: Vec<u16> = self
                 .settings_panel
                 .max_tokens
@@ -6560,7 +6694,10 @@ impl EditorState {
             cy += input_h + gap;
 
             // System Prompt
-            let sysp_label: Vec<u16> = "System Prompt (可选)".encode_utf16().chain(Some(0)).collect();
+            let sysp_label: Vec<u16> = "System Prompt (可选)"
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
             let sysp_label_rect = D2D_RECT_F {
                 left: x + margin,
                 top: cy,
@@ -7781,26 +7918,25 @@ impl EditorState {
                                 .unwrap();
                             // 起始/结束字符列（1-based -> 0-based）
                             let start_char = diag.col.saturating_sub(1);
-                            let end_char = if diag.end_line == diag.line && diag.end_col > diag.col {
+                            let end_char = if diag.end_line == diag.line && diag.end_col > diag.col
+                            {
                                 diag.end_col.saturating_sub(1)
                             } else {
                                 // 跨行或无 end_col：取到行尾
-                                cached_line.map(|t| t.chars().count()).unwrap_or(start_char + 1)
+                                cached_line
+                                    .map(|t| t.chars().count())
+                                    .unwrap_or(start_char + 1)
                             };
                             // 至少给 1 个字符宽度，避免空诊断不可见
                             let end_char = end_char.max(start_char + 1);
-                            let wave_left =
-                                x + line_number_width + 5.0 - self.scroll_x
-                                    + start_char as f32 * char_width;
-                            let wave_right =
-                                x + line_number_width + 5.0 - self.scroll_x
-                                    + end_char as f32 * char_width;
+                            let wave_left = x + line_number_width + 5.0 - self.scroll_x
+                                + start_char as f32 * char_width;
+                            let wave_right = x + line_number_width + 5.0 - self.scroll_x
+                                + end_char as f32 * char_width;
                             // 波浪线位于行底部，3px 高度区域
                             let wave_top = line_y + line_height - 3.0;
                             // 限制在可见区域
-                            if wave_right <= x + line_number_width
-                                || wave_left >= x + width
-                            {
+                            if wave_right <= x + line_number_width || wave_left >= x + width {
                                 continue;
                             }
                             let clip_left = wave_left.max(x + line_number_width);
@@ -8056,12 +8192,7 @@ impl EditorState {
                 bottom: ty + box_h,
             };
             target.FillRectangle(&box_rect, &bg_brush);
-            target.DrawRectangle(
-                &box_rect,
-                &border_brush,
-                1.0,
-                None,
-            );
+            target.DrawRectangle(&box_rect, &border_brush, 1.0, None);
 
             // 绘制文本（逐行）
             // DWRITE_TEXT_ALIGNMENT_LEADING=0, DWRITE_PARAGRAPH_ALIGNMENT_NEAR=0
@@ -9509,13 +9640,55 @@ impl EditorState {
             target.FillRectangle(&ls_rect2, left_sidebar_icon_brush);
 
             // TEST: 注册标题栏控制按钮命中区域
-            crate::hit_test::register_hit_region("titlebar:minimize", minimize_x, y, btn_width, btn_height);
-            crate::hit_test::register_hit_region("titlebar:maximize", maximize_x, y, btn_width, btn_height);
-            crate::hit_test::register_hit_region("titlebar:close", close_x, y, btn_width, btn_height);
-            crate::hit_test::register_hit_region("titlebar:user", user_btn_x, user_btn_y, user_btn_size, user_btn_size);
-            crate::hit_test::register_hit_region("titlebar:right_panel", right_panel_btn_x, y, panel_btn_width, btn_height);
-            crate::hit_test::register_hit_region("titlebar:bottom_panel", bottom_panel_btn_x, y, panel_btn_width, btn_height);
-            crate::hit_test::register_hit_region("titlebar:left_sidebar", left_sidebar_btn_x, y, panel_btn_width, btn_height);
+            crate::hit_test::register_hit_region(
+                "titlebar:minimize",
+                minimize_x,
+                y,
+                btn_width,
+                btn_height,
+            );
+            crate::hit_test::register_hit_region(
+                "titlebar:maximize",
+                maximize_x,
+                y,
+                btn_width,
+                btn_height,
+            );
+            crate::hit_test::register_hit_region(
+                "titlebar:close",
+                close_x,
+                y,
+                btn_width,
+                btn_height,
+            );
+            crate::hit_test::register_hit_region(
+                "titlebar:user",
+                user_btn_x,
+                user_btn_y,
+                user_btn_size,
+                user_btn_size,
+            );
+            crate::hit_test::register_hit_region(
+                "titlebar:right_panel",
+                right_panel_btn_x,
+                y,
+                panel_btn_width,
+                btn_height,
+            );
+            crate::hit_test::register_hit_region(
+                "titlebar:bottom_panel",
+                bottom_panel_btn_x,
+                y,
+                panel_btn_width,
+                btn_height,
+            );
+            crate::hit_test::register_hit_region(
+                "titlebar:left_sidebar",
+                left_sidebar_btn_x,
+                y,
+                panel_btn_width,
+                btn_height,
+            );
         }
     }
 

@@ -246,7 +246,6 @@ impl TerminalPanel {
         }
     }
 
-
     /// 获取可见的输出文本
     pub fn visible_output(&self) -> Vec<String> {
         self.output_lines.iter().cloned().collect()

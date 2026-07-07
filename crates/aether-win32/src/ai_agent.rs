@@ -44,9 +44,8 @@ pub fn parse_edits(response: &str, default_path: Option<&str>) -> Vec<AiEdit> {
             break;
         };
         let header = &remaining[..path_end + ">>>>>>>".len()];
-        let path_str = extract_path_from_header(header).unwrap_or_else(|| {
-            default_path.unwrap_or("unknown").to_string()
-        });
+        let path_str = extract_path_from_header(header)
+            .unwrap_or_else(|| default_path.unwrap_or("unknown").to_string());
         remaining = &remaining[path_end + ">>>>>>>".len()..];
 
         // 查找分隔符 =======
@@ -63,7 +62,10 @@ pub fn parse_edits(response: &str, default_path: Option<&str>) -> Vec<AiEdit> {
         let replace = &remaining[..end_marker_start];
         // 跳过结束标记到行尾
         let after_end = &remaining[end_marker_start..];
-        let end_marker_end = after_end.find('\n').map(|i| i + 1).unwrap_or(after_end.len());
+        let end_marker_end = after_end
+            .find('\n')
+            .map(|i| i + 1)
+            .unwrap_or(after_end.len());
         remaining = &after_end[end_marker_end..];
 
         edits.push(AiEdit::new(

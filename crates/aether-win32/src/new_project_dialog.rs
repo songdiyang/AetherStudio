@@ -84,7 +84,10 @@ impl NewProjectDialog {
         if name.is_empty() {
             return Err("请输入项目名称".to_string());
         }
-        if name.chars().any(|c| matches!(c, '\\' | '/' | ':' | '*' | '?' | '\"' | '<' | '>' | '|')) {
+        if name
+            .chars()
+            .any(|c| matches!(c, '\\' | '/' | ':' | '*' | '?' | '\"' | '<' | '>' | '|'))
+        {
             return Err("项目名称包含非法字符".to_string());
         }
         let path = self.project_path();

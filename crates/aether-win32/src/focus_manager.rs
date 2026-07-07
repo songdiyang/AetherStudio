@@ -149,7 +149,10 @@ mod tests {
         assert_eq!(fm.current(), FocusTarget::Editor);
 
         fm.push(FocusTarget::FindReplace(FindReplaceFocus::FindQuery));
-        assert_eq!(fm.current(), FocusTarget::FindReplace(FindReplaceFocus::FindQuery));
+        assert_eq!(
+            fm.current(),
+            FocusTarget::FindReplace(FindReplaceFocus::FindQuery)
+        );
 
         let restored = fm.pop();
         assert_eq!(restored, Some(FocusTarget::Editor));

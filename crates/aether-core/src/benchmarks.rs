@@ -353,7 +353,10 @@ mod tests {
         assert_eq!(result.iterations, 3);
         assert_eq!(result.min_time, Duration::from_millis(10));
         assert_eq!(result.max_time, Duration::from_millis(30));
-        assert!(result.avg_time >= Duration::from_millis(19) && result.avg_time <= Duration::from_millis(21));
+        assert!(
+            result.avg_time >= Duration::from_millis(19)
+                && result.avg_time <= Duration::from_millis(21)
+        );
         assert!(result.throughput > 0.0);
     }
 

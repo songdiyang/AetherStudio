@@ -1,4 +1,4 @@
-use aether_core::search::{SearchQuery, SearchResult, search_workspace};
+use aether_core::search::{search_workspace, SearchQuery, SearchResult};
 
 /// 底部全局搜索面板
 #[derive(Clone, Debug)]
@@ -86,7 +86,8 @@ impl SearchPanel {
 
     pub fn select_prev(&mut self) {
         if !self.results.is_empty() {
-            self.selected_index = (self.selected_index + self.results.len() - 1) % self.results.len();
+            self.selected_index =
+                (self.selected_index + self.results.len() - 1) % self.results.len();
         }
     }
 

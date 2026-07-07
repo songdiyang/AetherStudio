@@ -257,22 +257,14 @@ impl LayoutManager {
     /// 计算标签栏区域
     pub fn tab_bar_region(&self, show_tab_bar: bool) -> Region {
         let editor = self.editor_region();
-        let height = if show_tab_bar {
-            TAB_BAR_HEIGHT
-        } else {
-            0.0
-        };
+        let height = if show_tab_bar { TAB_BAR_HEIGHT } else { 0.0 };
         Region::new(editor.x, editor.y, editor.width, height)
     }
 
     /// 计算编辑器内容区域（排除标签栏）
     pub fn editor_content_region(&self, show_tab_bar: bool) -> Region {
         let editor = self.editor_region();
-        let tab_height = if show_tab_bar {
-            TAB_BAR_HEIGHT
-        } else {
-            0.0
-        };
+        let tab_height = if show_tab_bar { TAB_BAR_HEIGHT } else { 0.0 };
         let height = (editor.height - tab_height).max(0.0);
         Region::new(editor.x, editor.y + tab_height, editor.width, height)
     }
@@ -307,12 +299,7 @@ impl LayoutManager {
                 0.0,
             );
         }
-        Region::new(
-            0.0,
-            y,
-            self.window_width,
-            self.bottom_panel_height,
-        )
+        Region::new(0.0, y, self.window_width, self.bottom_panel_height)
     }
 
     /// 计算状态栏区域
@@ -540,10 +527,7 @@ mod tests {
         assert_eq!(sidebar.width, SIDEBAR_WIDTH);
 
         let editor = layout.editor_region();
-        assert_eq!(
-            editor.x,
-            ACTIVITY_BAR_WIDTH + SIDEBAR_WIDTH
-        );
+        assert_eq!(editor.x, ACTIVITY_BAR_WIDTH + SIDEBAR_WIDTH);
         assert!(editor.width > 0.0);
 
         let status = layout.status_bar_region();
@@ -594,7 +578,10 @@ mod tests {
         assert_eq!(bottom.y, 800.0 - STATUS_BAR_HEIGHT - 200.0);
 
         let editor = layout.editor_region();
-        assert_eq!(editor.width, 1280.0 - ACTIVITY_BAR_WIDTH - SIDEBAR_WIDTH - 300.0);
+        assert_eq!(
+            editor.width,
+            1280.0 - ACTIVITY_BAR_WIDTH - SIDEBAR_WIDTH - 300.0
+        );
     }
 
     #[test]
@@ -604,7 +591,10 @@ mod tests {
         assert_eq!(tab_bar.height, TAB_BAR_HEIGHT);
 
         let content = layout.editor_content_region(true);
-        assert_eq!(content.height, layout.editor_region().height - TAB_BAR_HEIGHT);
+        assert_eq!(
+            content.height,
+            layout.editor_region().height - TAB_BAR_HEIGHT
+        );
         assert_eq!(content.y, layout.editor_region().y + TAB_BAR_HEIGHT);
     }
 
@@ -650,15 +640,9 @@ mod tests {
         );
 
         layout.toggle_status_bar();
-        assert_eq!(
-            layout.content_height(),
-            600.0 - TITLE_BAR_HEIGHT
-        );
+        assert_eq!(layout.content_height(), 600.0 - TITLE_BAR_HEIGHT);
 
         layout.toggle_bottom_panel();
-        assert_eq!(
-            layout.content_height(),
-            600.0 - TITLE_BAR_HEIGHT - 200.0
-        );
+        assert_eq!(layout.content_height(), 600.0 - TITLE_BAR_HEIGHT - 200.0);
     }
 }

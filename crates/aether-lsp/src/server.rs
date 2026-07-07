@@ -71,12 +71,14 @@ impl LanguageServer<ChildStdin> {
         event_tx: Option<mpsc::UnboundedSender<LspEvent>>,
     ) -> std::io::Result<Self> {
         let mut process = spawn_server(&config).await?;
-        let stdin = process.stdin.take().ok_or_else(|| {
-            std::io::Error::other("Failed to capture stdin")
-        })?;
-        let stdout = process.stdout.take().ok_or_else(|| {
-            std::io::Error::other("Failed to capture stdout")
-        })?;
+        let stdin = process
+            .stdin
+            .take()
+            .ok_or_else(|| std::io::Error::other("Failed to capture stdin"))?;
+        let stdout = process
+            .stdout
+            .take()
+            .ok_or_else(|| std::io::Error::other("Failed to capture stdout"))?;
         let stderr = process.stderr.take().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::Other, "Failed to capture stderr")
         })?;
@@ -123,7 +125,9 @@ impl LanguageServer<ChildStdin> {
 
 impl<W: AsyncWrite + Unpin + Send + 'static> LanguageServer<W> {
     /// 序列化参数为 JSON Value，失败时返回 io::Error 而非 panic
-    pub(crate) fn serialize_params<T: serde::Serialize>(params: T) -> std::io::Result<serde_json::Value> {
+    pub(crate) fn serialize_params<T: serde::Serialize>(
+        params: T,
+    ) -> std::io::Result<serde_json::Value> {
         serde_json::to_value(params).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -246,7 +250,9 @@ impl<W: AsyncWrite + Unpin + Send + 'static> LanguageServer<W> {
                 }
                 Ok(serde_json::to_value(ApplyWorkspaceEditResponse {
                     applied: false,
-                    failure_reason: Some("Aether does not yet auto-apply workspace edits".to_string()),
+                    failure_reason: Some(
+                        "Aether does not yet auto-apply workspace edits".to_string(),
+                    ),
                     failed_change: None,
                 })
                 .unwrap_or(serde_json::Value::Null))
@@ -935,8 +941,7 @@ async fn reader_loop<R>(
     event_tx: Option<mpsc::UnboundedSender<LspEvent>>,
     response_channels: Arc<Mutex<HashMap<serde_json::Value, oneshot::Sender<LspResponse>>>>,
     language_id: String,
-)
-where
+) where
     R: AsyncRead + Unpin + Send + 'static,
 {
     loop {
@@ -1120,7 +1125,8 @@ mod tests {
     #[test]
     fn test_serialize_params() {
         let params = serde_json::json!({"key": "value"});
-        let value = LanguageServer::<tokio::io::DuplexStream>::serialize_params(params.clone()).unwrap();
+        let value =
+            LanguageServer::<tokio::io::DuplexStream>::serialize_params(params.clone()).unwrap();
         assert_eq!(value, params);
     }
 
@@ -1169,7 +1175,10 @@ mod tests {
         });
 
         match rx.try_recv().unwrap() {
-            LspEvent::Diagnostics { uri: event_uri, diagnostics } => {
+            LspEvent::Diagnostics {
+                uri: event_uri,
+                diagnostics,
+            } => {
                 assert_eq!(event_uri, uri);
                 assert!(diagnostics.is_empty());
             }
@@ -1196,7 +1205,10 @@ mod tests {
         });
 
         match rx.try_recv().unwrap() {
-            LspEvent::Log { language_id, message } => {
+            LspEvent::Log {
+                language_id,
+                message,
+            } => {
                 assert_eq!(language_id, "rust");
                 assert_eq!(message, "hello");
             }
@@ -1389,7 +1401,11 @@ mod tests {
             let mut write = h.server_write;
             write_response(&mut write, &response).await;
         });
-        let result: Option<serde_json::Value> = h.server.receive_response(id, rx, Duration::from_secs(5)).await.unwrap();
+        let result: Option<serde_json::Value> = h
+            .server
+            .receive_response(id, rx, Duration::from_secs(5))
+            .await
+            .unwrap();
         assert!(result.is_some());
         assert!(h.server.response_channels.lock().await.is_empty());
     }
@@ -1413,7 +1429,10 @@ mod tests {
             let mut write = h.server_write;
             write_response(&mut write, &response).await;
         });
-        let result = h.server.receive_response::<serde_json::Value>(id, rx, Duration::from_secs(5)).await;
+        let result = h
+            .server
+            .receive_response::<serde_json::Value>(id, rx, Duration::from_secs(5))
+            .await;
         assert!(result.is_err());
     }
 
@@ -1439,7 +1458,11 @@ mod tests {
             write_response(&mut write, &orphan).await;
             write_response(&mut write, &good).await;
         });
-        let result = h.server.receive_response::<serde_json::Value>(id, rx, Duration::from_secs(5)).await.unwrap();
+        let result = h
+            .server
+            .receive_response::<serde_json::Value>(id, rx, Duration::from_secs(5))
+            .await
+            .unwrap();
         assert!(result.is_none());
         assert!(h.server.response_channels.lock().await.is_empty());
     }
@@ -1466,7 +1489,11 @@ mod tests {
             write_response(&mut write, &notif).await;
             write_response(&mut write, &response).await;
         });
-        let _ = h.server.receive_response::<serde_json::Value>(id, rx_resp, Duration::from_secs(5)).await.unwrap();
+        let _ = h
+            .server
+            .receive_response::<serde_json::Value>(id, rx_resp, Duration::from_secs(5))
+            .await
+            .unwrap();
         match rx.try_recv().unwrap() {
             LspEvent::Diagnostics { .. } => {}
             _ => panic!("expected diagnostics"),
@@ -1593,7 +1620,8 @@ mod tests {
         assert!(h.server.supports_rename());
 
         assert!(!h.server.supports_code_actions());
-        h.server.capabilities.code_action_provider = Some(CodeActionProviderCapability::Simple(true));
+        h.server.capabilities.code_action_provider =
+            Some(CodeActionProviderCapability::Simple(true));
         assert!(h.server.supports_code_actions());
 
         assert!(!h.server.supports_formatting());
@@ -1601,7 +1629,10 @@ mod tests {
         assert!(h.server.supports_formatting());
 
         assert!(!h.server.supports_semantic_tokens());
-        h.server.capabilities.semantic_tokens_provider = Some(SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions::default()));
+        h.server.capabilities.semantic_tokens_provider =
+            Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+                SemanticTokensOptions::default(),
+            ));
         assert!(h.server.supports_semantic_tokens());
 
         assert!(!h.server.supports_inlay_hints());
@@ -1613,7 +1644,15 @@ mod tests {
     async fn test_open_close_change_document() {
         let mut h = new_harness(None);
         let uri = Url::parse("file:///a.rs").unwrap();
-        h.server.open_document(uri.clone(), "rust".to_string(), 1, "fn main() {}".to_string()).await.unwrap();
+        h.server
+            .open_document(
+                uri.clone(),
+                "rust".to_string(),
+                1,
+                "fn main() {}".to_string(),
+            )
+            .await
+            .unwrap();
         let msg = h.client_recv.receive().await.unwrap();
         match msg {
             LspMessage::Notification(n) => assert_eq!(n.method, "textDocument/didOpen"),
@@ -1677,7 +1716,16 @@ mod tests {
     async fn test_request_completion_sends_message() {
         let mut h = new_harness(None);
         let uri = Url::parse("file:///a.rs").unwrap();
-        let _ = h.server.request_completion(&uri, Position { line: 0, character: 0 }).await;
+        let _ = h
+            .server
+            .request_completion(
+                &uri,
+                Position {
+                    line: 0,
+                    character: 0,
+                },
+            )
+            .await;
         let msg = h.client_recv.receive().await.unwrap();
         match msg {
             LspMessage::Request(req) => assert_eq!(req.method, "textDocument/completion"),
@@ -1689,7 +1737,16 @@ mod tests {
     async fn test_request_hover_sends_message() {
         let mut h = new_harness(None);
         let uri = Url::parse("file:///a.rs").unwrap();
-        let _ = h.server.request_hover(&uri, Position { line: 0, character: 0 }).await;
+        let _ = h
+            .server
+            .request_hover(
+                &uri,
+                Position {
+                    line: 0,
+                    character: 0,
+                },
+            )
+            .await;
         let msg = h.client_recv.receive().await.unwrap();
         match msg {
             LspMessage::Request(req) => assert_eq!(req.method, "textDocument/hover"),

@@ -30,12 +30,15 @@ fn main() {
 /// 用于 `--wait` 复用已有窗口时，让 CLI 进程保持到对应窗口关闭。
 fn wait_for_window_close(hwnd: windows::Win32::Foundation::HWND) {
     unsafe {
-        use windows::Win32::UI::WindowsAndMessaging::IsWindow;
         use windows::Win32::System::Threading::GetCurrentProcessId;
+        use windows::Win32::UI::WindowsAndMessaging::IsWindow;
 
         // 避免自己等自己：如果 hwnd 属于当前进程则直接返回
         let mut own_pid = 0u32;
-        let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut own_pid));
+        let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
+            hwnd,
+            Some(&mut own_pid),
+        );
         if own_pid == GetCurrentProcessId() {
             return;
         }

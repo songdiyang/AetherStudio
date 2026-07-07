@@ -152,8 +152,6 @@ fn skip_whitespace(bytes: &[u8], pos: usize) -> usize {
     i
 }
 
-
-
 fn skip_number(bytes: &[u8], pos: usize) -> usize {
     let mut i = pos;
     if bytes[i] == b'-' {
@@ -230,7 +228,10 @@ mod tests {
     fn test_json_numbers() {
         let tokens = JsonLexer::new().lex_full("[-123, 45.6, 7e-2, -8.9E+10]");
         assert_eq!(
-            tokens.iter().filter(|t| t.kind == TokenKind::NumberLiteral).count(),
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::NumberLiteral)
+                .count(),
             4
         );
     }
@@ -238,8 +239,14 @@ mod tests {
     #[test]
     fn test_json_strings() {
         let tokens = JsonLexer::new().lex_full(r#"{"key": "value", "other":"x"}"#);
-        let keys = tokens.iter().filter(|t| t.kind == TokenKind::JsonKey).count();
-        let strings = tokens.iter().filter(|t| t.kind == TokenKind::StringLiteral).count();
+        let keys = tokens
+            .iter()
+            .filter(|t| t.kind == TokenKind::JsonKey)
+            .count();
+        let strings = tokens
+            .iter()
+            .filter(|t| t.kind == TokenKind::StringLiteral)
+            .count();
         assert_eq!(keys, 2);
         assert_eq!(strings, 2);
     }
@@ -247,7 +254,13 @@ mod tests {
     #[test]
     fn test_json_punctuation() {
         let tokens = JsonLexer::new().lex_full("{}:");
-        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::Punctuation).count(), 3);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::Punctuation)
+                .count(),
+            3
+        );
     }
 
     #[test]

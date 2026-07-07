@@ -149,7 +149,10 @@ impl std::fmt::Debug for AiConfig {
             .field("model", &self.model)
             .field("temperature", &self.temperature)
             .field("max_tokens", &self.max_tokens)
-            .field("system_prompt", &self.system_prompt.as_deref().map(|_| "[PRESENT]"))
+            .field(
+                "system_prompt",
+                &self.system_prompt.as_deref().map(|_| "[PRESENT]"),
+            )
             .finish()
     }
 }
@@ -810,9 +813,7 @@ impl AiClient {
         Self::stream_response(response)
     }
 
-    fn stream_response(
-        response: ureq::Response,
-    ) -> Result<mpsc::Receiver<AiStreamEvent>, AiError> {
+    fn stream_response(response: ureq::Response) -> Result<mpsc::Receiver<AiStreamEvent>, AiError> {
         let status = response.status();
         if status != 200 {
             let text = Self::read_limited_response(response)?;
@@ -913,43 +914,77 @@ mod tests {
     #[test]
     fn provider_from_str_openai_variants() {
         for s in ["openai", "gpt", "gpt-4", "gpt-3.5-turbo", "OPENAI", "Gpt"] {
-            assert_eq!(AiProvider::from_str(s), AiProvider::OpenAi, "failed for {}", s);
+            assert_eq!(
+                AiProvider::from_str(s),
+                AiProvider::OpenAi,
+                "failed for {}",
+                s
+            );
         }
     }
 
     #[test]
     fn provider_from_str_claude_variants() {
         for s in ["claude", "anthropic", "Claude", "ANTHROPIC"] {
-            assert_eq!(AiProvider::from_str(s), AiProvider::Claude, "failed for {}", s);
+            assert_eq!(
+                AiProvider::from_str(s),
+                AiProvider::Claude,
+                "failed for {}",
+                s
+            );
         }
     }
 
     #[test]
     fn provider_from_str_kimi_variants() {
         for s in ["kimi", "moonshot", "KIMI", "Moonshot"] {
-            assert_eq!(AiProvider::from_str(s), AiProvider::Kimi, "failed for {}", s);
+            assert_eq!(
+                AiProvider::from_str(s),
+                AiProvider::Kimi,
+                "failed for {}",
+                s
+            );
         }
     }
 
     #[test]
     fn provider_from_str_azure_variants() {
         for s in ["azure", "azure_openai", "azure-openai", "Azure"] {
-            assert_eq!(AiProvider::from_str(s), AiProvider::Azure, "failed for {}", s);
+            assert_eq!(
+                AiProvider::from_str(s),
+                AiProvider::Azure,
+                "failed for {}",
+                s
+            );
         }
     }
 
     #[test]
     fn provider_from_str_custom_and_unknown() {
         for s in ["custom", "foo", "", "llama", "unknown"] {
-            assert_eq!(AiProvider::from_str(s), AiProvider::Custom, "failed for {:?}", s);
+            assert_eq!(
+                AiProvider::from_str(s),
+                AiProvider::Custom,
+                "failed for {:?}",
+                s
+            );
         }
     }
 
     #[test]
     fn provider_default_base_url() {
-        assert_eq!(AiProvider::OpenAi.default_base_url(), "https://api.openai.com/v1");
-        assert_eq!(AiProvider::Claude.default_base_url(), "https://api.anthropic.com/v1");
-        assert_eq!(AiProvider::Kimi.default_base_url(), "https://api.moonshot.cn/v1");
+        assert_eq!(
+            AiProvider::OpenAi.default_base_url(),
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(
+            AiProvider::Claude.default_base_url(),
+            "https://api.anthropic.com/v1"
+        );
+        assert_eq!(
+            AiProvider::Kimi.default_base_url(),
+            "https://api.moonshot.cn/v1"
+        );
         assert_eq!(AiProvider::Azure.default_base_url(), "");
         assert_eq!(AiProvider::Custom.default_base_url(), "");
     }
@@ -957,7 +992,10 @@ mod tests {
     #[test]
     fn provider_default_model() {
         assert_eq!(AiProvider::OpenAi.default_model(), "gpt-4");
-        assert_eq!(AiProvider::Claude.default_model(), "claude-3-sonnet-20240229");
+        assert_eq!(
+            AiProvider::Claude.default_model(),
+            "claude-3-sonnet-20240229"
+        );
         assert_eq!(AiProvider::Kimi.default_model(), "moonshot-v1-8k");
         assert_eq!(AiProvider::Azure.default_model(), "gpt-4");
         assert_eq!(AiProvider::Custom.default_model(), "");
@@ -1032,13 +1070,21 @@ mod tests {
         let config = AiConfig::from_settings(&settings);
         assert_eq!(config.provider, AiProvider::OpenAi);
         assert_eq!(config.api_key, "key");
-        assert_eq!(config.base_url, Some("https://api.openai.com/v1".to_string()));
+        assert_eq!(
+            config.base_url,
+            Some("https://api.openai.com/v1".to_string())
+        );
         assert_eq!(config.model, "gpt-4");
     }
 
     #[test]
     fn config_from_settings_custom_base_url_and_model() {
-        let settings = settings_with("claude", "secret", Some("https://example.com/v1"), "model-x");
+        let settings = settings_with(
+            "claude",
+            "secret",
+            Some("https://example.com/v1"),
+            "model-x",
+        );
         let config = AiConfig::from_settings(&settings);
         assert_eq!(config.provider, AiProvider::Claude);
         assert_eq!(config.base_url, Some("https://example.com/v1".to_string()));
@@ -1077,7 +1123,10 @@ mod tests {
         let out = format!("{:?}", config);
         assert!(!out.contains("super-secret"), "api_key leaked in Debug");
         assert!(out.contains("[REDACTED]"), "api_key not marked redacted");
-        assert!(out.contains("[PRESENT]"), "system_prompt presence not indicated");
+        assert!(
+            out.contains("[PRESENT]"),
+            "system_prompt presence not indicated"
+        );
         assert!(out.contains("gpt-4"));
     }
 
@@ -1110,7 +1159,10 @@ mod tests {
         let client = AiClient::new(&settings);
         assert_eq!(client.config.provider, AiProvider::Kimi);
         assert_eq!(client.config.api_key, "mk");
-        assert_eq!(client.config.base_url, Some("https://api.moonshot.cn/v1".to_string()));
+        assert_eq!(
+            client.config.base_url,
+            Some("https://api.moonshot.cn/v1".to_string())
+        );
         assert_eq!(client.config.model, "moonshot-v1-8k");
         assert_eq!(client.config.temperature, Some(0.5));
         assert_eq!(client.config.max_tokens, Some(512));
@@ -1272,7 +1324,9 @@ mod tests {
     #[test]
     fn chat_completion_rejects_empty_api_key_openai_compatible() {
         let client = client_with_empty_key(AiProvider::Kimi, "https://1.1.1.1");
-        let err = client.chat_completion(&[ChatMessage::user("hi")]).unwrap_err();
+        let err = client
+            .chat_completion(&[ChatMessage::user("hi")])
+            .unwrap_err();
         match err {
             AiError::Config(msg) => assert_eq!(msg, "API Key 未设置"),
             other => panic!("expected Config error, got {:?}", other),
@@ -1282,7 +1336,9 @@ mod tests {
     #[test]
     fn chat_completion_rejects_empty_api_key_claude() {
         let client = client_with_empty_key(AiProvider::Claude, "https://1.1.1.1");
-        let err = client.chat_completion(&[ChatMessage::user("hi")]).unwrap_err();
+        let err = client
+            .chat_completion(&[ChatMessage::user("hi")])
+            .unwrap_err();
         match err {
             AiError::Config(msg) => assert_eq!(msg, "API Key 未设置"),
             other => panic!("expected Config error, got {:?}", other),
@@ -1332,7 +1388,10 @@ mod tests {
         let json = serde_json::json!({
             "choices": [{"delta": {"content": "hello"}}]
         });
-        assert_eq!(AiClient::extract_stream_token(&json), Some("hello".to_string()));
+        assert_eq!(
+            AiClient::extract_stream_token(&json),
+            Some("hello".to_string())
+        );
     }
 
     #[test]
@@ -1356,7 +1415,10 @@ mod tests {
         let json = serde_json::json!({
             "delta": {"text": "world"}
         });
-        assert_eq!(AiClient::extract_stream_token(&json), Some("world".to_string()));
+        assert_eq!(
+            AiClient::extract_stream_token(&json),
+            Some("world".to_string())
+        );
     }
 
     #[test]

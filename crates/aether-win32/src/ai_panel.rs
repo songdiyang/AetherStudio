@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex};
 use aether_ai::{AiClient, AiStreamEvent, ChatMessage};
 use aether_shared::settings::AiSettings;
 
-use crate::ai_agent::{AiEdit, parse_edits};
-use crate::ai_context::{AiContextAttachment, truncate_middle};
-use crate::ai_prompt::{AiMode, build_chat_prompt};
+use crate::ai_agent::{parse_edits, AiEdit};
+use crate::ai_context::{truncate_middle, AiContextAttachment};
+use crate::ai_prompt::{build_chat_prompt, AiMode};
 use crate::diff_view::DiffView;
 use crate::editor::EditorState;
 
@@ -282,10 +282,7 @@ impl AiPanel {
     }
 
     /// 发送消息（AI-H01: 非阻塞 — HTTP 调用在后台线程执行，结果通过 stream_state 流式返回）
-    pub fn send_message(
-        &mut self,
-        settings: &AiSettings,
-    ) -> Result<String, String> {
+    pub fn send_message(&mut self, settings: &AiSettings) -> Result<String, String> {
         self.send_message_internal(settings, self.input.clone(), AiMode::Ask, None)
     }
 
@@ -589,7 +586,10 @@ impl AiPanel {
     }
 
     /// 接受所有已接受的编辑并应用到编辑器
-    pub fn apply_accepted_changes(&mut self, editor: &mut EditorState) -> std::result::Result<Vec<PathBuf>, String> {
+    pub fn apply_accepted_changes(
+        &mut self,
+        editor: &mut EditorState,
+    ) -> std::result::Result<Vec<PathBuf>, String> {
         let edits: Vec<AiEdit> = self.diff_view.to_edits();
         if edits.is_empty() {
             return Ok(Vec::new());
@@ -670,15 +670,18 @@ impl AiPanel {
 
     /// 切换附件：已存在则移除，否则添加
     pub fn toggle_attachment(&mut self, attachment: AiContextAttachment) {
-        let pos = self.attachments.iter().position(|a| match (a, &attachment) {
-            (AiContextAttachment::CurrentFile, AiContextAttachment::CurrentFile) => true,
-            (AiContextAttachment::Selection, AiContextAttachment::Selection) => true,
-            (AiContextAttachment::OpenFiles, AiContextAttachment::OpenFiles) => true,
-            (AiContextAttachment::Diagnostics, AiContextAttachment::Diagnostics) => true,
-            (AiContextAttachment::FileTree, AiContextAttachment::FileTree) => true,
-            (AiContextAttachment::CustomText(x), AiContextAttachment::CustomText(y)) => x == y,
-            _ => false,
-        });
+        let pos = self
+            .attachments
+            .iter()
+            .position(|a| match (a, &attachment) {
+                (AiContextAttachment::CurrentFile, AiContextAttachment::CurrentFile) => true,
+                (AiContextAttachment::Selection, AiContextAttachment::Selection) => true,
+                (AiContextAttachment::OpenFiles, AiContextAttachment::OpenFiles) => true,
+                (AiContextAttachment::Diagnostics, AiContextAttachment::Diagnostics) => true,
+                (AiContextAttachment::FileTree, AiContextAttachment::FileTree) => true,
+                (AiContextAttachment::CustomText(x), AiContextAttachment::CustomText(y)) => x == y,
+                _ => false,
+            });
         if let Some(idx) = pos {
             self.attachments.remove(idx);
         } else {

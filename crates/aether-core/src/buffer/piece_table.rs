@@ -858,7 +858,12 @@ mod tests {
         let pt_rebuild = PieceTable::from_string(pt.get_all_text());
         assert_eq!(pt.len_lines(), pt_rebuild.len_lines());
         for i in 0..pt.len_lines() {
-            assert_eq!(pt.get_line(i), pt_rebuild.get_line(i), "line {} mismatch", i);
+            assert_eq!(
+                pt.get_line(i),
+                pt_rebuild.get_line(i),
+                "line {} mismatch",
+                i
+            );
         }
     }
 
@@ -902,7 +907,7 @@ mod tests {
         let mut pt = PieceTable::from_string("abcdef".to_string());
         pt.insert(3, "XYZ"); // abcXYZdef
         pt.insert(6, "123"); // abcXYZ123def
-        // 删除从第1个 piece 到第3个 piece 的部分内容 [1,9)
+                             // 删除从第1个 piece 到第3个 piece 的部分内容 [1,9)
         pt.delete(1, 9);
         assert_eq!(pt.get_all_text(), "adef");
     }

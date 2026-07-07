@@ -43,14 +43,14 @@ impl DebugSession {
         event_tx: mpsc::UnboundedSender<DapEventUi>,
     ) -> std::io::Result<Self> {
         let mut process = spawn_adapter(&config).await?;
-        let stdin = process.stdin.take().ok_or_else(|| {
-            std::io::Error::other("Failed to capture adapter stdin")
-        })?;
-        let stdout = process.stdout.take().ok_or_else(|| {
-            std::io::Error::other(
-                "Failed to capture adapter stdout",
-            )
-        })?;
+        let stdin = process
+            .stdin
+            .take()
+            .ok_or_else(|| std::io::Error::other("Failed to capture adapter stdin"))?;
+        let stdout = process
+            .stdout
+            .take()
+            .ok_or_else(|| std::io::Error::other("Failed to capture adapter stdout"))?;
         // H-04: 单独取出 stderr，保留 Child 句柄以便后续 kill
         let stderr = process.stderr.take().ok_or_else(|| {
             std::io::Error::new(
@@ -112,9 +112,10 @@ impl DebugSession {
                         if resp.success {
                             break Ok(());
                         } else {
-                            return Err(std::io::Error::other(
-                                format!("initialize failed: {}", resp.message.unwrap_or_default()),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "initialize failed: {}",
+                                resp.message.unwrap_or_default()
+                            )));
                         }
                     }
                     DapMessage::Event(evt) => {
@@ -177,9 +178,10 @@ impl DebugSession {
                             self.state = DebugSessionState::Running;
                             break;
                         } else {
-                            return Err(std::io::Error::other(
-                                format!("launch failed: {}", resp.message.unwrap_or_default()),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "launch failed: {}",
+                                resp.message.unwrap_or_default()
+                            )));
                         }
                     }
                     DapMessage::Event(evt) => {
@@ -230,12 +232,10 @@ impl DebugSession {
                 match message {
                     DapMessage::Response(resp) if resp.command == "setBreakpoints" => {
                         if !resp.success {
-                            return Err(std::io::Error::other(
-                                format!(
-                                    "setBreakpoints failed: {}",
-                                    resp.message.unwrap_or_default()
-                                ),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "setBreakpoints failed: {}",
+                                resp.message.unwrap_or_default()
+                            )));
                         }
                         let body = resp.body.unwrap_or(serde_json::json!({"breakpoints": []}));
                         let breakpoints: Vec<Breakpoint> = serde_json::from_value(
@@ -309,9 +309,10 @@ impl DebugSession {
                 match message {
                     DapMessage::Response(resp) if resp.command == "stackTrace" => {
                         if !resp.success {
-                            return Err(std::io::Error::other(
-                                format!("stackTrace failed: {}", resp.message.unwrap_or_default()),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "stackTrace failed: {}",
+                                resp.message.unwrap_or_default()
+                            )));
                         }
                         let body = resp.body.unwrap_or(serde_json::json!({"stackFrames": []}));
                         let frames: Vec<StackFrame> = serde_json::from_value(
@@ -355,9 +356,10 @@ impl DebugSession {
                 match message {
                     DapMessage::Response(resp) if resp.command == "scopes" => {
                         if !resp.success {
-                            return Err(std::io::Error::other(
-                                format!("scopes failed: {}", resp.message.unwrap_or_default()),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "scopes failed: {}",
+                                resp.message.unwrap_or_default()
+                            )));
                         }
                         let body = resp.body.unwrap_or(serde_json::json!({"scopes": []}));
                         let scopes: Vec<Scope> = serde_json::from_value(
@@ -401,9 +403,10 @@ impl DebugSession {
                 match message {
                     DapMessage::Response(resp) if resp.command == "variables" => {
                         if !resp.success {
-                            return Err(std::io::Error::other(
-                                format!("variables failed: {}", resp.message.unwrap_or_default()),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "variables failed: {}",
+                                resp.message.unwrap_or_default()
+                            )));
                         }
                         let body = resp.body.unwrap_or(serde_json::json!({"variables": []}));
                         let variables: Vec<Variable> = serde_json::from_value(
@@ -458,9 +461,10 @@ impl DebugSession {
                 match message {
                     DapMessage::Response(resp) if resp.command == "evaluate" => {
                         if !resp.success {
-                            return Err(std::io::Error::other(
-                                format!("evaluate failed: {}", resp.message.unwrap_or_default()),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "evaluate failed: {}",
+                                resp.message.unwrap_or_default()
+                            )));
                         }
                         let body = resp.body.unwrap_or(serde_json::json!({"result": ""}));
                         let result = body
@@ -569,9 +573,11 @@ impl DebugSession {
                         if resp.success {
                             break;
                         } else {
-                            return Err(std::io::Error::other(
-                                format!("{} failed: {}", command, resp.message.unwrap_or_default()),
-                            ));
+                            return Err(std::io::Error::other(format!(
+                                "{} failed: {}",
+                                command,
+                                resp.message.unwrap_or_default()
+                            )));
                         }
                     }
                     DapMessage::Event(evt) => {
@@ -684,7 +690,11 @@ mod tests {
     use crate::transport::DapTransport;
     use tokio::io::duplex;
 
-    fn setup() -> (DebugSession, DapTransport, mpsc::UnboundedReceiver<DapEventUi>) {
+    fn setup() -> (
+        DebugSession,
+        DapTransport,
+        mpsc::UnboundedReceiver<DapEventUi>,
+    ) {
         let (tx, rx) = mpsc::unbounded_channel();
         let (client_in, adapter_in) = duplex(64 * 1024);
         let (adapter_out, client_out) = duplex(64 * 1024);
@@ -740,7 +750,9 @@ mod tests {
     #[tokio::test]
     async fn initialize_success_sets_running() {
         let (mut session, mut fake, _rx) = setup();
-        fake.send(&success_response("initialize", None)).await.unwrap();
+        fake.send(&success_response("initialize", None))
+            .await
+            .unwrap();
         session.initialize().await.unwrap();
         assert_eq!(*session.state(), DebugSessionState::Running);
     }
@@ -764,7 +776,9 @@ mod tests {
         ))
         .await
         .unwrap();
-        fake.send(&success_response("initialize", None)).await.unwrap();
+        fake.send(&success_response("initialize", None))
+            .await
+            .unwrap();
 
         session.initialize().await.unwrap();
         assert_eq!(*session.state(), DebugSessionState::Running);
@@ -807,7 +821,10 @@ mod tests {
         fake.send(&success_response("setBreakpoints", Some(body)))
             .await
             .unwrap();
-        let bps = session.set_breakpoints("/src/main.rs", vec![10, 20]).await.unwrap();
+        let bps = session
+            .set_breakpoints("/src/main.rs", vec![10, 20])
+            .await
+            .unwrap();
         assert_eq!(bps.len(), 2);
         assert_eq!(bps[0].id, Some(1));
     }
@@ -828,7 +845,9 @@ mod tests {
     #[tokio::test]
     async fn continue_execution_success() {
         let (mut session, mut fake, _rx) = setup();
-        fake.send(&success_response("continue", None)).await.unwrap();
+        fake.send(&success_response("continue", None))
+            .await
+            .unwrap();
         session.continue_execution(1).await.unwrap();
     }
 
@@ -891,7 +910,9 @@ mod tests {
                 {"name": "Locals", "variables_reference": 100, "expensive": false},
             ]
         });
-        fake.send(&success_response("scopes", Some(body))).await.unwrap();
+        fake.send(&success_response("scopes", Some(body)))
+            .await
+            .unwrap();
         let scopes = session.scopes(1).await.unwrap();
         assert_eq!(scopes.len(), 1);
         assert_eq!(scopes[0].name, "Locals");
@@ -937,7 +958,9 @@ mod tests {
     #[tokio::test]
     async fn disconnect_terminates_state() {
         let (mut session, mut fake, _rx) = setup();
-        fake.send(&success_response("disconnect", None)).await.unwrap();
+        fake.send(&success_response("disconnect", None))
+            .await
+            .unwrap();
         session.disconnect().await.unwrap();
         assert_eq!(*session.state(), DebugSessionState::Terminated);
     }
@@ -945,7 +968,9 @@ mod tests {
     #[tokio::test]
     async fn detach_terminates_state() {
         let (mut session, mut fake, _rx) = setup();
-        fake.send(&success_response("disconnect", None)).await.unwrap();
+        fake.send(&success_response("disconnect", None))
+            .await
+            .unwrap();
         session.detach().await.unwrap();
         assert_eq!(*session.state(), DebugSessionState::Terminated);
     }
@@ -982,7 +1007,10 @@ mod tests {
         };
         session.handle_event(event).await.unwrap();
         assert_eq!(*session.state(), DebugSessionState::Running);
-        assert!(matches!(rx.try_recv(), Ok(DapEventUi::Continued { thread_id: 5 })));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(DapEventUi::Continued { thread_id: 5 })
+        ));
     }
 
     #[tokio::test]
@@ -1009,7 +1037,10 @@ mod tests {
             body: Some(serde_json::json!({"exitCode": 42})),
         };
         session.handle_event(event).await.unwrap();
-        assert!(matches!(rx.try_recv(), Ok(DapEventUi::Exited { exit_code: 42 })));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(DapEventUi::Exited { exit_code: 42 })
+        ));
     }
 
     #[tokio::test]

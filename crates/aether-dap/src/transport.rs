@@ -167,7 +167,11 @@ mod tests {
     use crate::types::*;
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
 
-    fn make_transport_and_peer() -> (DapTransport, tokio::io::DuplexStream, tokio::io::DuplexStream) {
+    fn make_transport_and_peer() -> (
+        DapTransport,
+        tokio::io::DuplexStream,
+        tokio::io::DuplexStream,
+    ) {
         // client_in: session writes -> adapter reads
         // client_out: adapter writes -> session reads
         let (client_in, adapter_in) = duplex(64 * 1024);
@@ -254,7 +258,11 @@ mod tests {
     async fn receive_malformed_json_returns_invalid_data() {
         let (mut transport, _adapter_in, mut adapter_out) = make_transport_and_peer();
         let body = b"not json";
-        let frame = format!("Content-Length: {}\r\n\r\n{}", body.len(), String::from_utf8_lossy(body));
+        let frame = format!(
+            "Content-Length: {}\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body)
+        );
         adapter_out.write_all(frame.as_bytes()).await.unwrap();
         let err = transport.receive().await.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
@@ -263,10 +271,7 @@ mod tests {
     #[tokio::test]
     async fn receive_oversized_content_length_returns_invalid_data() {
         let (mut transport, _adapter_in, mut adapter_out) = make_transport_and_peer();
-        let frame = format!(
-            "Content-Length: {}\r\n\r\n",
-            64 * 1024 * 1024 + 1
-        );
+        let frame = format!("Content-Length: {}\r\n\r\n", 64 * 1024 * 1024 + 1);
         adapter_out.write_all(frame.as_bytes()).await.unwrap();
         let err = transport.receive().await.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);

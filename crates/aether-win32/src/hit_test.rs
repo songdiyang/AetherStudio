@@ -54,13 +54,7 @@ impl HitTestFrame {
 static HIT_TEST_FRAME: Mutex<Option<HitTestFrame>> = Mutex::new(None);
 
 /// 注册一个可点击区域（线程安全）
-pub fn register_hit_region(
-    action: impl Into<String>,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-) {
+pub fn register_hit_region(action: impl Into<String>, x: f32, y: f32, width: f32, height: f32) {
     if let Ok(mut guard) = HIT_TEST_FRAME.lock() {
         let frame = guard.get_or_insert_with(HitTestFrame::new);
         frame.add(action, x, y, width, height);

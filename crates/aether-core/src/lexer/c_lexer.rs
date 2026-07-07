@@ -1,6 +1,4 @@
-use super::common::{
-    skip_block_comment, skip_line_comment, skip_quoted, skip_whitespace,
-};
+use super::common::{skip_block_comment, skip_line_comment, skip_quoted, skip_whitespace};
 use super::{LexemeSpan, Lexer, TokenKind};
 
 /// C语言词法分析器 — 基于确定性有限自动机(DFA)
@@ -240,13 +238,49 @@ impl Default for CLexer {
 fn is_keyword_bytes(bytes: &[u8]) -> bool {
     matches!(
         bytes,
-        b"auto" | b"break" | b"case" | b"char" | b"const" | b"continue" | b"default"
-            | b"do" | b"double" | b"else" | b"enum" | b"extern" | b"float" | b"for"
-            | b"goto" | b"if" | b"inline" | b"int" | b"long" | b"register" | b"restrict"
-            | b"return" | b"short" | b"signed" | b"sizeof" | b"static" | b"struct"
-            | b"switch" | b"typedef" | b"union" | b"unsigned" | b"void" | b"volatile"
-            | b"while" | b"_Alignas" | b"_Alignof" | b"_Atomic" | b"_Bool" | b"_Complex"
-            | b"_Generic" | b"_Imaginary" | b"_Noreturn" | b"_Static_assert"
+        b"auto"
+            | b"break"
+            | b"case"
+            | b"char"
+            | b"const"
+            | b"continue"
+            | b"default"
+            | b"do"
+            | b"double"
+            | b"else"
+            | b"enum"
+            | b"extern"
+            | b"float"
+            | b"for"
+            | b"goto"
+            | b"if"
+            | b"inline"
+            | b"int"
+            | b"long"
+            | b"register"
+            | b"restrict"
+            | b"return"
+            | b"short"
+            | b"signed"
+            | b"sizeof"
+            | b"static"
+            | b"struct"
+            | b"switch"
+            | b"typedef"
+            | b"union"
+            | b"unsigned"
+            | b"void"
+            | b"volatile"
+            | b"while"
+            | b"_Alignas"
+            | b"_Alignof"
+            | b"_Atomic"
+            | b"_Bool"
+            | b"_Complex"
+            | b"_Generic"
+            | b"_Imaginary"
+            | b"_Noreturn"
+            | b"_Static_assert"
             | b"_Thread_local"
     )
 }
@@ -272,7 +306,8 @@ fn skip_number(bytes: &[u8], pos: usize) -> usize {
 
     // H-07: 检测进制前缀。十六进制字符 a-f/A-F 仅在 0x 前缀后有效，
     // 避免 `123abc` 被整体识别为数字（abc 应为独立标识符）。
-    if i + 1 < bytes.len() && bytes[i] == b'0' && matches!(bytes[i + 1], b'x' | b'X' | b'b' | b'B') {
+    if i + 1 < bytes.len() && bytes[i] == b'0' && matches!(bytes[i + 1], b'x' | b'X' | b'b' | b'B')
+    {
         i += 2;
         while i < bytes.len() && bytes[i].is_ascii_hexdigit() {
             i += 1;
@@ -422,44 +457,85 @@ mod tests {
     #[test]
     fn test_c_doc_comment() {
         let tokens = CLexer::new().lex_full("/** doc */\n/*/ not doc */");
-        let docs = tokens.iter().filter(|t| t.kind == TokenKind::DocComment).count();
+        let docs = tokens
+            .iter()
+            .filter(|t| t.kind == TokenKind::DocComment)
+            .count();
         assert_eq!(docs, 1);
     }
 
     #[test]
     fn test_c_strings_and_chars() {
         let tokens = CLexer::new().lex_full(r#""str" 'c' "#);
-        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::StringLiteral).count(), 1);
-        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::CharLiteral).count(), 1);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::StringLiteral)
+                .count(),
+            1
+        );
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::CharLiteral)
+                .count(),
+            1
+        );
     }
 
     #[test]
     fn test_c_numbers() {
         let tokens = CLexer::new().lex_full("0x1F 0b10 3.14f 1e10L 123u");
-        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::NumberLiteral).count(), 5);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::NumberLiteral)
+                .count(),
+            5
+        );
     }
 
     #[test]
     fn test_c_operators() {
         let tokens = CLexer::new().lex_full("++ -- -> == != <= >= << >> && ||");
-        assert!(tokens.iter().filter(|t| t.kind == TokenKind::Operator).count() >= 10);
+        assert!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::Operator)
+                .count()
+                >= 10
+        );
     }
 
     #[test]
     fn test_c_divide_assignment() {
         let tokens = CLexer::new().lex_full("a /= b");
-        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::Operator).count(), 1);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::Operator)
+                .count(),
+            1
+        );
     }
 
     #[test]
     fn test_c_preprocessor_continuation() {
         let tokens = CLexer::new().lex_full("#define FOO \\\n  bar");
-        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::Preprocessor).count(), 1);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::Preprocessor)
+                .count(),
+            1
+        );
     }
 
     #[test]
     fn test_c_unknown_utf8() {
         let tokens = CLexer::new().lex_full("中文");
-        assert!(tokens.iter().any(|t| t.kind == TokenKind::Unknown && t.len == 3));
+        assert!(tokens
+            .iter()
+            .any(|t| t.kind == TokenKind::Unknown && t.len == 3));
     }
 }

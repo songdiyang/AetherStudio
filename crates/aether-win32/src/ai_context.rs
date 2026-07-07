@@ -60,7 +60,12 @@ pub fn truncate_middle(s: &str, max_len: usize) -> String {
     let head = &s[..s.floor_char_boundary(keep)];
     let tail_start = s.floor_char_boundary(s.len() - keep);
     let tail = &s[tail_start..];
-    format!("{}\n...（已省略 {} 字符）...\n{}", head, s.len() - max_len, tail)
+    format!(
+        "{}\n...（已省略 {} 字符）...\n{}",
+        head,
+        s.len() - max_len,
+        tail
+    )
 }
 
 #[cfg(test)]

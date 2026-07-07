@@ -51,12 +51,7 @@ impl InlineCompletionService {
     pub fn request(&mut self, prefix: &str, _suffix: &str) -> Option<InlineCompletion> {
         let suggestion = suggest_completion(prefix)?;
         self.counter += 1;
-        Some(InlineCompletion::new(
-            suggestion,
-            0,
-            0,
-            self.counter,
-        ))
+        Some(InlineCompletion::new(suggestion, 0, 0, self.counter))
     }
 
     /// 取消当前请求（占位：异步实现时取消 in-flight 请求）
@@ -221,21 +216,51 @@ mod tests {
 
     #[test]
     fn test_suggest_completion_keywords() {
-        assert_eq!(suggest_completion("fn"), Some(" name() {\n    \n}".to_string()));
-        assert_eq!(suggest_completion("if"), Some(" condition {\n    \n}".to_string()));
-        assert_eq!(suggest_completion("for"), Some(" item in iterable {\n    \n}".to_string()));
-        assert_eq!(suggest_completion("while"), Some(" condition {\n    \n}".to_string()));
-        assert_eq!(suggest_completion("match"), Some(" value {\n    _ => {}\n}".to_string()));
-        assert_eq!(suggest_completion("struct"), Some(" Name {\n    \n}".to_string()));
-        assert_eq!(suggest_completion("enum"), Some(" Name {\n    \n}".to_string()));
-        assert_eq!(suggest_completion("impl"), Some(" Type {\n    \n}".to_string()));
+        assert_eq!(
+            suggest_completion("fn"),
+            Some(" name() {\n    \n}".to_string())
+        );
+        assert_eq!(
+            suggest_completion("if"),
+            Some(" condition {\n    \n}".to_string())
+        );
+        assert_eq!(
+            suggest_completion("for"),
+            Some(" item in iterable {\n    \n}".to_string())
+        );
+        assert_eq!(
+            suggest_completion("while"),
+            Some(" condition {\n    \n}".to_string())
+        );
+        assert_eq!(
+            suggest_completion("match"),
+            Some(" value {\n    _ => {}\n}".to_string())
+        );
+        assert_eq!(
+            suggest_completion("struct"),
+            Some(" Name {\n    \n}".to_string())
+        );
+        assert_eq!(
+            suggest_completion("enum"),
+            Some(" Name {\n    \n}".to_string())
+        );
+        assert_eq!(
+            suggest_completion("impl"),
+            Some(" Type {\n    \n}".to_string())
+        );
     }
 
     #[test]
     fn test_suggest_completion_with_indent() {
         // 行首关键字（前面有缩进）仍应匹配
-        assert_eq!(suggest_completion("    fn"), Some(" name() {\n    \n}".to_string()));
-        assert_eq!(suggest_completion("\tfn"), Some(" name() {\n    \n}".to_string()));
+        assert_eq!(
+            suggest_completion("    fn"),
+            Some(" name() {\n    \n}".to_string())
+        );
+        assert_eq!(
+            suggest_completion("\tfn"),
+            Some(" name() {\n    \n}".to_string())
+        );
     }
 
     #[test]
@@ -268,12 +293,21 @@ mod tests {
     #[test]
     fn test_extract_last_word_with_prefix() {
         assert_eq!(extract_last_word_with_prefix("fn"), Some(("", "fn")));
-        assert_eq!(extract_last_word_with_prefix("foo fn"), Some(("foo ", "fn")));
-        assert_eq!(extract_last_word_with_prefix("    fn"), Some(("    ", "fn")));
+        assert_eq!(
+            extract_last_word_with_prefix("foo fn"),
+            Some(("foo ", "fn"))
+        );
+        assert_eq!(
+            extract_last_word_with_prefix("    fn"),
+            Some(("    ", "fn"))
+        );
         assert_eq!(extract_last_word_with_prefix("//"), Some(("", "//")));
         // "abc123" 中 123 是尾部非单词字符，被跳过；末尾单词是 "abc"，前面无文本
         assert_eq!(extract_last_word_with_prefix("abc123"), Some(("", "abc")));
-        assert_eq!(extract_last_word_with_prefix("hello world"), Some(("hello ", "world")));
+        assert_eq!(
+            extract_last_word_with_prefix("hello world"),
+            Some(("hello ", "world"))
+        );
         assert_eq!(extract_last_word_with_prefix(""), None);
         assert_eq!(extract_last_word_with_prefix("   "), None);
         assert_eq!(extract_last_word_with_prefix("123"), None);

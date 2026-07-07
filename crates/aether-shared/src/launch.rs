@@ -161,11 +161,17 @@ mod tests {
     fn test_parse_goto_position() {
         assert_eq!(
             parse_goto_position("10:5").unwrap(),
-            GotoPosition { line: 10, column: 5 }
+            GotoPosition {
+                line: 10,
+                column: 5
+            }
         );
         assert_eq!(
             parse_goto_position("10").unwrap(),
-            GotoPosition { line: 10, column: 1 }
+            GotoPosition {
+                line: 10,
+                column: 1
+            }
         );
     }
 
@@ -173,30 +179,66 @@ mod tests {
     fn test_parse_goto_with_file() {
         let (file, pos) = parse_goto("file.txt:10:5").unwrap();
         assert_eq!(file, Some(PathBuf::from("file.txt")));
-        assert_eq!(pos, GotoPosition { line: 10, column: 5 });
+        assert_eq!(
+            pos,
+            GotoPosition {
+                line: 10,
+                column: 5
+            }
+        );
 
         let (file, pos) = parse_goto("file.txt:10").unwrap();
         assert_eq!(file, Some(PathBuf::from("file.txt")));
-        assert_eq!(pos, GotoPosition { line: 10, column: 1 });
+        assert_eq!(
+            pos,
+            GotoPosition {
+                line: 10,
+                column: 1
+            }
+        );
 
         let (file, pos) = parse_goto("C:\\folder\\file.txt:10:5").unwrap();
         assert_eq!(file, Some(PathBuf::from("C:\\folder\\file.txt")));
-        assert_eq!(pos, GotoPosition { line: 10, column: 5 });
+        assert_eq!(
+            pos,
+            GotoPosition {
+                line: 10,
+                column: 5
+            }
+        );
 
         let (file, pos) = parse_goto("src:main.rs:10:5").unwrap();
         assert_eq!(file, Some(PathBuf::from("src:main.rs")));
-        assert_eq!(pos, GotoPosition { line: 10, column: 5 });
+        assert_eq!(
+            pos,
+            GotoPosition {
+                line: 10,
+                column: 5
+            }
+        );
     }
 
     #[test]
     fn test_parse_goto_without_file() {
         let (file, pos) = parse_goto("10:5").unwrap();
         assert_eq!(file, None);
-        assert_eq!(pos, GotoPosition { line: 10, column: 5 });
+        assert_eq!(
+            pos,
+            GotoPosition {
+                line: 10,
+                column: 5
+            }
+        );
 
         let (file, pos) = parse_goto("10").unwrap();
         assert_eq!(file, None);
-        assert_eq!(pos, GotoPosition { line: 10, column: 1 });
+        assert_eq!(
+            pos,
+            GotoPosition {
+                line: 10,
+                column: 1
+            }
+        );
     }
 
     #[test]
@@ -237,7 +279,10 @@ mod tests {
         let args = LaunchArgs {
             paths: vec![PathBuf::from("C:\\src\\main.rs")],
             new_window: true,
-            goto: Some(GotoPosition { line: 10, column: 5 }),
+            goto: Some(GotoPosition {
+                line: 10,
+                column: 5,
+            }),
             wait: false,
         };
         let json = serde_json::to_string(&args).expect("序列化失败");
@@ -250,7 +295,10 @@ mod tests {
 
     #[test]
     fn test_goto_position_zero_based() {
-        let pos = GotoPosition { line: 10, column: 5 };
+        let pos = GotoPosition {
+            line: 10,
+            column: 5,
+        };
         assert_eq!(pos.zero_based_line(), 9);
         assert_eq!(pos.zero_based_column(), 4);
         // line=1 / column=1 应映射到 0
@@ -286,7 +334,13 @@ mod tests {
         // 在 parse_goto 中，line > 0 且 col 可以为 0
         let (file, pos) = parse_goto("file.txt:10:0").unwrap();
         assert_eq!(file, Some(PathBuf::from("file.txt")));
-        assert_eq!(pos, GotoPosition { line: 10, column: 0 });
+        assert_eq!(
+            pos,
+            GotoPosition {
+                line: 10,
+                column: 0
+            }
+        );
     }
 
     #[test]

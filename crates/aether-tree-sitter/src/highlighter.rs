@@ -213,7 +213,8 @@ impl TreeSitterHighlighter {
 
         if let Ok(events) = self
             .highlighter
-            .highlight(config, text.as_bytes(), None, |_| None) {
+            .highlight(config, text.as_bytes(), None, |_| None)
+        {
             for event in events {
                 match event {
                     Ok(HighlightEvent::Source { start, end: _ }) => {
@@ -439,7 +440,10 @@ mod tests {
     #[test]
     fn test_highlight_line_typescript() {
         let mut highlighter = TreeSitterHighlighter::new();
-        let spans = highlighter.highlight_line("function add(x: number): number { return x; }", "typescript");
+        let spans = highlighter.highlight_line(
+            "function add(x: number): number { return x; }",
+            "typescript",
+        );
         assert!(!spans.is_empty(), "TypeScript 简单代码应产生高亮 span");
     }
 
@@ -486,7 +490,10 @@ mod tests {
         let mut highlighter = TreeSitterHighlighter::new();
         let via_rust = highlighter.highlight_line("fn main() {}", "rust");
         let via_rs = highlighter.highlight_line("fn main() {}", "rs");
-        assert!(via_rs.is_empty(), "highlighter 仅识别标准语言名，别名 rs 不在 highlight_line 匹配中");
+        assert!(
+            via_rs.is_empty(),
+            "highlighter 仅识别标准语言名，别名 rs 不在 highlight_line 匹配中"
+        );
         assert!(!via_rust.is_empty());
     }
 
@@ -515,7 +522,11 @@ mod tests {
     #[test]
     fn test_parse_document_typescript() {
         let mut highlighter = TreeSitterHighlighter::new();
-        let tree = highlighter.parse_document("doc_ts", "typescript", "function foo(): number { return 1; }");
+        let tree = highlighter.parse_document(
+            "doc_ts",
+            "typescript",
+            "function foo(): number { return 1; }",
+        );
         assert!(tree.is_some());
     }
 
@@ -607,5 +618,4 @@ mod tests {
         assert_eq!(capture_to_token_kind(10), TokenKind::Unknown);
         assert_eq!(capture_to_token_kind(usize::MAX), TokenKind::Unknown);
     }
-
 }

@@ -300,9 +300,7 @@ impl CommandPalette {
 
                 // 简单包含匹配（生产环境可用 fuzzy-matcher 库）
                 label_lower.contains(&self.query)
-                    || desc_lower
-                        .as_ref()
-                        .is_some_and(|d| d.contains(&self.query))
+                    || desc_lower.as_ref().is_some_and(|d| d.contains(&self.query))
             })
             .map(|(idx, _)| idx)
             .collect();
@@ -347,7 +345,12 @@ mod tests {
             let item = &palette.items[idx];
             assert!(
                 item.label.to_lowercase().contains("保存")
-                    || item.description.as_ref().unwrap_or(&String::new()).to_lowercase().contains("保存")
+                    || item
+                        .description
+                        .as_ref()
+                        .unwrap_or(&String::new())
+                        .to_lowercase()
+                        .contains("保存")
             );
         }
     }

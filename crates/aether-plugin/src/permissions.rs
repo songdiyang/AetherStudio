@@ -163,7 +163,10 @@ mod tests {
     fn permission_manager_default_equals_new() {
         let default: PermissionManager = Default::default();
         let new = PermissionManager::new();
-        assert_eq!(default.is_granted(PermissionLevel::L1_ReadOnly), new.is_granted(PermissionLevel::L1_ReadOnly));
+        assert_eq!(
+            default.is_granted(PermissionLevel::L1_ReadOnly),
+            new.is_granted(PermissionLevel::L1_ReadOnly)
+        );
     }
 
     #[test]

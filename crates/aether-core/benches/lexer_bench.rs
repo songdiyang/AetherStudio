@@ -1,5 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use aether_core::lexer::Language;
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 fn rust_sample() -> &'static str {
     // 约 3KB 的 Rust 代码样本，包含关键字、字符串、数字、注释、生命周期等常见 token

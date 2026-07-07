@@ -336,12 +336,19 @@ mod tests {
     #[test]
     fn test_toml_strings() {
         let tokens = TomlLexer::new().lex_full(r#""double" 'single'"#);
-        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::StringLiteral).count(), 2);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::StringLiteral)
+                .count(),
+            2
+        );
     }
 
     #[test]
     fn test_toml_numbers_and_bools() {
-        let tokens = TomlLexer::new().lex_full("key = -123.45\nflag = true\ndate = 1979-05-27T07:32:00Z");
+        let tokens =
+            TomlLexer::new().lex_full("key = -123.45\nflag = true\ndate = 1979-05-27T07:32:00Z");
         assert!(tokens.iter().any(|t| t.kind == TokenKind::NumberLiteral));
         assert!(tokens.iter().any(|t| t.kind == TokenKind::Keyword));
     }

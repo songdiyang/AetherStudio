@@ -58,12 +58,21 @@ pub enum OpType {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum MergeState {
     Idle,
-    Inserting { last_time: Instant, last_pos: usize },
-    Deleting { last_time: Instant, last_pos: usize },
+    Inserting {
+        last_time: Instant,
+        last_pos: usize,
+    },
+    Deleting {
+        last_time: Instant,
+        last_pos: usize,
+    },
     /// REQ-P0-02: 撤销组开始标记，下一个 record 为组的第一条记录
     GroupStart,
     /// REQ-P0-02: 撤销组进行中，组内记录不合并
-    Grouping { first_time: Instant, first_pos: usize },
+    Grouping {
+        first_time: Instant,
+        first_pos: usize,
+    },
 }
 
 impl History {

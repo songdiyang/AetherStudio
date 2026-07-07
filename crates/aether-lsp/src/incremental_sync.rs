@@ -481,7 +481,13 @@ mod tests {
                 character: 0
             }
         );
-        assert_eq!(index.position_to_byte(Position { line: 0, character: 0 }), 0);
+        assert_eq!(
+            index.position_to_byte(Position {
+                line: 0,
+                character: 0
+            }),
+            0
+        );
     }
 
     #[test]
@@ -504,8 +510,20 @@ mod tests {
             }
         );
 
-        assert_eq!(index.position_to_byte(Position { line: 0, character: 1 }), 3);
-        assert_eq!(index.position_to_byte(Position { line: 0, character: 2 }), 4);
+        assert_eq!(
+            index.position_to_byte(Position {
+                line: 0,
+                character: 1
+            }),
+            3
+        );
+        assert_eq!(
+            index.position_to_byte(Position {
+                line: 0,
+                character: 2
+            }),
+            4
+        );
     }
 
     #[test]
@@ -542,20 +560,21 @@ mod tests {
             }
         }
 
-        let changes = IncrementalChangeCalculator::from_edit_op(
-            EditKind::Replace,
-            2,
-            5,
-            "new",
-            &DummyIndex,
-        );
+        let changes =
+            IncrementalChangeCalculator::from_edit_op(EditKind::Replace, 2, 5, "new", &DummyIndex);
         assert_eq!(changes.len(), 1);
         let change = &changes[0];
         assert_eq!(
             change.range,
             Some(Range {
-                start: Position { line: 2, character: 0 },
-                end: Position { line: 5, character: 0 },
+                start: Position {
+                    line: 2,
+                    character: 0
+                },
+                end: Position {
+                    line: 5,
+                    character: 0
+                },
             })
         );
         assert_eq!(change.range_length, Some(3));
@@ -568,8 +587,14 @@ mod tests {
 
         let single = vec![TextDocumentContentChangeEvent {
             range: Some(Range {
-                start: Position { line: 0, character: 0 },
-                end: Position { line: 0, character: 5 },
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 5,
+                },
             }),
             range_length: None,
             text: "hello".to_string(),
@@ -582,16 +607,28 @@ mod tests {
         let edits = vec![
             TextDocumentContentChangeEvent {
                 range: Some(Range {
-                    start: Position { line: 0, character: 0 },
-                    end: Position { line: 0, character: 5 },
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 5,
+                    },
                 }),
                 range_length: None,
                 text: "hello".to_string(),
             },
             TextDocumentContentChangeEvent {
                 range: Some(Range {
-                    start: Position { line: 5, character: 0 },
-                    end: Position { line: 5, character: 5 },
+                    start: Position {
+                        line: 5,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 5,
+                        character: 5,
+                    },
                 }),
                 range_length: None,
                 text: "world".to_string(),
@@ -607,8 +644,14 @@ mod tests {
         let edits = vec![
             TextDocumentContentChangeEvent {
                 range: Some(Range {
-                    start: Position { line: 0, character: 0 },
-                    end: Position { line: 0, character: 5 },
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 5,
+                    },
                 }),
                 range_length: None,
                 text: "hello".to_string(),

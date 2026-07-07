@@ -323,26 +323,46 @@ mod tests {
 
     #[test]
     fn test_color_key_basic() {
-        let color = D2D1_COLOR_F { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
+        let color = D2D1_COLOR_F {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        };
         assert_eq!(color_key(&color), 0xFF0000FF);
     }
 
     #[test]
     fn test_color_key_uses_rounding() {
         // 0.47 * 255 = 119.85，round 后为 120（0x78）
-        let color = D2D1_COLOR_F { r: 0.0, g: 0.47, b: 0.0, a: 1.0 };
+        let color = D2D1_COLOR_F {
+            r: 0.0,
+            g: 0.47,
+            b: 0.0,
+            a: 1.0,
+        };
         assert_eq!(color_key(&color), 0x007800FF);
     }
 
     #[test]
     fn test_color_key_transparent() {
-        let color = D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.5 };
+        let color = D2D1_COLOR_F {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.5,
+        };
         assert_eq!(color_key(&color), 0x00000080);
     }
 
     #[test]
     fn test_color_key_components_are_packed() {
-        let color = D2D1_COLOR_F { r: 1.0, g: 0.5, b: 0.25, a: 0.75 };
+        let color = D2D1_COLOR_F {
+            r: 1.0,
+            g: 0.5,
+            b: 0.25,
+            a: 0.75,
+        };
         assert_eq!(color_key(&color), 0xFF8040BF);
     }
 }

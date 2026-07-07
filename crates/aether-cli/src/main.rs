@@ -8,11 +8,7 @@ use clap::Parser;
 use aether_shared::launch::{parse_goto, GotoPosition, LaunchArgs};
 
 #[derive(Parser, Debug)]
-#[command(
-    name = "aether",
-    about = "Aether Editor 命令行接口",
-    version
-)]
+#[command(name = "aether", about = "Aether Editor 命令行接口", version)]
 struct Cli {
     /// 要打开的文件或文件夹路径
     paths: Vec<PathBuf>,
@@ -116,11 +112,13 @@ fn find_app_exe() -> Result<PathBuf> {
 
 /// 在 `current_exe` 所在目录查找 GUI 主程序（抽出以便注入测试）
 fn find_app_exe_in(current_exe: &Path) -> Result<PathBuf> {
-    let dir = current_exe
-        .parent()
-        .context("无法获取可执行文件所在目录")?;
+    let dir = current_exe.parent().context("无法获取可执行文件所在目录")?;
 
-    let app_name = if cfg!(windows) { "aether-app.exe" } else { "aether-app" };
+    let app_name = if cfg!(windows) {
+        "aether-app.exe"
+    } else {
+        "aether-app"
+    };
     let app_exe = dir.join(app_name);
 
     if app_exe.exists() {
@@ -181,21 +179,39 @@ mod tests {
     fn test_parse_goto_arg_line_only() {
         let (file, pos) = parse_goto_arg(Some("10".to_string())).unwrap();
         assert_eq!(file, None);
-        assert_eq!(pos, Some(GotoPosition { line: 10, column: 1 }));
+        assert_eq!(
+            pos,
+            Some(GotoPosition {
+                line: 10,
+                column: 1
+            })
+        );
     }
 
     #[test]
     fn test_parse_goto_arg_line_and_column() {
         let (file, pos) = parse_goto_arg(Some("10:5".to_string())).unwrap();
         assert_eq!(file, None);
-        assert_eq!(pos, Some(GotoPosition { line: 10, column: 5 }));
+        assert_eq!(
+            pos,
+            Some(GotoPosition {
+                line: 10,
+                column: 5
+            })
+        );
     }
 
     #[test]
     fn test_parse_goto_arg_with_file() {
         let (file, pos) = parse_goto_arg(Some("file.txt:12:3".to_string())).unwrap();
         assert_eq!(file, Some(PathBuf::from("file.txt")));
-        assert_eq!(pos, Some(GotoPosition { line: 12, column: 3 }));
+        assert_eq!(
+            pos,
+            Some(GotoPosition {
+                line: 12,
+                column: 3
+            })
+        );
     }
 
     #[test]
@@ -247,7 +263,11 @@ mod tests {
     #[test]
     fn test_find_app_exe_found() {
         let tmp = TestTempDir::new("find-app-found");
-        let app_name = if cfg!(windows) { "aether-app.exe" } else { "aether-app" };
+        let app_name = if cfg!(windows) {
+            "aether-app.exe"
+        } else {
+            "aether-app"
+        };
         let app = tmp.path().join(app_name);
         fs::write(&app, "").unwrap();
 
@@ -262,7 +282,11 @@ mod tests {
         let dummy_exe = tmp.path().join("dummy.exe");
         let err = find_app_exe_in(&dummy_exe).unwrap_err();
         let msg = format!("{}", err);
-        assert!(msg.contains("aether-app"), "错误信息应包含主程序名: {}", msg);
+        assert!(
+            msg.contains("aether-app"),
+            "错误信息应包含主程序名: {}",
+            msg
+        );
         assert!(msg.contains("找不到"), "错误信息应提示找不到: {}", msg);
     }
 
@@ -322,7 +346,10 @@ mod tests {
             goto: Some("bar.txt:3:2".to_string()),
         };
         let args = build_launch_args(&cli).unwrap();
-        assert_eq!(args.paths, vec![PathBuf::from("bar.txt"), cwd.join("foo.txt")]);
+        assert_eq!(
+            args.paths,
+            vec![PathBuf::from("bar.txt"), cwd.join("foo.txt")]
+        );
         assert!(args.new_window);
         assert!(args.wait);
         assert_eq!(args.goto, Some(GotoPosition { line: 3, column: 2 }));
@@ -355,6 +382,12 @@ mod tests {
         };
         let args = build_launch_args(&cli).unwrap();
         assert_eq!(args.paths, vec![cwd.join("foo.txt")]);
-        assert_eq!(args.goto, Some(GotoPosition { line: 12, column: 8 }));
+        assert_eq!(
+            args.goto,
+            Some(GotoPosition {
+                line: 12,
+                column: 8
+            })
+        );
     }
 }

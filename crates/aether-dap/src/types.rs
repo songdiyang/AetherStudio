@@ -316,7 +316,10 @@ mod tests {
 
     #[test]
     fn debug_session_state_equality() {
-        assert_eq!(DebugSessionState::Initializing, DebugSessionState::Initializing);
+        assert_eq!(
+            DebugSessionState::Initializing,
+            DebugSessionState::Initializing
+        );
         assert_ne!(DebugSessionState::Initializing, DebugSessionState::Running);
     }
 
@@ -398,8 +401,7 @@ mod tests {
             var_type: Some("i32".into()),
             variables_reference: 0,
         };
-        let parsed: Variable =
-            serde_json::from_str(&serde_json::to_string(&var).unwrap()).unwrap();
+        let parsed: Variable = serde_json::from_str(&serde_json::to_string(&var).unwrap()).unwrap();
         assert_eq!(parsed.value, "42");
         assert_eq!(parsed.var_type.as_deref(), Some("i32"));
     }

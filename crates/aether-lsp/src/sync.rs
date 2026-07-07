@@ -159,7 +159,12 @@ mod tests {
     fn test_document_sync_open_close() {
         let mut sync = DocumentSync::new();
         let uri = Url::parse("file:///test.rs").unwrap();
-        sync.open_document(uri.clone(), "rust".to_string(), 1, "fn main() {}".to_string());
+        sync.open_document(
+            uri.clone(),
+            "rust".to_string(),
+            1,
+            "fn main() {}".to_string(),
+        );
         assert!(sync.is_open(&uri));
         assert_eq!(sync.get_language_id(&uri).unwrap(), "rust");
         assert_eq!(sync.get_version(&uri).unwrap(), 1);
@@ -197,7 +202,13 @@ mod tests {
         let changes = compute_changes("hello", "hello world");
         assert_eq!(changes.len(), 1);
         let change = &changes[0];
-        assert_eq!(change.range, Some(Range { start: pos(0, 5), end: pos(0, 5) }));
+        assert_eq!(
+            change.range,
+            Some(Range {
+                start: pos(0, 5),
+                end: pos(0, 5)
+            })
+        );
         assert_eq!(change.text, " world");
     }
 
@@ -208,7 +219,13 @@ mod tests {
         assert_eq!(changes.len(), 1);
         let change = &changes[0];
         // 共同前缀 "hello ",共同后缀 "world",删除中间 "beautiful "
-        assert_eq!(change.range, Some(Range { start: pos(0, 6), end: pos(0, 16) }));
+        assert_eq!(
+            change.range,
+            Some(Range {
+                start: pos(0, 6),
+                end: pos(0, 16)
+            })
+        );
         assert_eq!(change.text, "");
     }
 
@@ -217,7 +234,13 @@ mod tests {
         let changes = compute_changes("hello world", "hello rust");
         assert_eq!(changes.len(), 1);
         let change = &changes[0];
-        assert_eq!(change.range, Some(Range { start: pos(0, 6), end: pos(0, 11) }));
+        assert_eq!(
+            change.range,
+            Some(Range {
+                start: pos(0, 6),
+                end: pos(0, 11)
+            })
+        );
         assert_eq!(change.text, "rust");
     }
 
@@ -267,7 +290,13 @@ mod tests {
         let changes = compute_changes(old_text, new_text);
         assert_eq!(changes.len(), 1);
         let change = &changes[0];
-        assert_eq!(change.range, Some(Range { start: pos(0, 1), end: pos(0, 1) }));
+        assert_eq!(
+            change.range,
+            Some(Range {
+                start: pos(0, 1),
+                end: pos(0, 1)
+            })
+        );
         assert_eq!(change.text, "𐍈");
     }
 }

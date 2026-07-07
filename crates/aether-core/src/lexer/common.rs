@@ -67,9 +67,7 @@ pub fn skip_identifier_ascii(bytes: &[u8], pos: usize) -> usize {
 pub fn skip_identifier_with(bytes: &[u8], pos: usize, extra: &[u8]) -> usize {
     let mut i = pos;
     while i < bytes.len()
-        && (bytes[i].is_ascii_alphanumeric()
-            || bytes[i] == b'_'
-            || extra.contains(&bytes[i]))
+        && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || extra.contains(&bytes[i]))
     {
         i += 1;
     }
@@ -79,7 +77,11 @@ pub fn skip_identifier_with(bytes: &[u8], pos: usize, extra: &[u8]) -> usize {
 /// 跳过数字字面量的通用框架
 ///
 /// `is_valid` 回调用于判断当前字节是否应被纳入数字。遇到不满足条件或边界情况时停止。
-pub fn skip_number_generic(bytes: &[u8], pos: usize, mut is_valid: impl FnMut(u8) -> bool) -> usize {
+pub fn skip_number_generic(
+    bytes: &[u8],
+    pos: usize,
+    mut is_valid: impl FnMut(u8) -> bool,
+) -> usize {
     let mut i = pos;
     while i < bytes.len() && is_valid(bytes[i]) {
         i += 1;

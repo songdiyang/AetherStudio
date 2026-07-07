@@ -273,7 +273,11 @@ mod tests {
 
         let mut runtime = PluginRuntime::new().unwrap();
         let err = runtime.load_plugin(&path).unwrap_err();
-        assert!(err.contains("不是有效的 WASM 格式"), "错误应提示 WASM 格式无效: {}", err);
+        assert!(
+            err.contains("不是有效的 WASM 格式"),
+            "错误应提示 WASM 格式无效: {}",
+            err
+        );
 
         cleanup(&path);
     }
@@ -341,7 +345,8 @@ mod tests {
         let mut runtime = PluginRuntime::new().unwrap();
         let id = runtime.load_plugin(&path).unwrap();
         let future = SystemTime::now() + Duration::from_secs(3600);
-        let result = runtime.grant_permission(id, PermissionLevel::L3_Network, "network", Some(future));
+        let result =
+            runtime.grant_permission(id, PermissionLevel::L3_Network, "network", Some(future));
         assert!(result.is_ok());
 
         let perm_mgr = runtime.permissions.get(&id).unwrap();
@@ -362,7 +367,11 @@ mod tests {
         let err = runtime
             .grant_permission(id, PermissionLevel::L2_FileIO, "file", Some(past))
             .unwrap_err();
-        assert!(err.contains("过去时间"), "错误应提示过期时间不能是过去时间: {}", err);
+        assert!(
+            err.contains("过去时间"),
+            "错误应提示过期时间不能是过去时间: {}",
+            err
+        );
 
         cleanup(&path);
     }
@@ -387,9 +396,17 @@ mod tests {
         runtime
             .grant_permission(id, PermissionLevel::L4_System, "admin", None)
             .unwrap();
-        assert!(runtime.permissions.get(&id).unwrap().is_granted(PermissionLevel::L4_System));
+        assert!(runtime
+            .permissions
+            .get(&id)
+            .unwrap()
+            .is_granted(PermissionLevel::L4_System));
         runtime.revoke_all_permissions(id);
-        assert!(!runtime.permissions.get(&id).unwrap().is_granted(PermissionLevel::L1_ReadOnly));
+        assert!(!runtime
+            .permissions
+            .get(&id)
+            .unwrap()
+            .is_granted(PermissionLevel::L1_ReadOnly));
 
         cleanup(&path);
     }
@@ -397,7 +414,9 @@ mod tests {
     #[test]
     fn call_hook_plugin_not_loaded_fails() {
         let mut runtime = PluginRuntime::new().unwrap();
-        let err = runtime.call_hook(PluginId(42), "on_activate", serde_json::Value::Null).unwrap_err();
+        let err = runtime
+            .call_hook(PluginId(42), "on_activate", serde_json::Value::Null)
+            .unwrap_err();
         assert!(err.contains("未加载"), "错误应提示插件未加载: {}", err);
     }
 
@@ -409,7 +428,9 @@ mod tests {
 
         let mut runtime = PluginRuntime::new().unwrap();
         let id = runtime.load_plugin(&path).unwrap();
-        let err = runtime.call_hook(id, "write_file", serde_json::Value::Null).unwrap_err();
+        let err = runtime
+            .call_hook(id, "write_file", serde_json::Value::Null)
+            .unwrap_err();
         assert!(err.contains("缺少执行"), "错误应提示缺少权限: {}", err);
         assert!(err.contains("L2_FileIO"), "错误应包含所需权限级别: {}", err);
 
@@ -424,9 +445,15 @@ mod tests {
 
         let mut runtime = PluginRuntime::new().unwrap();
         let id = runtime.load_plugin(&path).unwrap();
-        let err = runtime.call_hook(id, "on_activate", serde_json::Value::Null).unwrap_err();
+        let err = runtime
+            .call_hook(id, "on_activate", serde_json::Value::Null)
+            .unwrap_err();
         assert!(err.contains("无法执行"), "错误应提示钩子无法执行: {}", err);
-        assert!(err.contains("WASM 运行时尚未集成"), "错误应说明 WASM 未集成: {}", err);
+        assert!(
+            err.contains("WASM 运行时尚未集成"),
+            "错误应说明 WASM 未集成: {}",
+            err
+        );
 
         cleanup(&path);
     }
@@ -439,11 +466,19 @@ mod tests {
 
         let mut runtime = PluginRuntime::new().unwrap();
         let id = runtime.load_plugin(&path).unwrap();
-        runtime.grant_permission(id, PermissionLevel::L2_FileIO, "file", None).unwrap();
+        runtime
+            .grant_permission(id, PermissionLevel::L2_FileIO, "file", None)
+            .unwrap();
 
-        let err = runtime.call_hook(id, "write_file", serde_json::Value::Null).unwrap_err();
+        let err = runtime
+            .call_hook(id, "write_file", serde_json::Value::Null)
+            .unwrap_err();
         // 权限通过，但 WASM 未集成
-        assert!(err.contains("WASM 运行时尚未集成"), "应通过权限检查并返回未集成错误: {}", err);
+        assert!(
+            err.contains("WASM 运行时尚未集成"),
+            "应通过权限检查并返回未集成错误: {}",
+            err
+        );
 
         cleanup(&path);
     }
@@ -457,8 +492,14 @@ mod tests {
         let mut runtime = PluginRuntime::new().unwrap();
         let id = runtime.load_plugin(&path).unwrap();
         // 默认拥有 L1，因此权限检查通过，但 WASM 未集成
-        let err = runtime.call_hook(id, "unknown_hook", serde_json::Value::Null).unwrap_err();
-        assert!(err.contains("WASM 运行时尚未集成"), "未知 hook 默认 L1，应通过权限检查: {}", err);
+        let err = runtime
+            .call_hook(id, "unknown_hook", serde_json::Value::Null)
+            .unwrap_err();
+        assert!(
+            err.contains("WASM 运行时尚未集成"),
+            "未知 hook 默认 L1，应通过权限检查: {}",
+            err
+        );
 
         cleanup(&path);
     }

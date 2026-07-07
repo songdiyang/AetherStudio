@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use similar::{ChangeTag, TextDiff};
 
-use crate::ai_agent::{AiEdit, parse_edits};
+use crate::ai_agent::{parse_edits, AiEdit};
 
 fn resolve_edit_path(path: &Path, current_folder: Option<&Path>) -> PathBuf {
     if path.is_absolute() {
@@ -243,7 +243,10 @@ mod tests {
 
         let rel = PathBuf::from("src/main.rs");
         let root = Path::new("D:\\workspace");
-        assert_eq!(resolve_edit_path(&rel, Some(root)), PathBuf::from("D:\\workspace\\src/main.rs"));
+        assert_eq!(
+            resolve_edit_path(&rel, Some(root)),
+            PathBuf::from("D:\\workspace\\src/main.rs")
+        );
 
         assert_eq!(resolve_edit_path(&rel, None), rel);
     }
@@ -268,8 +271,14 @@ mod tests {
         let old = "line1\nline2\nline3\n";
         let new = "line1\nchanged\nline3\n";
         let lines = build_diff_lines(old, new);
-        let delete = lines.iter().find(|l| l.kind == DiffLineKind::Delete).unwrap();
-        let insert = lines.iter().find(|l| l.kind == DiffLineKind::Insert).unwrap();
+        let delete = lines
+            .iter()
+            .find(|l| l.kind == DiffLineKind::Delete)
+            .unwrap();
+        let insert = lines
+            .iter()
+            .find(|l| l.kind == DiffLineKind::Insert)
+            .unwrap();
         assert_eq!(delete.old_line_no, Some(2));
         assert_eq!(delete.new_line_no, None);
         assert_eq!(insert.old_line_no, None);
@@ -315,7 +324,11 @@ mod tests {
         std::fs::write(&file_path, "old content\n").unwrap();
 
         let edits = vec![
-            AiEdit::new(file_path.clone(), "old content\n".to_string(), "new content\n".to_string()),
+            AiEdit::new(
+                file_path.clone(),
+                "old content\n".to_string(),
+                "new content\n".to_string(),
+            ),
             AiEdit::new(dir.join("new.txt"), String::new(), "created\n".to_string()),
         ];
         let view = DiffView::from_edits(&edits, Some(&dir));
@@ -406,7 +419,11 @@ mod tests {
     #[test]
     fn test_diff_view_selected_file_mut() {
         let mut view = DiffView::from_edits(
-            &[AiEdit::new(PathBuf::from("a.txt"), String::new(), "x".to_string())],
+            &[AiEdit::new(
+                PathBuf::from("a.txt"),
+                String::new(),
+                "x".to_string(),
+            )],
             None,
         );
         {

@@ -357,35 +357,151 @@ mod tests {
     #[test]
     fn test_color_for_token_mappings() {
         let theme = Theme::dark();
-        assert!(color_eq(theme.color_for_token(TokenKind::Keyword), theme.syntax.keyword, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::Identifier), theme.syntax.variable, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::StringLiteral), theme.syntax.string, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::CharLiteral), theme.syntax.string, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::NumberLiteral), theme.syntax.number, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::LineComment), theme.syntax.comment, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::BlockComment), theme.syntax.comment, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::DocComment), theme.syntax.comment, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::Operator), theme.syntax.operator, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::Punctuation), theme.syntax.operator, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::Preprocessor), theme.syntax.preprocessor, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::Attribute), theme.syntax.attribute, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::TypeName), theme.syntax.type_name, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::Function), theme.syntax.function, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::Macro), theme.syntax.macro_color, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::Lifetime), theme.syntax.lifetime, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::Generic), theme.syntax.type_name, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::RegexLiteral), theme.syntax.regex, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::FormatString), theme.syntax.format_string, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::MdHeading), theme.syntax.md_heading, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::MdLink), theme.syntax.md_link, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::MdCode), theme.syntax.md_code, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::MdEmphasis), theme.syntax.md_emphasis, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::JsonKey), theme.syntax.json_key, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::TomlTable), theme.syntax.toml_table, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::Whitespace), theme.text_default, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::Newline), theme.text_default, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::Unknown), theme.text_default, 0.001));
-        assert!(color_eq(theme.color_for_token(TokenKind::EOF), theme.text_default, 0.001));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Keyword),
+            theme.syntax.keyword,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Identifier),
+            theme.syntax.variable,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::StringLiteral),
+            theme.syntax.string,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::CharLiteral),
+            theme.syntax.string,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::NumberLiteral),
+            theme.syntax.number,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::LineComment),
+            theme.syntax.comment,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::BlockComment),
+            theme.syntax.comment,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::DocComment),
+            theme.syntax.comment,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Operator),
+            theme.syntax.operator,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Punctuation),
+            theme.syntax.operator,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Preprocessor),
+            theme.syntax.preprocessor,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Attribute),
+            theme.syntax.attribute,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::TypeName),
+            theme.syntax.type_name,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Function),
+            theme.syntax.function,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Macro),
+            theme.syntax.macro_color,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Lifetime),
+            theme.syntax.lifetime,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Generic),
+            theme.syntax.type_name,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::RegexLiteral),
+            theme.syntax.regex,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::FormatString),
+            theme.syntax.format_string,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::MdHeading),
+            theme.syntax.md_heading,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::MdLink),
+            theme.syntax.md_link,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::MdCode),
+            theme.syntax.md_code,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::MdEmphasis),
+            theme.syntax.md_emphasis,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::JsonKey),
+            theme.syntax.json_key,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::TomlTable),
+            theme.syntax.toml_table,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Whitespace),
+            theme.text_default,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Newline),
+            theme.text_default,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Unknown),
+            theme.text_default,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::EOF),
+            theme.text_default,
+            0.001
+        ));
     }
 
     #[test]

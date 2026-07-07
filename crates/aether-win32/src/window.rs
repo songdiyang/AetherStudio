@@ -1715,8 +1715,7 @@ unsafe fn on_t_i_m_e_r(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -
                     let tx = st.hover_last_mouse_x + 16.0;
                     let ty = st.hover_last_mouse_y + 16.0;
                     let max_w = 400.0;
-                    st.hover_tooltip =
-                        Some(crate::editor::HoverTooltip::new(text, tx, ty, max_w));
+                    st.hover_tooltip = Some(crate::editor::HoverTooltip::new(text, tx, ty, max_w));
                     drop(st);
                     invalidate_window(hwnd);
                 }

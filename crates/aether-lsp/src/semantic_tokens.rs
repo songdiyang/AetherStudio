@@ -345,7 +345,10 @@ mod tests {
     fn test_semantic_token_type_kind_as_str() {
         assert_eq!(SemanticTokenTypeKind::Function.as_str(), "function");
         assert_eq!(SemanticTokenTypeKind::Keyword.as_str(), "keyword");
-        assert_eq!(SemanticTokenTypeKind::TypeParameter.as_str(), "typeParameter");
+        assert_eq!(
+            SemanticTokenTypeKind::TypeParameter.as_str(),
+            "typeParameter"
+        );
     }
 
     #[test]
@@ -365,15 +368,19 @@ mod tests {
             line: 0,
             start_char: 0,
             length: 4,
-            token_type: 8, // Variable
+            token_type: 8,                        // Variable
             token_modifiers: (1 << 0) | (1 << 1), // Declaration + Definition
         }];
         let mappings = map_tokens(&tokens, &[], &[]);
         assert_eq!(mappings.len(), 1);
         assert_eq!(mappings[0].token_type, SemanticTokenTypeKind::Variable);
         assert_eq!(mappings[0].modifiers.len(), 2);
-        assert!(mappings[0].modifiers.contains(&SemanticTokenModifierKind::Declaration));
-        assert!(mappings[0].modifiers.contains(&SemanticTokenModifierKind::Definition));
+        assert!(mappings[0]
+            .modifiers
+            .contains(&SemanticTokenModifierKind::Declaration));
+        assert!(mappings[0]
+            .modifiers
+            .contains(&SemanticTokenModifierKind::Definition));
     }
 
     #[test]
@@ -392,11 +399,7 @@ mod tests {
     #[test]
     fn test_decode_multiline_and_same_line() {
         // 行内连续 token: [0,5] 和 [0,9]
-        let data = vec![
-            0, 0, 5, 0, 0,
-            0, 4, 4, 1, 0,
-            2, 3, 2, 2, 0,
-        ];
+        let data = vec![0, 0, 5, 0, 0, 0, 4, 4, 1, 0, 2, 3, 2, 2, 0];
         let tokens = SemanticTokensDecoder::decode(&data);
         assert_eq!(tokens.len(), 3);
         assert_eq!(tokens[0].start_char, 0);
@@ -414,9 +417,27 @@ mod tests {
     #[test]
     fn test_decode_delta_edge_cases() {
         let previous = vec![
-            SemanticToken { line: 0, start_char: 0, length: 1, token_type: 0, token_modifiers: 0 },
-            SemanticToken { line: 0, start_char: 2, length: 1, token_type: 1, token_modifiers: 0 },
-            SemanticToken { line: 0, start_char: 4, length: 1, token_type: 2, token_modifiers: 0 },
+            SemanticToken {
+                line: 0,
+                start_char: 0,
+                length: 1,
+                token_type: 0,
+                token_modifiers: 0,
+            },
+            SemanticToken {
+                line: 0,
+                start_char: 2,
+                length: 1,
+                token_type: 1,
+                token_modifiers: 0,
+            },
+            SemanticToken {
+                line: 0,
+                start_char: 4,
+                length: 1,
+                token_type: 2,
+                token_modifiers: 0,
+            },
         ];
 
         // start 超出范围: 应被忽略
@@ -428,7 +449,10 @@ mod tests {
                 data: None,
             }],
         };
-        assert_eq!(SemanticTokensDecoder::decode_delta(&previous, &delta).len(), 3);
+        assert_eq!(
+            SemanticTokensDecoder::decode_delta(&previous, &delta).len(),
+            3
+        );
 
         // delete_count 超过长度
         let delta = SemanticTokensDelta {
@@ -450,7 +474,13 @@ mod tests {
                 SemanticTokensEdit {
                     start: 0,
                     delete_count: 1,
-                    data: Some(vec![lsp_types::SemanticToken { delta_line: 0, delta_start: 0, length: 9, token_type: 9, token_modifiers_bitset: 0 }]),
+                    data: Some(vec![lsp_types::SemanticToken {
+                        delta_line: 0,
+                        delta_start: 0,
+                        length: 9,
+                        token_type: 9,
+                        token_modifiers_bitset: 0,
+                    }]),
                 },
                 SemanticTokensEdit {
                     start: 2,
@@ -471,7 +501,7 @@ mod tests {
             line: 1,
             start_char: 2,
             length: 3,
-            token_type: 8, // Variable
+            token_type: 8,          // Variable
             token_modifiers: 0x3FF, // 10 位全 1
         }];
         let mappings = map_tokens(&tokens, &[], &[]);
