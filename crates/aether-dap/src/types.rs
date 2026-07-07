@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// DAP 消息枚举（JSON-RPC 2.0 风格）
+///
+/// C-02: 使用 `tag = "type"` 内部标签替代 `untagged`，确保 serde 根据
+/// `type` 字段（"request"/"response"/"event"）正确分派变体，
+/// 避免 Response 因字段兼容被误判为 Request。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 // C-08: DAP 消息必须按 type 字段分发，untagged 会将响应误解析为请求
 #[serde(tag = "type", rename_all = "lowercase")]

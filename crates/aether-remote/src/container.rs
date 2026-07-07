@@ -64,24 +64,36 @@ impl RemoteFs for ContainerRemoteFs {
             return Err("命令为空".to_string());
         }
 
-        // SEC-R02: 拒绝 shell 元字符，防止命令注入
+        // H-05: 拒绝 shell 元字符，防止命令注入
         // 注意：即便 docker/podman exec 使用参数列表传递，命令最终仍由容器内
         // 的 `sh -c` 解释，因此必须过滤元字符。
-        const SHELL_METACHARS: &[char] = &[';', '|', '&', '`', '$', '>', '<', '\n', '\r'];
+        // 扩展过滤列表：补充 ( ) \ ' " * ? [ ] { } ~ # ! 等危险字符
+        const SHELL_METACHARS: &[char] = &[
+            ';', '|', '&', '`', '$', '>', '<', '\n', '\r', '(', ')', '\\', '\'', '"', '*', '?',
+            '[', ']', '{', '}', '~', '#', '!',
+        ];
         if trimmed.chars().any(|c| SHELL_METACHARS.contains(&c)) {
             return Err(format!("命令包含禁止的 shell 元字符: {}", command));
         }
 
-        // SEC-R03: 最小化命令白名单（与 RemoteFs::exec_restricted 保持一致）
-        const ALLOWED_COMMANDS: &[&str] = &[
+        // H-05: 拆分只读和写入白名单，对写入操作额外审计
+        // C-04: 从只读白名单移除 git/tar/gzip/gunzip。这些命令虽常被当作
+        // "只读"使用，但实际上可以修改容器文件系统（tar 可解压/执行 checkpoint
+        // action，git 可修改 hooks/状态，gzip -f 可覆盖原文件），沙箱逃逸风险高。
+        const READONLY_COMMANDS: &[&str] = &[
             "ls", "cat", "pwd", "echo", "find", "grep", "head", "tail", "wc", "stat", "file",
             "which", "diff", "sort", "uniq", "tr", "less", "more", "uname", "whoami", "id", "ps",
-            "df", "du", "mkdir", "touch", "cp", "mv", "rm", "chmod", "chown", "git", "tar", "gzip",
-            "gunzip",
+            "df", "du",
         ];
+        const WRITE_COMMANDS: &[&str] = &["mkdir", "touch", "cp", "mv", "rm", "chmod", "chown"];
         let cmd_name = trimmed.split_whitespace().next().unwrap_or("");
-        if !ALLOWED_COMMANDS.contains(&cmd_name) {
+        let is_readonly = READONLY_COMMANDS.iter().any(|&c| c == cmd_name);
+        let is_write = WRITE_COMMANDS.iter().any(|&c| c == cmd_name);
+        if !is_readonly && !is_write {
             return Err(format!("命令被拒绝（不在白名单中）: {}", command));
+        }
+        if is_write {
+            eprintln!("[AUDIT] container write exec: {}", command);
         }
 
         // 校验容器名仅含字母数字、连字符和下划线（H-13: 防止注入 Docker 标志）

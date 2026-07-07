@@ -8973,18 +8973,20 @@ impl EditorState {
             let bottom_panel_btn_x = right_panel_btn_x - panel_btn_width;
             let left_sidebar_btn_x = bottom_panel_btn_x - panel_btn_width;
 
-            // 在标题栏中间显示当前文件夹名或文件名
-            let workspace_name = self
-                .current_folder
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().to_string());
-            let file_name = self.current_tab().file_name();
-            let title_base = workspace_name.unwrap_or(file_name);
-            let title_text = if self.is_dirty {
-                format!("{} ● - Aether", title_base)
+            // 在标题栏中间显示当前工作区（打开的文件夹）或应用名
+            // UI-T01: 不要显示“未命名”，优先显示打开的文件夹名
+            let title_text = if let Some(folder) = &self.current_folder {
+                let folder_name = folder
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| folder.to_string_lossy().to_string());
+                if self.is_dirty {
+                    format!("{} ● - Aether", folder_name)
+                } else {
+                    format!("{} - Aether", folder_name)
+                }
             } else {
-                format!("{} - Aether", title_base)
+                "Aether".to_string()
             };
             let title_wide: Vec<u16> = title_text.encode_utf16().chain(Some(0)).collect();
             let title_format = self

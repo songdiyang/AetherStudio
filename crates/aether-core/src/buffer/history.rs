@@ -25,14 +25,14 @@ pub struct EditRecord {
     /// 编辑位置
     pub cursor_before: CursorPosition,
     pub cursor_after: CursorPosition,
-    /// 时间戳（用于合并判断）
-    timestamp: Instant,
     /// 操作类型（影响合并策略）
     op_type: OpType,
     /// REQ-P0-02: 是否属于撤销组
     in_group: bool,
     /// REQ-P0-02: 是否是撤销组的第一条记录
     group_start: bool,
+    /// 编辑时间戳
+    timestamp: Instant,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -91,6 +91,7 @@ impl History {
 
     /// 记录一次编辑操作
     /// 调用时机：在编辑完成后，传入编辑前的状态
+    /// `edit_len`: 插入的字节长度（用于 Insert 合并判断；Delete 传 0）
     pub fn record(
         &mut self,
         before_pieces: Vec<Piece>,
@@ -99,6 +100,7 @@ impl History {
         cursor_after: CursorPosition,
         op_type: OpType,
         edit_pos: usize,
+        edit_len: usize,
     ) {
         let now = Instant::now();
 
@@ -150,10 +152,10 @@ impl History {
                 prev_add_len: before_add_len,
                 cursor_before,
                 cursor_after,
-                timestamp: now,
                 op_type,
                 in_group: in_group_mode,
                 group_start: is_group_start,
+                timestamp: now,
             };
             self.undos.push_back(record);
             self.redos.clear(); // 新操作清空redo栈
@@ -175,7 +177,8 @@ impl History {
             self.merge_state = match op_type {
                 OpType::Insert => MergeState::Inserting {
                     last_time: now,
-                    last_pos: edit_pos + 1,
+                    // H-15: 使用实际字节长度而非 +1，正确处理多字节 UTF-8 字符的连续合并
+                    last_pos: edit_pos + edit_len,
                 },
                 OpType::Delete => MergeState::Deleting {
                     last_time: now,
@@ -347,6 +350,7 @@ mod tests {
             CursorPosition::new(0, 5),
             OpType::Insert,
             0,
+            1,
         );
 
         let result = history.undo(pieces2.clone(), 10, CursorPosition::new(0, 10));
@@ -378,6 +382,7 @@ mod tests {
             CursorPosition::new(0, 1),
             OpType::Insert,
             0,
+            1,
         );
         history.record(
             pieces.clone(),
@@ -385,6 +390,7 @@ mod tests {
             CursorPosition::new(0, 1),
             CursorPosition::new(0, 2),
             OpType::Insert,
+            1,
             1,
         );
 
@@ -414,6 +420,7 @@ mod tests {
             CursorPosition::new(0, 5),
             OpType::Insert,
             0,
+            5,
         );
         let _ = history.undo(pieces2.clone(), 10, CursorPosition::new(0, 10));
         let redo_result = history.redo(pieces1.clone(), 5, CursorPosition::new(0, 0));
@@ -442,6 +449,7 @@ mod tests {
             CursorPosition::new(0, 5),
             OpType::Insert,
             0,
+            5,
         );
         let _ = history.undo(pieces.clone(), 5, CursorPosition::new(0, 5));
         assert!(history.can_redo());
@@ -453,6 +461,7 @@ mod tests {
             CursorPosition::new(0, 1),
             OpType::Insert,
             0,
+            1,
         );
         assert!(!history.can_redo());
     }
@@ -473,6 +482,7 @@ mod tests {
             CursorPosition::new(0, 5),
             OpType::Insert,
             0,
+            5,
         );
         history.clear();
         assert!(!history.can_undo());
@@ -496,6 +506,7 @@ mod tests {
                 CursorPosition::new(0, i + 1),
                 OpType::Replace,
                 0,
+                1,
             );
         }
         assert_eq!(history.undos.len(), 10000);
@@ -517,6 +528,7 @@ mod tests {
             CursorPosition::new(0, 4),
             OpType::Delete,
             4,
+            0,
         );
         history.record(
             pieces.clone(),
@@ -525,6 +537,7 @@ mod tests {
             CursorPosition::new(0, 3),
             OpType::Delete,
             4,
+            0,
         );
         assert_eq!(history.undos.len(), 1);
     }
@@ -545,6 +558,7 @@ mod tests {
             CursorPosition::new(0, 1),
             OpType::Replace,
             0,
+            1,
         );
         history.record(
             pieces.clone(),
@@ -552,6 +566,7 @@ mod tests {
             CursorPosition::new(0, 1),
             CursorPosition::new(0, 2),
             OpType::Replace,
+            1,
             1,
         );
         assert_eq!(history.undos.len(), 2);
@@ -579,6 +594,7 @@ mod tests {
                 CursorPosition::new(0, i + 1),
                 OpType::Replace,
                 i,
+                1,
             );
         }
 
@@ -626,6 +642,7 @@ mod tests {
             CursorPosition::new(0, 1),
             OpType::Insert,
             0,
+            1,
         );
         history.record(
             pieces.clone(),
@@ -633,6 +650,7 @@ mod tests {
             CursorPosition::new(0, 1),
             CursorPosition::new(0, 2),
             OpType::Insert,
+            1,
             1,
         );
         history.record(
@@ -642,6 +660,7 @@ mod tests {
             CursorPosition::new(0, 3),
             OpType::Insert,
             2,
+            1,
         );
 
         history.end_group();

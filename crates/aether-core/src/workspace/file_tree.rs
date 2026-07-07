@@ -82,7 +82,10 @@ impl FileTree {
 
     pub fn add_node(&mut self, name: &str, kind: FileKind, parent_idx: u32, depth: u8) -> u32 {
         let (name_offset, name_len) = self.names.add(name);
-        let idx = self.nodes.len() as u32;
+        // M-02: 用 try_from 检查溢出，与 StringPool::add 保持一致，
+        // 避免节点数超过 u32::MAX 时静默截断导致索引错乱
+        let idx = u32::try_from(self.nodes.len())
+            .expect("M-02: FileTree node count overflow (nodes > u32::MAX)");
         self.nodes.push(FileNode {
             name_offset,
             name_len,

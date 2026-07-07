@@ -50,7 +50,9 @@ impl RemoteWorkspace {
                 local_path.display()
             ));
         }
-        Ok(local_path.to_path_buf())
+        // M-04: 返回已解析符号链接的规范路径，而非原始非规范路径，
+        // 避免后续操作通过未检测到的符号链接发生 TOCTOU 遍历
+        Ok(canonical_local)
     }
 
     /// 打开远程文件（按需下载到本地缓存）
@@ -73,6 +75,23 @@ impl RemoteWorkspace {
         let _ = self.check_cache_size();
 
         std::fs::write(&local_path, &content).map_err(|e| e.to_string())?;
+
+        // H-12: TOCTOU 防护 — 写入后重新 canonicalize 验证文件仍在缓存目录内。
+        // 若在 validate_local_path 和 fs::write 之间有攻击者将目录组件替换为符号链接，
+        // 此处会检测到并删除越界文件。
+        let post_canonical = local_path.canonicalize().map_err(|e| e.to_string())?;
+        let canonical_cache = self
+            .local_cache
+            .canonicalize()
+            .unwrap_or_else(|_| self.local_cache.clone());
+        if !post_canonical.starts_with(&canonical_cache) {
+            // 文件被写到了缓存目录外，删除它并报错
+            let _ = std::fs::remove_file(&post_canonical);
+            return Err(format!(
+                "TOCTOU 检测: 写入后路径 {} 超出缓存目录",
+                post_canonical.display()
+            ));
+        }
 
         // 更新版本
         self.file_versions.insert(remote_path.to_string(), 1);

@@ -270,7 +270,8 @@ fn skip_number(bytes: &[u8], pos: usize) -> usize {
     let mut dot_count = 0;
     let mut exponent_seen = false;
 
-    // 前缀：0x / 0X / 0b / 0B
+    // H-07: 检测进制前缀。十六进制字符 a-f/A-F 仅在 0x 前缀后有效，
+    // 避免 `123abc` 被整体识别为数字（abc 应为独立标识符）。
     if i + 1 < bytes.len() && bytes[i] == b'0' && matches!(bytes[i + 1], b'x' | b'X' | b'b' | b'B') {
         i += 2;
         while i < bytes.len() && bytes[i].is_ascii_hexdigit() {

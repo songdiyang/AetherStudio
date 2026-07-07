@@ -84,7 +84,7 @@ impl TerminalPanel {
             return Ok(());
         }
 
-        let shell = detect_default_shell();
+        let (shell, args) = detect_default_shell();
         let cwd = self.cwd.clone();
         let (tx, rx) = mpsc::channel();
         self.startup_receiver = Some(rx);
@@ -93,14 +93,23 @@ impl TerminalPanel {
         self.push_output(&format!("正在启动终端: {}...", shell));
 
         thread::spawn(move || {
-            match Command::new(&shell)
-                .stdin(Stdio::piped())
+            let mut cmd = Command::new(&shell);
+            cmd.stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .current_dir(&cwd)
-                .creation_flags(0x00000200) // CREATE_NEW_PROCESS_GROUP
-                .spawn()
-            {
+                // CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+                // 避免在 Windows 上为 shell 弹出独立的控制台窗口，保持嵌入在编辑器底部面板
+                .creation_flags(0x00000200 | 0x08000000);
+
+            // 根据 shell 类型附加参数，确保进入持续交互模式：
+            // - cmd.exe /K：执行完命令后保留窗口（对管道 stdin 也持续读取）
+            // - powershell/pwsh -NoExit：启动后保持交互式 shell
+            for arg in &args {
+                cmd.arg(arg);
+            }
+
+            match cmd.spawn() {
                 Ok(mut child) => {
                     let stdin = Arc::new(Mutex::new(child.stdin.take().unwrap()));
                     let stdout = child.stdout.take().unwrap();
@@ -158,8 +167,11 @@ impl TerminalPanel {
     }
 
     /// 发送回车键
+    /// 将当前输入行的内容连同换行符一起写入 shell stdin，
+    /// 使命令真正被 shell 接收并执行
     pub fn send_enter(&mut self) {
-        self.write_input("\r\n");
+        let command = format!("{}\r\n", self.input_line);
+        self.write_input(&command);
         self.input_line.clear();
         self.cursor_pos = 0;
     }
@@ -234,6 +246,7 @@ impl TerminalPanel {
         }
     }
 
+
     /// 获取可见的输出文本
     pub fn visible_output(&self) -> Vec<String> {
         self.output_lines.iter().cloned().collect()
@@ -278,6 +291,7 @@ impl TerminalPanel {
 }
 
 /// 启动通用读取线程（stdout/stderr）
+/// H-13: 保留跨缓冲区边界的 incomplete UTF-8 字节，避免中文乱码
 fn spawn_reader<R>(reader: R, tx: mpsc::Sender<String>)
 where
     R: Read + Send + 'static,
@@ -285,19 +299,33 @@ where
     thread::spawn(move || {
         let mut reader = reader;
         let mut buffer = [0u8; 1024];
+        let mut leftover: Vec<u8> = Vec::new();
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => break, // EOF
                 Ok(n) => {
-                    let text = String::from_utf8_lossy(&buffer[..n]).to_string();
-                    if tx.send(text).is_err() {
-                        break; // 接收端已关闭
+                    leftover.extend_from_slice(&buffer[..n]);
+                    // 找到最后一个完整 UTF-8 字符的边界
+                    let valid_len = match std::str::from_utf8(&leftover) {
+                        Ok(s) => s.len(),
+                        Err(e) => e.valid_up_to(),
+                    };
+                    if valid_len > 0 {
+                        let text = String::from_utf8_lossy(&leftover[..valid_len]).to_string();
+                        if tx.send(text).is_err() {
+                            break; // 接收端已关闭
+                        }
+                        leftover.drain(..valid_len);
                     }
                 }
                 Err(_) => break,
             }
             // 增加轮询间隔，减少 CPU 占用
             thread::sleep(std::time::Duration::from_millis(50));
+        }
+        // 刷新剩余字节（可能是不完整的 UTF-8）
+        if !leftover.is_empty() {
+            let _ = tx.send(String::from_utf8_lossy(&leftover).to_string());
         }
     });
 }
@@ -426,18 +454,28 @@ mod tests {
     }
 }
 
-/// 检测默认 shell
-fn detect_default_shell() -> String {
-    // 优先使用 PowerShell 7
+/// 检测默认 shell 及其启动参数
+/// 返回 (shell_path, args) 元组，args 用于确保 shell 在管道 stdin/stdout 下
+/// 仍保持持续交互模式，而不是读取完输入后立即退出。
+///
+/// 默认优先使用 cmd.exe /K：在 Windows 管道重定向 stdin/stdout 的场景下，
+/// cmd.exe /K 会稳定地显示提示符并逐行读取命令，最适合嵌入编辑器内部。
+/// PowerShell 系列在管道非控制台环境下难以保证交互式提示符，因此作为备选。
+fn detect_default_shell() -> (String, Vec<String>) {
+    // 优先使用 cmd.exe /K，在嵌入式管道终端中最稳定
+    if which_exists("cmd.exe") {
+        return ("cmd.exe".to_string(), vec!["/K".to_string()]);
+    }
+    // 回退到 PowerShell 7
     if which_exists("pwsh.exe") {
-        return "pwsh.exe".to_string();
+        return ("pwsh.exe".to_string(), vec!["-NoExit".to_string()]);
     }
     // 回退到 PowerShell 5
     if which_exists("powershell.exe") {
-        return "powershell.exe".to_string();
+        return ("powershell.exe".to_string(), vec!["-NoExit".to_string()]);
     }
-    // 最后回退到 cmd
-    "cmd.exe".to_string()
+    // 最后回退：仍尝试 cmd.exe（即使 PATH 中未找到）
+    ("cmd.exe".to_string(), vec!["/K".to_string()])
 }
 
 fn which_exists(name: &str) -> bool {

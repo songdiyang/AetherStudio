@@ -40,6 +40,8 @@ impl DapTransport {
     /// 接收 DAP 消息
     pub async fn receive(&mut self) -> std::io::Result<DapMessage> {
         // 读取 Content-Length 头
+        // C-06: 添加最大头部长度限制，防止恶意服务器发送无界数据导致内存耗尽
+        const MAX_HEADER_LEN: usize = 8 * 1024; // 8KB
         let mut header = Vec::new();
         let mut byte = [0u8; 1];
 
@@ -48,6 +50,12 @@ impl DapTransport {
             header.push(byte[0]);
             if header.ends_with(b"\r\n\r\n") {
                 break;
+            }
+            if header.len() > MAX_HEADER_LEN {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "DAP header exceeds 8KB limit",
+                ));
             }
         }
 
@@ -137,24 +145,20 @@ pub async fn spawn_adapter(config: &crate::types::AdapterConfig) -> std::io::Res
 ///
 /// 与 LSP 相同，DAP 适配器也会向 stderr 输出日志，若不读取会导致
 /// 64KB 缓冲区满后适配器进程完全阻塞，进而导致调试请求卡死。
-pub fn spawn_stderr_drain(mut child: tokio::process::Child) {
-    if let Some(mut stderr) = child.stderr.take() {
-        tokio::spawn(async move {
-            use tokio::io::AsyncReadExt;
-            let mut buf = [0u8; 4096];
-            loop {
-                match stderr.read(&mut buf).await {
-                    Ok(0) => break, // EOF
-                    Ok(_) => {
-                        // 持续读取并丢弃。生产环境可接入日志系统。
-                    }
-                    Err(_) => break,
+pub fn spawn_stderr_drain(mut stderr: tokio::process::ChildStderr) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = [0u8; 4096];
+        loop {
+            match stderr.read(&mut buf).await {
+                Ok(0) => break, // EOF
+                Ok(_) => {
+                    // 持续读取并丢弃。生产环境可接入日志系统。
                 }
+                Err(_) => break,
             }
-            // 等待子进程退出，避免僵尸进程
-            let _ = child.wait().await;
-        });
-    }
+        }
+    })
 }
 
 #[cfg(test)]

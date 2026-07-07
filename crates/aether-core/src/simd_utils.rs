@@ -84,6 +84,8 @@ pub fn count_newlines_simd(data: &[u8]) -> u32 {
 /// 快速查找字节在数组中的位置
 ///
 /// 使用 16 字节批量比较加速
+/// H-14: SWAR `has_zero_byte` 在特定字节组合下可能产生假阳性，
+/// 命中后必须逐字节验证实际匹配位置，避免返回错误偏移。
 pub fn find_byte_simd(data: &[u8], target: u8) -> Option<usize> {
     let len = data.len();
     let mut i = 0;
@@ -115,7 +117,8 @@ pub fn find_byte_simd(data: &[u8], target: u8) -> Option<usize> {
         let is_zero = has_zero_byte_u128(xor_result);
 
         if is_zero != 0 {
-            // C-01: SWAR 对高字节可能产生假阳性，必须逐字节验证
+            // H-14 / C-01: SWAR 对高字节可能产生假阳性，逐字节验证返回首个真实匹配；
+            // 若未命中则继续扫描下一个 chunk。
             for j in 0..16 {
                 if data[i + j] == target {
                     return Some(i + j);
@@ -145,7 +148,7 @@ pub fn find_byte_simd(data: &[u8], target: u8) -> Option<usize> {
         let is_zero = has_zero_byte(xor_result);
 
         if is_zero != 0 {
-            // C-01: SWAR 对高字节可能产生假阳性，必须逐字节验证
+            // H-14 / C-01: SWAR 对高字节可能产生假阳性，逐字节验证
             for j in 0..8 {
                 if data[i + j] == target {
                     return Some(i + j);

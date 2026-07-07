@@ -162,7 +162,8 @@ impl KeyMap {
             EditorAction::ToggleTerminal,
         );
         bindings.insert(
-            (Key::Char(' '), true, false, false),
+            // C-10: 使用 Ctrl+Shift+P（与 VS Code 一致），避免与 TriggerAi 的 Ctrl+Space 冲突
+            (Key::Char('p'), true, true, false),
             EditorAction::ShowCommandPalette,
         );
         bindings.insert((Key::Char('='), true, false, false), EditorAction::ZoomIn);

@@ -437,20 +437,26 @@ impl PieceTable {
     /// 获取指定字节范围的文本字节切片（零拷贝）
     /// C-03: 返回 Option 区分"单 piece 命中（含空切片=空行）"与"跨 piece 无法零拷贝"。
     /// 跨 piece 时返回 None，调用方应回退到 get_text 拼接，避免静默返回空数据。
+    ///
+    /// 性能：使用 piece_offset_cache 做二分查找定位起始 piece，O(log n)。
+    /// 早期实现线性扫描 pieces，编辑后 pieces 增多时（coalesce_threshold=32
+    /// 才合并一次），get_line 渲染 1000 行会累积 30000+ 次扫描。
     fn get_text_bytes(&self, start: usize, end: usize) -> Option<&[u8]> {
-        // 尝试找到单个piece覆盖整个范围的情况（常见场景）
-        let mut current = 0;
-        for piece in &self.pieces {
-            let piece_end = current + piece.len;
-            if current <= start && piece_end >= end {
-                let buf = self.buffer_for(piece.source);
-                let piece_start = piece.start + (start - current);
-                let piece_end_local = piece.start + (end - current);
-                return Some(&buf[piece_start..piece_end_local]);
-            }
-            current = piece_end;
+        if start >= end {
+            return Some(&[]);
         }
-        // 跨piece情况：无法零拷贝，返回 None（调用方应使用 get_text）
+        // 找到覆盖 start 的 piece（使用二分查找）
+        let piece_idx = self.find_piece_at_byte(start);
+        let piece = self.pieces.get(piece_idx)?;
+        let piece_offset = self.byte_offset_of_piece(piece_idx);
+        // 单 piece 覆盖整个 [start, end)？
+        if piece_offset + piece.len >= end {
+            let buf = self.buffer_for(piece.source);
+            let byte_start_in_buf = piece.start + (start - piece_offset);
+            let byte_end_in_buf = piece.start + (end - piece_offset);
+            return Some(&buf[byte_start_in_buf..byte_end_in_buf]);
+        }
+        // 跨 piece：无法零拷贝，返回 None（调用方回退到 get_text）
         None
     }
 
@@ -485,6 +491,32 @@ impl PieceTable {
     /// 获取所有文本
     pub fn get_all_text(&self) -> String {
         self.get_text(0, self.len_bytes())
+    }
+
+    /// 将缓冲区全部内容直接写入 writer，避免 get_all_text 的中间 String 分配。
+    /// 性能：对未编辑的大文件（original 是 mmap），每个 piece 直接写出 &[u8] 切片，
+    /// 无堆分配；编辑后的文件也只是多次 write_all，仍避免了一次全量 String 拼接。
+    pub fn write_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        for piece in &self.pieces {
+            let buf = self.buffer_for(piece.source);
+            let end = piece.start.checked_add(piece.len).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "piece start+len 溢出")
+            })?;
+            if end > buf.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "piece 引用超出 buffer 边界",
+                ));
+            }
+            writer.write_all(&buf[piece.start..end])?;
+        }
+        Ok(())
+    }
+
+    /// 判断缓冲区是否未经过编辑（pieces 仅引用 original buffer）。
+    /// 用于保存文件时判断是否可以直接从 mmap 零拷贝写入磁盘。
+    pub fn is_pristine(&self) -> bool {
+        self.pieces.iter().all(|p| p.source == Source::Original)
     }
 
     /// 获取 pieces 的克隆副本（用于撤销/重做快照）
@@ -1230,13 +1262,54 @@ impl TextBuffer for PieceTable {
     }
 
     fn restore_state(&mut self, state: BufferState) {
-        // 反序列化 piece 元数据
-        let piece_size = 32; // 8 * 4 bytes
-        let piece_count = state.pieces_data.len() / piece_size;
+        // H-19: 反序列化前完整校验，任何字段越界/损坏都放弃恢复，保留当前状态
+        // 避免后续 piece 切片访问触发 OOB panic 或读取未初始化内存
+        match self.restore_state_checked(state) {
+            Ok(()) => {}
+            Err(msg) => {
+                eprintln!("[ERROR] restore_state 校验失败，放弃恢复: {}", msg);
+            }
+        }
+    }
+}
+
+impl PieceTable {
+    /// H-19: 带边界校验的状态恢复。
+    /// 对反序列化后的每个 piece 严格校验 source/start/len/line_breaks，
+    /// 任何字段越界或损坏均返回 Err，调用方可选择保留旧状态。
+    pub fn restore_state_checked(&mut self, state: BufferState) -> Result<(), String> {
+        const PIECE_SIZE: usize = 32; // 8 * 4 bytes
+
+        // 1) pieces_data 长度必须是 PIECE_SIZE 的整数倍，否则字节流已损坏
+        if state.pieces_data.len() % PIECE_SIZE != 0 {
+            return Err(format!(
+                "pieces_data 长度 {} 不是 {} 的整数倍",
+                state.pieces_data.len(),
+                PIECE_SIZE
+            ));
+        }
+
+        let piece_count = state.pieces_data.len() / PIECE_SIZE;
         let mut pieces = Vec::with_capacity(piece_count);
+
+        // 缓存 original buffer 长度（若存在）以便逐 piece 校验 Source::Original 的边界
+        let original_len = self.original.as_ref().map(|m| m.len()).unwrap_or(0usize);
+        let add_len = self.add_buffer.len();
+
+        // 2) 交叉校验 add_buffer 长度：add_buffer 只追加不收缩，
+        //    保存时的长度必须 <= 当前长度，否则说明 add_buffer 已被异常截断
+        if state.add_buffer_len > add_len {
+            return Err(format!(
+                "add_buffer_len 异常: state={} current={}（add_buffer 不应收缩）",
+                state.add_buffer_len, add_len
+            ));
+        }
+
+        let mut total_bytes: u64 = 0;
+
         for i in 0..piece_count {
-            let offset = i * piece_size;
-            let source = u64::from_le_bytes([
+            let offset = i * PIECE_SIZE;
+            let src_raw = u64::from_le_bytes([
                 state.pieces_data[offset],
                 state.pieces_data[offset + 1],
                 state.pieces_data[offset + 2],
@@ -1246,6 +1319,16 @@ impl TextBuffer for PieceTable {
                 state.pieces_data[offset + 6],
                 state.pieces_data[offset + 7],
             ]);
+            // source 必须是 0 (Original) 或 1 (Add)，其它值视为损坏
+            if src_raw > 1 {
+                return Err(format!("piece {} source 非法值: {}", i, src_raw));
+            }
+            let source = if src_raw == 0 {
+                Source::Original
+            } else {
+                Source::Add
+            };
+
             let start = u64::from_le_bytes([
                 state.pieces_data[offset + 8],
                 state.pieces_data[offset + 9],
@@ -1255,7 +1338,7 @@ impl TextBuffer for PieceTable {
                 state.pieces_data[offset + 13],
                 state.pieces_data[offset + 14],
                 state.pieces_data[offset + 15],
-            ]) as usize;
+            ]);
             let len = u64::from_le_bytes([
                 state.pieces_data[offset + 16],
                 state.pieces_data[offset + 17],
@@ -1265,7 +1348,7 @@ impl TextBuffer for PieceTable {
                 state.pieces_data[offset + 21],
                 state.pieces_data[offset + 22],
                 state.pieces_data[offset + 23],
-            ]) as usize;
+            ]);
             let line_breaks = u64::from_le_bytes([
                 state.pieces_data[offset + 24],
                 state.pieces_data[offset + 25],
@@ -1275,26 +1358,80 @@ impl TextBuffer for PieceTable {
                 state.pieces_data[offset + 29],
                 state.pieces_data[offset + 30],
                 state.pieces_data[offset + 31],
-            ]) as u32;
+            ]);
+
+            // start + len 不能溢出 usize（在 64-bit 上 u64 直接转 usize不会溢出，但32-bit可能）
+            let start_us = start as usize;
+            let len_us = len as usize;
+            let lb_us = line_breaks as u32;
+
+            // 3) start + len 不能溢出
+            let end = start_us
+                .checked_add(len_us)
+                .ok_or_else(|| format!("piece {} start+len 溢出: {}+{}", i, start_us, len_us))?;
+
+            // 4) 边界校验：piece 引用的字节范围必须落在对应 buffer 内
+            match source {
+                Source::Original => {
+                    // 若 original 为 None，则不应出现 Source::Original 的 piece
+                    if self.original.is_none() {
+                        return Err(format!(
+                            "piece {} 引用 Source::Original 但 original buffer 不存在",
+                            i
+                        ));
+                    }
+                    if end > original_len {
+                        return Err(format!(
+                            "piece {} Original 越界: start+len={} > original_len={}",
+                            i, end, original_len
+                        ));
+                    }
+                }
+                Source::Add => {
+                    if end > state.add_buffer_len {
+                        return Err(format!(
+                            "piece {} Add 越界: start+len={} > add_buffer_len={}",
+                            i, end, state.add_buffer_len
+                        ));
+                    }
+                }
+            }
+
+            // 5) line_breaks 不应超过 len（每个换行符至少占 1 字节）
+            if (lb_us as usize) > len_us {
+                return Err(format!(
+                    "piece {} line_breaks={} 超过 len={}",
+                    i, lb_us, len_us
+                ));
+            }
+
+            total_bytes = total_bytes
+                .checked_add(len)
+                .ok_or_else(|| format!("piece {} 累加 len 溢出 u64", i))?;
+
             pieces.push(Piece {
-                source: if source == 0 {
-                    Source::Original
-                } else {
-                    Source::Add
-                },
-                start,
-                len,
-                line_breaks,
+                source,
+                start: start_us,
+                len: len_us,
+                line_breaks: lb_us,
             });
         }
+
+        // 6) 总字节数交叉校验
+        if total_bytes as usize != state.byte_len {
+            return Err(format!(
+                "byte_len 不匹配: pieces 累加={} state={}",
+                total_bytes, state.byte_len
+            ));
+        }
+
         self.pieces = pieces;
         self.len_lines = state.line_count;
         self.len_chars = state.byte_len;
         self.rebuild_line_index();
+        Ok(())
     }
-}
 
-impl PieceTable {
     /// 获取指定行的起始字节偏移 - O(1)
     pub fn line_start_byte(&self, line: usize) -> usize {
         self.line_index.line_start(line).unwrap_or(0)

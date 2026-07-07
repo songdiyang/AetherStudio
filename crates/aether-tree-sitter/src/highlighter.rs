@@ -228,7 +228,10 @@ impl TreeSitterHighlighter {
                         current_start = start;
                     }
                     Ok(HighlightEvent::HighlightStart(s)) => {
-                        current_kind = capture_to_token_kind(s.0);
+                        // H-16: 按 capture 名称而非索引映射 TokenKind，
+                        // 因为不同语言的 highlight query 定义不同的 capture 顺序
+                        let name = config.names().get(s.0).map(|s| s.as_str()).unwrap_or("");
+                        current_kind = capture_name_to_token_kind(name);
                         in_highlight = true;
                     }
                     Ok(HighlightEvent::HighlightEnd) => {
@@ -325,9 +328,10 @@ impl Default for TreeSitterHighlighter {
     }
 }
 
-/// 独立的 capture index 到 TokenKind 转换函数
-fn capture_to_token_kind(capture_index: usize) -> TokenKind {
-    match capture_index {
+/// 按 capture 索引映射 TokenKind（与 HIGHLIGHT_NAMES 顺序对应）
+#[cfg(test)]
+fn capture_to_token_kind(index: usize) -> TokenKind {
+    match index {
         0 => TokenKind::Keyword,
         1 => TokenKind::StringLiteral,
         2 => TokenKind::NumberLiteral,
@@ -338,6 +342,32 @@ fn capture_to_token_kind(capture_index: usize) -> TokenKind {
         7 => TokenKind::Identifier,
         8 => TokenKind::Preprocessor,
         9 => TokenKind::Attribute,
+        _ => TokenKind::Unknown,
+    }
+}
+
+/// H-16: 按 capture 名称映射 TokenKind，兼容不同语言的 highlight query
+///
+/// tree-sitter-highlight 的 capture 名称遵循 tree-sitter 标准 highlight 规范
+/// (https://tree-sitter.github.io/tree-sitter/syntax-highlighting#captures)
+/// 不同语言定义不同的 capture 顺序，因此必须按名称而非索引映射。
+fn capture_name_to_token_kind(name: &str) -> TokenKind {
+    match name {
+        "keyword" => TokenKind::Keyword,
+        "string" | "string.special" => TokenKind::StringLiteral,
+        "number" => TokenKind::NumberLiteral,
+        "comment" => TokenKind::LineComment,
+        "function" | "function.call" | "function.builtin" | "method" | "method.call" => {
+            TokenKind::Function
+        }
+        "type" | "type.builtin" | "constructor" => TokenKind::TypeName,
+        "operator" => TokenKind::Operator,
+        "constant" | "constant.builtin" => TokenKind::NumberLiteral,
+        "variable" | "variable.builtin" | "variable.parameter" | "identifier" => {
+            TokenKind::Identifier
+        }
+        "preproc" => TokenKind::Preprocessor,
+        "attribute" => TokenKind::Attribute,
         _ => TokenKind::Unknown,
     }
 }

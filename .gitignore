@@ -38,6 +38,12 @@ tests/gui_hit_regions.jsonl
 tests/gui_probe_report.json
 tests/gui_smoke_report.json
 
+# Trae IDE shared HTML packages cache
+.trae-html-share-packages/
+
+# Upload cache
+.uploads/
+
 # Runtime user data
 crates/aether-win32/recent_projects.json
 

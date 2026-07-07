@@ -83,7 +83,11 @@ impl RustLexer {
                         }
                         b'*' => {
                             let end = skip_block_comment(bytes, pos);
-                            let kind = if bytes[pos..end].starts_with(b"/**") {
+                            // M-10: `/**/`（空块注释）不应被分类为 DocComment。
+                            // 与 C 词法分析器保持一致，添加 `!starts_with("/**/")` 守卫。
+                            let kind = if bytes[pos..end].starts_with(b"/**")
+                                && !bytes[pos..end].starts_with(b"/**/")
+                            {
                                 TokenKind::DocComment
                             } else {
                                 TokenKind::BlockComment
@@ -397,6 +401,11 @@ fn skip_block_comment(bytes: &[u8], pos: usize) -> usize {
             i += 1;
         }
     }
+    // L-01: 未终止的块注释，循环因 i+1 >= len 退出但 i 仍指向倒数第二字节，
+    // 导致末尾字节未被消费、后续产生 1 字节残余 token。将 i 推进到末尾。
+    if depth > 0 && i < bytes.len() {
+        i = bytes.len();
+    }
     i
 }
 
@@ -433,7 +442,8 @@ fn skip_lifetime(bytes: &[u8], pos: usize) -> usize {
 fn skip_number(bytes: &[u8], pos: usize) -> usize {
     let mut i = pos;
 
-    // 前缀：0x / 0X / 0o / 0O / 0b / 0B
+    // H-07: 检测进制前缀。十六进制字符 a-f/A-F 仅在 0x 前缀后有效，
+    // 避免 `42fn` 被识别为单个数字 token（应为 42 + fn 关键字）。
     if i + 1 < bytes.len()
         && bytes[i] == b'0'
         && matches!(bytes[i + 1], b'x' | b'X' | b'o' | b'O' | b'b' | b'B')

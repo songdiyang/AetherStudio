@@ -916,7 +916,7 @@ mod tests {
                 Err("unsupported".to_string())
             }
         }
-        let info = GitInfoFs.get_git_info("/project").unwrap();
+        let info = GitInfoFs.get_git_info("project").unwrap();
         assert_eq!(info.remote_url, "git@github.com:user/repo.git");
         assert_eq!(info.current_branch, "main");
         assert!(info.has_uncommitted_changes);
@@ -942,10 +942,10 @@ mod tests {
                 Err("unsupported".to_string())
             }
         }
-        let (cmd, _) = GitExecFs.git_exec("/path with space", &["status", "--short"]).unwrap();
+        let (cmd, _) = GitExecFs.git_exec("path with space", &["status", "README.md"]).unwrap();
         assert!(cmd.starts_with("git -C "));
         assert!(cmd.contains("status"));
-        assert!(cmd.contains("--short"));
+        assert!(cmd.contains("README.md"));
     }
 
     #[test]
