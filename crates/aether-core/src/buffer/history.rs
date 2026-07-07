@@ -101,6 +101,7 @@ impl History {
     /// 记录一次编辑操作
     /// 调用时机：在编辑完成后，传入编辑前的状态
     /// `edit_len`: 插入的字节长度（用于 Insert 合并判断；Delete 传 0）
+    #[allow(clippy::too_many_arguments)]
     pub fn record(
         &mut self,
         before_pieces: Vec<Piece>,

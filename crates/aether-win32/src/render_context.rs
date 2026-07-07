@@ -96,6 +96,61 @@ impl RenderContext {
         }
     }
 
+    /// REQ-P3-03: 设置多个独立矩形的并集裁剪区域
+    ///
+    /// 返回 true 表示使用了 PushLayer（多矩形路径），返回 false 表示走了
+    /// PushAxisAlignedClip 单矩形快路径或空路径。调用方需在 pop_multi_clip
+    /// 时传入相同的标志以选择 PopLayer 或 PopAxisAlignedClip。
+    pub fn push_multi_clip(
+        &self,
+        factory: &windows::Win32::Graphics::Direct2D::ID2D1Factory1,
+        rects: &[(f32, f32, f32, f32)],
+    ) -> bool {
+        if let Some(rt) = &self.target {
+            // 单矩形走快路径
+            if rects.len() == 1 {
+                let (x, y, w, h) = rects[0];
+                rt.push_clip(x, y, w, h);
+                return false;
+            }
+            if rects.is_empty() {
+                return false;
+            }
+            match rt.push_multi_clip(factory, rects) {
+                Ok(()) => true,
+                Err(_) => {
+                    // 失败时回退到合并包围盒的 AxisAlignedClip
+                    let mut min_x = f32::MAX;
+                    let mut min_y = f32::MAX;
+                    let mut max_x = f32::MIN;
+                    let mut max_y = f32::MIN;
+                    for &(x, y, w, h) in rects {
+                        if w <= 0.0 || h <= 0.0 {
+                            continue;
+                        }
+                        min_x = min_x.min(x);
+                        min_y = min_y.min(y);
+                        max_x = max_x.max(x + w);
+                        max_y = max_y.max(y + h);
+                    }
+                    if max_x > min_x && max_y > min_y {
+                        rt.push_clip(min_x, min_y, max_x - min_x, max_y - min_y);
+                    }
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+
+    /// REQ-P3-03: 弹出多矩形裁剪区域
+    pub fn pop_multi_clip(&self, use_layer: bool) {
+        if let Some(rt) = &self.target {
+            rt.pop_multi_clip(use_layer);
+        }
+    }
+
     /// 填充指定矩形区域（用于局部背景清除）
     pub fn fill_rect(
         &mut self,

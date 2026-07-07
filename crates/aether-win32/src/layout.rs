@@ -51,13 +51,13 @@ impl ActivityBarView {
         }
     }
 
-    pub fn icon(&self) -> &'static str {
+    pub fn icon(&self) -> crate::icons::IconKind {
         match self {
-            ActivityBarView::Explorer => "📁",
-            ActivityBarView::SourceControl => "🌿",
-            ActivityBarView::Terminal => "⌨",
-            ActivityBarView::RemoteManager => "🔌",
-            ActivityBarView::AiAssistant => "🤖",
+            ActivityBarView::Explorer => crate::icons::IconKind::Folder,
+            ActivityBarView::SourceControl => crate::icons::IconKind::GitBranch,
+            ActivityBarView::Terminal => crate::icons::IconKind::Terminal,
+            ActivityBarView::RemoteManager => crate::icons::IconKind::Ssh,
+            ActivityBarView::AiAssistant => crate::icons::IconKind::Bot,
         }
     }
 
@@ -131,6 +131,10 @@ pub const STATUS_BAR_HEIGHT: f32 = 22.0;
 pub const TAB_BAR_HEIGHT: f32 = 30.0;
 pub const MIN_SIDEBAR_WIDTH: f32 = 150.0;
 pub const MAX_SIDEBAR_WIDTH: f32 = 500.0;
+/// 底部面板最小高度
+pub const MIN_BOTTOM_PANEL_HEIGHT: f32 = 100.0;
+/// 右侧面板最小宽度
+pub const MIN_RIGHT_PANEL_WIDTH: f32 = 150.0;
 
 /// 布局管理器 - 计算和管理所有 UI 区域的几何布局
 #[derive(Clone, Debug)]
@@ -178,6 +182,24 @@ impl LayoutManager {
             status_bar_visible: true,
             right_panel_resizing: false,
             bottom_panel_resizing: false,
+        }
+    }
+
+    /// REQ-P2-07: 应用 DPI 缩放到所有布局常量
+    /// 在窗口初始化和 DPI 变化时调用，确保高 DPI 显示器上 UI 元素尺寸正确
+    pub fn apply_dpi_scale(&mut self, scale: f32) {
+        self.title_bar_height = TITLE_BAR_HEIGHT * scale;
+        self.menu_bar_height = MENU_BAR_HEIGHT * scale;
+        self.activity_bar_width = ACTIVITY_BAR_WIDTH * scale;
+        // 侧边栏宽度保持用户可调，但初始值按 DPI 缩放
+        self.sidebar_width = SIDEBAR_WIDTH * scale;
+        self.status_bar_height = STATUS_BAR_HEIGHT * scale;
+        // 右侧/底部面板高度仅在可见时缩放
+        if self.right_panel_width > 0.0 {
+            self.right_panel_width = 300.0 * scale;
+        }
+        if self.bottom_panel_height > 0.0 {
+            self.bottom_panel_height = 200.0 * scale;
         }
     }
 
@@ -353,14 +375,18 @@ impl LayoutManager {
     }
 
     /// 调整右侧面板宽度
+    /// clamp: 最小 MIN_RIGHT_PANEL_WIDTH，最大 window_width * 0.8
     pub fn resize_right_panel(&mut self, delta: f32) {
-        let new_width = (self.right_panel_width + delta).max(0.0);
+        let new_width = (self.right_panel_width + delta)
+            .clamp(MIN_RIGHT_PANEL_WIDTH, self.window_width * 0.8);
         self.right_panel_width = new_width;
     }
 
     /// 调整底部面板高度
+    /// clamp: 最小 MIN_BOTTOM_PANEL_HEIGHT，最大 window_height * 0.8
     pub fn resize_bottom_panel(&mut self, delta: f32) {
-        let new_height = (self.bottom_panel_height + delta).max(0.0);
+        let new_height = (self.bottom_panel_height + delta)
+            .clamp(MIN_BOTTOM_PANEL_HEIGHT, self.window_height * 0.8);
         self.bottom_panel_height = new_height;
     }
 
@@ -386,6 +412,7 @@ impl LayoutManager {
     }
 
     /// 切换底部面板可见性
+    /// REQ-P2-09: 合并原 toggle_bottom_panel 与 toggle_terminal_panel（两者实现完全相同）
     pub fn toggle_bottom_panel(&mut self) {
         self.bottom_panel_visible = !self.bottom_panel_visible;
         if self.bottom_panel_visible {
@@ -407,13 +434,9 @@ impl LayoutManager {
 
     /// 切换终端面板可见性。
     /// 终端渲染在底部面板区域，不覆盖主编辑器内容区域。
+    /// REQ-P2-09: 合并到 toggle_bottom_panel，保留别名以兼容调用方
     pub fn toggle_terminal_panel(&mut self) {
-        self.bottom_panel_visible = !self.bottom_panel_visible;
-        if self.bottom_panel_visible {
-            self.bottom_panel_height = 200.0;
-        } else {
-            self.bottom_panel_height = 0.0;
-        }
+        self.toggle_bottom_panel();
     }
 }
 
@@ -441,7 +464,7 @@ mod tests {
     #[test]
     fn test_activity_bar_view_label_icon_key() {
         assert_eq!(ActivityBarView::Explorer.label(), "资源管理器");
-        assert_eq!(ActivityBarView::Terminal.icon(), "⌨");
+        assert_eq!(ActivityBarView::Terminal.icon(), crate::icons::IconKind::Terminal);
         assert_eq!(ActivityBarView::AiAssistant.key(), "aiAssistant");
     }
 
@@ -609,6 +632,58 @@ mod tests {
 
         layout.resize_sidebar(-1000.0);
         assert_eq!(layout.sidebar_width, MIN_SIDEBAR_WIDTH);
+    }
+
+    #[test]
+    fn test_layout_manager_resize_right_panel_clamp() {
+        // window_width = 1280.0 → 上限 = 1024.0
+        let mut layout = LayoutManager::new(1280.0, 800.0);
+        layout.right_panel_width = 300.0;
+
+        // 正常增量
+        layout.resize_right_panel(100.0);
+        assert_eq!(layout.right_panel_width, 400.0);
+
+        // 超过上限 → clamp 到 window_width * 0.8 = 1024.0
+        layout.resize_right_panel(1000.0);
+        assert_eq!(layout.right_panel_width, 1280.0 * 0.8);
+
+        // 低于下限 → clamp 到 MIN_RIGHT_PANEL_WIDTH
+        layout.resize_right_panel(-10000.0);
+        assert_eq!(layout.right_panel_width, MIN_RIGHT_PANEL_WIDTH);
+
+        // 关键：到达最小值后继续拖拽不应使面板更小
+        let min_val = layout.right_panel_width;
+        layout.resize_right_panel(-50.0);
+        assert_eq!(layout.right_panel_width, min_val);
+        layout.resize_right_panel(-50.0);
+        assert_eq!(layout.right_panel_width, min_val);
+    }
+
+    #[test]
+    fn test_layout_manager_resize_bottom_panel_clamp() {
+        // window_height = 800.0 → 上限 = 640.0
+        let mut layout = LayoutManager::new(1280.0, 800.0);
+        layout.bottom_panel_height = 200.0;
+
+        // 正常增量
+        layout.resize_bottom_panel(100.0);
+        assert_eq!(layout.bottom_panel_height, 300.0);
+
+        // 超过上限 → clamp 到 window_height * 0.8 = 640.0
+        layout.resize_bottom_panel(1000.0);
+        assert_eq!(layout.bottom_panel_height, 800.0 * 0.8);
+
+        // 低于下限 → clamp 到 MIN_BOTTOM_PANEL_HEIGHT
+        layout.resize_bottom_panel(-10000.0);
+        assert_eq!(layout.bottom_panel_height, MIN_BOTTOM_PANEL_HEIGHT);
+
+        // 关键：到达最小值后继续拖拽不应使面板更小
+        let min_val = layout.bottom_panel_height;
+        layout.resize_bottom_panel(-50.0);
+        assert_eq!(layout.bottom_panel_height, min_val);
+        layout.resize_bottom_panel(-50.0);
+        assert_eq!(layout.bottom_panel_height, min_val);
     }
 
     #[test]

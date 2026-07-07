@@ -79,9 +79,10 @@ impl LanguageServer<ChildStdin> {
             .stdout
             .take()
             .ok_or_else(|| std::io::Error::other("Failed to capture stdout"))?;
-        let stderr = process.stderr.take().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::Other, "Failed to capture stderr")
-        })?;
+        let stderr = process
+            .stderr
+            .take()
+            .ok_or_else(|| std::io::Error::other("Failed to capture stderr"))?;
 
         let writer = LspWriter::new(stdin);
         let reader = LspReader::new(stdout);
@@ -176,10 +177,10 @@ impl<W: AsyncWrite + Unpin + Send + 'static> LanguageServer<W> {
             match rx.await {
                 Ok(resp) => {
                     if let Some(err) = resp.error {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("LSP error {}: {}", err.code, err.message),
-                        ));
+                        return Err(std::io::Error::other(format!(
+                            "LSP error {}: {}",
+                            err.code, err.message
+                        )));
                     }
                     match resp.result {
                         Some(val) => {

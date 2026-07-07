@@ -87,8 +87,8 @@ impl RemoteFs for ContainerRemoteFs {
         ];
         const WRITE_COMMANDS: &[&str] = &["mkdir", "touch", "cp", "mv", "rm", "chmod", "chown"];
         let cmd_name = trimmed.split_whitespace().next().unwrap_or("");
-        let is_readonly = READONLY_COMMANDS.iter().any(|&c| c == cmd_name);
-        let is_write = WRITE_COMMANDS.iter().any(|&c| c == cmd_name);
+        let is_readonly = READONLY_COMMANDS.contains(&cmd_name);
+        let is_write = WRITE_COMMANDS.contains(&cmd_name);
         if !is_readonly && !is_write {
             return Err(format!("命令被拒绝（不在白名单中）: {}", command));
         }

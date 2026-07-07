@@ -1,7 +1,7 @@
 #![allow(clippy::items_after_test_module, clippy::useless_vec)]
 
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
-use windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE;
+use windows::Win32::Graphics::Direct2D::{D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ROUNDED_RECT};
 use windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT_CENTER;
 use windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT_LEADING;
 
@@ -38,6 +38,8 @@ pub struct WelcomeLayout {
     pub project_item_h: f32,
     pub more_y: Option<f32>,
     pub more_height: f32,
+    /// 空状态"打开文件夹"按钮 rect (left, top, right, bottom)，仅在最近项目为空时为 Some
+    pub empty_state_button_rect: Option<(f32, f32, f32, f32)>,
 }
 
 impl WelcomeLayout {
@@ -70,6 +72,23 @@ impl WelcomeLayout {
         };
         let more_height = 22.0f32;
 
+        // 空状态按钮：仅在无最近项目时计算
+        // 布局：图标(48) + 12 间距 + 主文案(20) + 6 间距 + 副文案(16) + 16 间距 → 按钮顶部
+        let empty_state_button_rect = if project_count == 0 {
+            let center_x = right_col_x + right_col_width / 2.0;
+            let button_w = 120.0f32;
+            let button_h = 32.0f32;
+            let button_y = project_start_y + 48.0 + 12.0 + 20.0 + 6.0 + 16.0 + 16.0;
+            Some((
+                center_x - button_w / 2.0,
+                button_y,
+                center_x + button_w / 2.0,
+                button_y + button_h,
+            ))
+        } else {
+            None
+        };
+
         Self {
             left_col_x,
             left_col_width,
@@ -83,17 +102,18 @@ impl WelcomeLayout {
             project_item_h,
             more_y,
             more_height,
+            empty_state_button_rect,
         }
     }
 }
 
 impl EditorState {
     pub fn show_welcome(&self) -> bool {
-        self.file_path.is_none()
+        self.content.file_path.is_none()
             && self.current_folder.is_none()
             && self.file_tree.is_none()
-            && !self.is_dirty
-            && self.buffer.get_all_text().is_empty()
+            && !self.content.is_dirty
+            && self.content.buffer.get_all_text().is_empty()
     }
 
     fn welcome_actions() -> [WelcomeActionItem; 4] {
@@ -167,6 +187,13 @@ impl EditorState {
                 && mouse_y <= more_y + layout.more_height
             {
                 return Some(WelcomeAction::MoreRecentProjects);
+            }
+        }
+
+        // 空状态"打开文件夹"按钮
+        if let Some((bl, bt, br, bb)) = layout.empty_state_button_rect {
+            if mouse_x >= bl && mouse_x <= br && mouse_y >= bt && mouse_y <= bb {
+                return Some(WelcomeAction::OpenFolder);
             }
         }
 
@@ -267,34 +294,18 @@ impl EditorState {
             };
             target.FillRectangle(&full_bg, &bg_brush);
 
-            let logo_format = dwrite
-                .CreateTextFormat(
-                    windows::core::w!("Segoe UI"),
-                    None,
-                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL,
-                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_NORMAL,
-                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STRETCH_NORMAL,
-                    48.0,
-                    windows::core::w!("zh-CN"),
-                )
-                .unwrap_or_else(|e| {
-                    eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
-                    panic!("D2D device lost")
-                });
-            let logo_text: Vec<u16> = "🐑".encode_utf16().chain(Some(0)).collect();
-            let logo_rect = D2D_RECT_F {
-                left: layout.left_col_x,
-                top: y + layout.top_margin,
-                right: layout.left_col_x + 60.0,
-                bottom: y + layout.top_margin + 60.0,
-            };
-            target.DrawText(
-                &logo_text,
-                &logo_format,
-                &logo_rect,
+            // UI-UX: 使用矢量 EmojiSheep 图标替代 emoji 字符，保持视觉一致性
+            let logo_size = 60.0f32;
+            let logo_x = layout.left_col_x;
+            let logo_y = y + layout.top_margin;
+            self.icons.draw(
+                target,
+                crate::icons::IconKind::EmojiSheep,
+                logo_x,
+                logo_y,
+                logo_size,
+                logo_size,
                 &title_brush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
             );
 
             let brand_title_format = dwrite
@@ -711,21 +722,158 @@ impl EditorState {
             }
 
             if !has_recent_projects {
-                let empty_text: Vec<u16> = "暂无最近项目".encode_utf16().chain(Some(0)).collect();
-                let empty_rect = D2D_RECT_F {
+                let center_x = layout.right_col_x + layout.right_col_width / 2.0;
+
+                // 1. 大图标 Folder 48x48 居中，灰色柔和
+                let icon_size = 48.0f32;
+                let icon_x = center_x - icon_size / 2.0;
+                let icon_y = layout.project_start_y;
+                let empty_icon_brush = target
+                    .CreateSolidColorBrush(&color_f(150.0 / 255.0, 150.0 / 255.0, 150.0 / 255.0, 200.0 / 255.0), None)
+                    .unwrap_or_else(|e| {
+                        eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
+                        panic!("D2D device lost")
+                    });
+                self.icons.draw(
+                    target,
+                    crate::icons::IconKind::Folder,
+                    icon_x,
+                    icon_y,
+                    icon_size,
+                    icon_size,
+                    &empty_icon_brush,
+                );
+
+                // 2. 主文案 "暂无最近项目" 14pt 居中
+                let empty_main_format = dwrite
+                    .CreateTextFormat(
+                        windows::core::w!("Segoe UI"),
+                        None,
+                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL,
+                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_NORMAL,
+                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STRETCH_NORMAL,
+                        14.0,
+                        windows::core::w!("zh-CN"),
+                    )
+                    .unwrap_or_else(|e| {
+                        eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
+                        panic!("D2D device lost")
+                    });
+                let _ = empty_main_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                let main_y = icon_y + icon_size + 12.0;
+                let main_text: Vec<u16> = "暂无最近项目".encode_utf16().chain(Some(0)).collect();
+                let main_rect = D2D_RECT_F {
                     left: layout.right_col_x,
-                    top: layout.project_start_y + 20.0,
+                    top: main_y,
                     right: layout.right_col_x + layout.right_col_width,
-                    bottom: layout.project_start_y + 50.0,
+                    bottom: main_y + 20.0,
                 };
+                let empty_main_brush = target
+                    .CreateSolidColorBrush(&color_f(180.0 / 255.0, 180.0 / 255.0, 180.0 / 255.0, 1.0), None)
+                    .unwrap_or_else(|e| {
+                        eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
+                        panic!("D2D device lost")
+                    });
                 target.DrawText(
-                    &empty_text,
-                    &project_name_format,
-                    &empty_rect,
-                    &text_light_brush,
+                    &main_text,
+                    &empty_main_format,
+                    &main_rect,
+                    &empty_main_brush,
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
                 );
+
+                // 3. 副文案 "打开文件夹开始编辑" 12pt 居中
+                let empty_sub_format = dwrite
+                    .CreateTextFormat(
+                        windows::core::w!("Segoe UI"),
+                        None,
+                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL,
+                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_NORMAL,
+                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STRETCH_NORMAL,
+                        12.0,
+                        windows::core::w!("zh-CN"),
+                    )
+                    .unwrap_or_else(|e| {
+                        eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
+                        panic!("D2D device lost")
+                    });
+                let _ = empty_sub_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                let sub_y = main_y + 20.0 + 6.0;
+                let sub_text: Vec<u16> = "打开文件夹开始编辑".encode_utf16().chain(Some(0)).collect();
+                let sub_rect = D2D_RECT_F {
+                    left: layout.right_col_x,
+                    top: sub_y,
+                    right: layout.right_col_x + layout.right_col_width,
+                    bottom: sub_y + 16.0,
+                };
+                let empty_sub_brush = target
+                    .CreateSolidColorBrush(&color_f(140.0 / 255.0, 140.0 / 255.0, 140.0 / 255.0, 1.0), None)
+                    .unwrap_or_else(|e| {
+                        eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
+                        panic!("D2D device lost")
+                    });
+                target.DrawText(
+                    &sub_text,
+                    &empty_sub_format,
+                    &sub_rect,
+                    &empty_sub_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
+                );
+
+                // 4. "打开文件夹" 按钮：圆角矩形，hover 变亮
+                if let Some((bl, bt, br, bb)) = layout.empty_state_button_rect {
+                    let is_btn_hovered =
+                        self.welcome_hover_action.as_ref() == Some(&WelcomeAction::OpenFolder);
+                    let btn_color = if is_btn_hovered {
+                        color_f(80.0 / 255.0, 120.0 / 255.0, 200.0 / 255.0, 1.0)
+                    } else {
+                        color_f(60.0 / 255.0, 100.0 / 255.0, 180.0 / 255.0, 1.0)
+                    };
+                    let btn_brush = target
+                        .CreateSolidColorBrush(&btn_color, None)
+                        .unwrap_or_else(|e| {
+                            eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
+                            panic!("D2D device lost")
+                        });
+                    let btn_rect = D2D_RECT_F {
+                        left: bl,
+                        top: bt,
+                        right: br,
+                        bottom: bb,
+                    };
+                    let rounded = D2D1_ROUNDED_RECT {
+                        rect: btn_rect,
+                        radiusX: 4.0,
+                        radiusY: 4.0,
+                    };
+                    target.FillRoundedRectangle(&rounded, &btn_brush);
+
+                    // 按钮文本 "打开文件夹" 白色居中
+                    let btn_text: Vec<u16> =
+                        "打开文件夹".encode_utf16().chain(Some(0)).collect();
+                    let btn_text_rect = D2D_RECT_F {
+                        left: bl,
+                        top: bt + 6.0,
+                        right: br,
+                        bottom: bb - 6.0,
+                    };
+                    let white_brush = target
+                        .CreateSolidColorBrush(&color_f(1.0, 1.0, 1.0, 1.0), None)
+                        .unwrap_or_else(|e| {
+                            eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
+                            panic!("D2D device lost")
+                        });
+                    target.DrawText(
+                        &btn_text,
+                        &empty_main_format,
+                        &btn_text_rect,
+                        &white_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
             }
 
             if let Some(more_y) = layout.more_y {
@@ -874,6 +1022,39 @@ mod tests {
     fn test_welcome_layout_no_projects() {
         let layout = WelcomeLayout::compute(0.0, 0.0, 1000.0, 600.0, 0);
         assert!(layout.more_y.is_none());
+    }
+
+    #[test]
+    fn test_empty_state_button_rect_some_when_no_projects() {
+        let layout = WelcomeLayout::compute(0.0, 0.0, 1000.0, 600.0, 0);
+        assert!(
+            layout.empty_state_button_rect.is_some(),
+            "空状态按钮 rect 应在 project_count=0 时为 Some"
+        );
+        let (left, top, right, bottom) = layout.empty_state_button_rect.unwrap();
+        // 按钮宽度 120，高度 32
+        assert_eq!(right - left, 120.0, "按钮宽度应为 120px");
+        assert_eq!(bottom - top, 32.0, "按钮高度应为 32px");
+        // 按钮应水平居中于右侧列
+        let center_x = layout.right_col_x + layout.right_col_width / 2.0;
+        assert!(
+            (left + right) / 2.0 - center_x < 0.01,
+            "按钮应居中于右侧列"
+        );
+        // 按钮应在 project_start_y 下方
+        assert!(
+            top > layout.project_start_y,
+            "按钮应在 project_start_y 下方"
+        );
+    }
+
+    #[test]
+    fn test_empty_state_button_rect_none_when_has_projects() {
+        let layout = WelcomeLayout::compute(0.0, 0.0, 1000.0, 600.0, 3);
+        assert!(
+            layout.empty_state_button_rect.is_none(),
+            "空状态按钮 rect 应在 project_count>0 时为 None"
+        );
     }
 
     #[test]

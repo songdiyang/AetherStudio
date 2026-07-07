@@ -1,11 +1,15 @@
 use windows::core::Result;
+use windows::core::Interface;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
+use windows::Foundation::Numerics::Matrix3x2;
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Factory1, ID2D1HwndRenderTarget, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
     D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
-    D2D1_PRESENT_OPTIONS, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_HARDWARE,
+    D2D1_LAYER_PARAMETERS, D2D1_PRESENT_OPTIONS, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1_RENDER_TARGET_TYPE_HARDWARE,
 };
+use std::mem::ManuallyDrop;
 
 /// Direct2D工厂管理器
 pub struct D2DFactory {
@@ -154,6 +158,107 @@ impl RenderTarget {
     pub fn pop_clip(&self) {
         unsafe {
             self.target.PopAxisAlignedClip();
+        }
+    }
+
+    /// REQ-P3-03: 设置多个独立矩形的并集裁剪区域
+    ///
+    /// 使用 ID2D1GeometryGroup（Union 模式）+ PushLayer 实现真正的多矩形裁剪，
+    /// 避免合并为单一包围盒导致的重绘面积膨胀。
+    ///
+    /// `rects` 为逻辑像素坐标的 (x, y, width, height) 列表。
+    /// `factory` 用于创建几何对象，由调用方传入（避免 RenderTarget 持有工厂引用）。
+    /// 返回创建的 Layer COM 对象，调用方在 pop_multi_clip 后可丢弃。
+    pub fn push_multi_clip(
+        &self,
+        factory: &ID2D1Factory1,
+        rects: &[(f32, f32, f32, f32)],
+    ) -> Result<()> {
+        if rects.is_empty() {
+            return Ok(());
+        }
+        // 单矩形走 PushAxisAlignedClip 快路径
+        if rects.len() == 1 {
+            let (x, y, w, h) = rects[0];
+            self.push_clip(x, y, w, h);
+            return Ok(());
+        }
+
+        unsafe {
+            // 为每个矩形创建 ID2D1RectangleGeometry
+            let mut geoms: Vec<windows::Win32::Graphics::Direct2D::ID2D1RectangleGeometry> =
+                Vec::with_capacity(rects.len());
+            for &(x, y, w, h) in rects {
+                if w <= 0.0 || h <= 0.0 {
+                    continue;
+                }
+                let rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                    left: x,
+                    top: y,
+                    right: x + w,
+                    bottom: y + h,
+                };
+                let g = factory.CreateRectangleGeometry(&rect)?;
+                geoms.push(g);
+            }
+            if geoms.is_empty() {
+                return Ok(());
+            }
+
+            // 转换为 ID2D1Geometry 切片（CreateGeometryGroup 接受 &[Option<ID2D1Geometry>]）
+            let mut geom_arr: Vec<Option<windows::Win32::Graphics::Direct2D::ID2D1Geometry>> =
+                Vec::with_capacity(geoms.len());
+            for g in &geoms {
+                let geometry: windows::Win32::Graphics::Direct2D::ID2D1Geometry = g.cast()?;
+                geom_arr.push(Some(geometry));
+            }
+
+            // 创建 Union 模式的 GeometryGroup（windows-rs 接受切片）
+            let group = factory.CreateGeometryGroup(
+                windows::Win32::Graphics::Direct2D::Common::D2D1_FILL_MODE_ALTERNATE,
+                &geom_arr,
+            )?;
+
+            // 将 GeometryGroup 转换为 ID2D1Geometry（PushLayer 需要）
+            let group_as_geometry: windows::Win32::Graphics::Direct2D::ID2D1Geometry =
+                group.cast()?;
+
+            // PushLayer：用 group 作为 geometryMask
+            // contentBounds 设为整个窗口区域（实际裁剪由 geometricMask 决定）
+            let layer_params = D2D1_LAYER_PARAMETERS {
+                contentBounds: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                    left: f32::MIN / 2.0,
+                    top: f32::MIN / 2.0,
+                    right: f32::MAX / 2.0,
+                    bottom: f32::MAX / 2.0,
+                },
+                geometricMask: ManuallyDrop::new(Some(group_as_geometry)),
+                maskAntialiasMode: windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_ALIASED,
+                maskTransform: Matrix3x2::default(),
+                opacity: 1.0,
+                opacityBrush: ManuallyDrop::new(None),
+                layerOptions: windows::Win32::Graphics::Direct2D::D2D1_LAYER_OPTIONS_NONE,
+            };
+
+            // 创建并缓存 Layer 对象（PushLayer 需要 ID2D1Layer）
+            let layer = self.target.CreateLayer(None)?;
+            self.target.PushLayer(&layer_params, &layer);
+        }
+        Ok(())
+    }
+
+    /// REQ-P3-03: 弹出多矩形裁剪区域
+    ///
+    /// 注意：与 pop_clip 配对使用。如果 push_multi_clip 走单矩形快路径，
+    /// 这里仍然调用 PopAxisAlignedClip 是错误的；调用方需通过返回的标志
+    /// 判断使用 PopAxisAlignedClip 还是 PopLayer。
+    pub fn pop_multi_clip(&self, use_layer: bool) {
+        unsafe {
+            if use_layer {
+                self.target.PopLayer();
+            } else {
+                self.target.PopAxisAlignedClip();
+            }
         }
     }
 

@@ -305,6 +305,39 @@ impl TextFormatCache {
         self.precomputed.clear();
         self.formats.clear();
     }
+
+    /// REQ-P3-02: 测量文本宽度（逻辑像素）
+    ///
+    /// 使用 DirectWrite TextLayout 精确测量文本宽度，用于子菜单尺寸自适应。
+    /// 返回值单位为逻辑像素（已扣除 DPI 影响，调用方可按需乘以 dpi_scale）。
+    pub fn measure_text_width(
+        &self,
+        text: &str,
+        font_size: f32,
+        font_weight: u32,
+    ) -> Option<f32> {
+        unsafe {
+            let format = self.create_format_internal(
+                font_size,
+                font_weight,
+                DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
+                DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
+            ).ok()?;
+
+            let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+            // 使用一个足够大的 maxWidth，让文本自然布局
+            let layout = self.dwrite_factory.CreateTextLayout(
+                &wide,
+                &format,
+                10000.0,
+                1000.0,
+            ).ok()?;
+
+            let mut metrics = windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_METRICS::default();
+            layout.GetMetrics(&mut metrics).ok()?;
+            Some(metrics.widthIncludingTrailingWhitespace)
+        }
+    }
 }
 
 /// 将颜色转换为缓存键

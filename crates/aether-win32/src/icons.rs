@@ -6,7 +6,8 @@
 
 use windows::Foundation::Numerics::Matrix3x2;
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D_POINT_2F,
+    D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED,
+    D2D1_FIGURE_END_OPEN, D2D_POINT_2F,
 };
 use windows::Win32::Graphics::Direct2D::{
     ID2D1Factory, ID2D1HwndRenderTarget, ID2D1PathGeometry, ID2D1RenderTarget,
@@ -69,11 +70,35 @@ pub enum IconKind {
     Info,
     /// 退出（门 + 箭头）
     Exit,
+    // 导航
+    /// 返回（左箭头）
+    Back,
+    /// 前进（右箭头）
+    Forward,
+    // 标题栏 / 通用操作
+    /// 设置（齿轮）
+    Settings,
+    /// 用户（人形轮廓）
+    User,
+    /// 关闭（X 标记）
+    Close,
+    /// 加号（+ 标记）
+    Plus,
+    // 箭头 / 折角
+    /// 左折角（<）
+    ChevronLeft,
+    /// 右折角（>）
+    ChevronRight,
+    // 品牌与 AI 助手
+    /// 羊脸（欢迎页 logo）
+    EmojiSheep,
+    /// 机器人（AI 助手）
+    Bot,
 }
 
 impl IconKind {
     /// 所有图标变体，用于一次性预创建几何
-    pub const ALL: [IconKind; 28] = [
+    pub const ALL: [IconKind; 38] = [
         IconKind::OpenFolder,
         IconKind::NewFile,
         IconKind::Clone,
@@ -102,6 +127,16 @@ impl IconKind {
         IconKind::Warning,
         IconKind::Info,
         IconKind::Exit,
+        IconKind::Back,
+        IconKind::Forward,
+        IconKind::Settings,
+        IconKind::User,
+        IconKind::Close,
+        IconKind::Plus,
+        IconKind::ChevronLeft,
+        IconKind::ChevronRight,
+        IconKind::EmojiSheep,
+        IconKind::Bot,
     ];
 }
 
@@ -645,6 +680,205 @@ fn build_icon(factory: &ID2D1Factory, kind: IconKind) -> windows::core::Result<I
                 sink.AddLine(p(16.0, 17.0));
                 sink.EndFigure(D2D1_FIGURE_END_OPEN);
             }
+            IconKind::Back => {
+                // 返回：左箭头 — 水平线 + 左指箭头
+                sink.BeginFigure(p(3.0, 12.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(21.0, 12.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                sink.BeginFigure(p(9.0, 6.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(3.0, 12.0));
+                sink.AddLine(p(9.0, 18.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            }
+            IconKind::Forward => {
+                // 前进：右箭头 — 水平线 + 右指箭头（Back 的镜像）
+                sink.BeginFigure(p(3.0, 12.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(21.0, 12.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                sink.BeginFigure(p(15.0, 6.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(21.0, 12.0));
+                sink.AddLine(p(15.0, 18.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            }
+            IconKind::Settings => {
+                // 设置：齿轮 — 外圆 + 内圆 + 8 个齿（向外短线）
+                // 外圆（半径 7，圆心 12,12）
+                sink.BeginFigure(p(12.0, 12.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddBezier(&bez(p(5.0, 12.0), p(5.0, 5.0), p(12.0, 5.0)));
+                sink.AddBezier(&bez(p(19.0, 5.0), p(19.0, 12.0), p(12.0, 12.0)));
+                sink.AddBezier(&bez(p(19.0, 12.0), p(19.0, 19.0), p(12.0, 19.0)));
+                sink.AddBezier(&bez(p(5.0, 19.0), p(5.0, 12.0), p(12.0, 12.0)));
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                // 内圆（半径 3，圆心 12,12）
+                sink.BeginFigure(p(12.0, 12.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddBezier(&bez(p(9.0, 12.0), p(9.0, 9.0), p(12.0, 9.0)));
+                sink.AddBezier(&bez(p(15.0, 9.0), p(15.0, 12.0), p(12.0, 12.0)));
+                sink.AddBezier(&bez(p(15.0, 12.0), p(15.0, 15.0), p(12.0, 15.0)));
+                sink.AddBezier(&bez(p(9.0, 15.0), p(9.0, 12.0), p(12.0, 12.0)));
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                // 8 个齿：从外圆向外延伸的短线（4 正方向 + 4 对角）
+                sink.BeginFigure(p(19.0, 12.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(22.0, 12.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                sink.BeginFigure(p(12.0, 19.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(12.0, 22.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                sink.BeginFigure(p(5.0, 12.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(2.0, 12.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                sink.BeginFigure(p(12.0, 5.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(12.0, 2.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                sink.BeginFigure(p(17.0, 17.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(19.0, 19.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                sink.BeginFigure(p(7.0, 17.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(5.0, 19.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                sink.BeginFigure(p(7.0, 7.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(5.0, 5.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                sink.BeginFigure(p(17.0, 7.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(19.0, 5.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            }
+            IconKind::User => {
+                // 用户：人形轮廓 — 头部圆形 + 肩部弧线
+                // 头部圆（半径 3.5，圆心 12,8）
+                sink.BeginFigure(p(12.0, 8.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddBezier(&bez(p(8.5, 8.0), p(8.5, 4.5), p(12.0, 4.5)));
+                sink.AddBezier(&bez(p(15.5, 4.5), p(15.5, 8.0), p(12.0, 8.0)));
+                sink.AddBezier(&bez(p(15.5, 8.0), p(15.5, 11.5), p(12.0, 11.5)));
+                sink.AddBezier(&bez(p(8.5, 11.5), p(8.5, 8.0), p(12.0, 8.0)));
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                // 肩部弧线：从 (5,21) 向上弯曲到 (19,21)
+                sink.BeginFigure(p(5.0, 21.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddBezier(&bez(p(5.0, 15.0), p(19.0, 15.0), p(19.0, 21.0)));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            }
+            IconKind::Close => {
+                // 关闭：X 标记 — 两条对角线
+                sink.BeginFigure(p(5.0, 5.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(19.0, 19.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                sink.BeginFigure(p(19.0, 5.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(5.0, 19.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            }
+            IconKind::Plus => {
+                // 加号：水平线 + 垂直线
+                sink.BeginFigure(p(5.0, 12.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(19.0, 12.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                sink.BeginFigure(p(12.0, 5.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(12.0, 19.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            }
+            IconKind::ChevronLeft => {
+                // 左折角：单条 < 折线
+                sink.BeginFigure(p(16.0, 6.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(8.0, 12.0));
+                sink.AddLine(p(16.0, 18.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            }
+            IconKind::ChevronRight => {
+                // 右折角：单条 > 折线（ChevronLeft 的镜像）
+                sink.BeginFigure(p(8.0, 6.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(16.0, 12.0));
+                sink.AddLine(p(8.0, 18.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            }
+            IconKind::EmojiSheep => {
+                // 羊脸（欢迎页 logo）：头部大圆 + 两耳 + 两眼 + 顶部小绒毛
+                // 头部圆（半径 7，圆心 12,13）
+                sink.BeginFigure(p(12.0, 13.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddBezier(&bez(p(5.0, 13.0), p(5.0, 6.0), p(12.0, 6.0)));
+                sink.AddBezier(&bez(p(19.0, 6.0), p(19.0, 13.0), p(12.0, 13.0)));
+                sink.AddBezier(&bez(p(19.0, 13.0), p(19.0, 20.0), p(12.0, 20.0)));
+                sink.AddBezier(&bez(p(5.0, 20.0), p(5.0, 13.0), p(12.0, 13.0)));
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                // 左耳（半径 2，圆心 4,11）
+                sink.BeginFigure(p(4.0, 11.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddBezier(&bez(p(2.0, 11.0), p(2.0, 9.0), p(4.0, 9.0)));
+                sink.AddBezier(&bez(p(6.0, 9.0), p(6.0, 11.0), p(4.0, 11.0)));
+                sink.AddBezier(&bez(p(6.0, 11.0), p(6.0, 13.0), p(4.0, 13.0)));
+                sink.AddBezier(&bez(p(2.0, 13.0), p(2.0, 11.0), p(4.0, 11.0)));
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                // 右耳（半径 2，圆心 20,11）
+                sink.BeginFigure(p(20.0, 11.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddBezier(&bez(p(18.0, 11.0), p(18.0, 9.0), p(20.0, 9.0)));
+                sink.AddBezier(&bez(p(22.0, 9.0), p(22.0, 11.0), p(20.0, 11.0)));
+                sink.AddBezier(&bez(p(22.0, 11.0), p(22.0, 13.0), p(20.0, 13.0)));
+                sink.AddBezier(&bez(p(18.0, 13.0), p(18.0, 11.0), p(20.0, 11.0)));
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                // 左眼（实心小圆，半径 0.8，圆心 9,11）
+                sink.BeginFigure(p(9.0, 11.0), D2D1_FIGURE_BEGIN_FILLED);
+                sink.AddBezier(&bez(p(8.2, 11.0), p(8.2, 10.2), p(9.0, 10.2)));
+                sink.AddBezier(&bez(p(9.8, 10.2), p(9.8, 11.0), p(9.0, 11.0)));
+                sink.AddBezier(&bez(p(9.8, 11.0), p(9.8, 11.8), p(9.0, 11.8)));
+                sink.AddBezier(&bez(p(8.2, 11.8), p(8.2, 11.0), p(9.0, 11.0)));
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                // 右眼（实心小圆，半径 0.8，圆心 15,11）
+                sink.BeginFigure(p(15.0, 11.0), D2D1_FIGURE_BEGIN_FILLED);
+                sink.AddBezier(&bez(p(14.2, 11.0), p(14.2, 10.2), p(15.0, 10.2)));
+                sink.AddBezier(&bez(p(15.8, 10.2), p(15.8, 11.0), p(15.0, 11.0)));
+                sink.AddBezier(&bez(p(15.8, 11.0), p(15.8, 11.8), p(15.0, 11.8)));
+                sink.AddBezier(&bez(p(14.2, 11.8), p(14.2, 11.0), p(15.0, 11.0)));
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                // 顶部小绒毛弧线
+                sink.BeginFigure(p(10.0, 6.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddBezier(&bez(p(10.0, 3.0), p(14.0, 3.0), p(14.0, 6.0)));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            }
+            IconKind::Bot => {
+                // 机器人（AI 助手）：头部矩形 + 两天线 + 两眼 + 嘴巴
+                // 头部矩形 (4,5)-(20,19)
+                sink.BeginFigure(p(4.0, 5.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(20.0, 5.0));
+                sink.AddLine(p(20.0, 19.0));
+                sink.AddLine(p(4.0, 19.0));
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                // 左天线
+                sink.BeginFigure(p(10.0, 5.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(10.0, 2.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                // 右天线
+                sink.BeginFigure(p(14.0, 5.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(14.0, 2.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                // 左天线顶部小圆（半径 1，圆心 10,2）
+                sink.BeginFigure(p(10.0, 2.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddBezier(&bez(p(9.0, 2.0), p(9.0, 1.0), p(10.0, 1.0)));
+                sink.AddBezier(&bez(p(11.0, 1.0), p(11.0, 2.0), p(10.0, 2.0)));
+                sink.AddBezier(&bez(p(11.0, 2.0), p(11.0, 3.0), p(10.0, 3.0)));
+                sink.AddBezier(&bez(p(9.0, 3.0), p(9.0, 2.0), p(10.0, 2.0)));
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                // 右天线顶部小圆（半径 1，圆心 14,2）
+                sink.BeginFigure(p(14.0, 2.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddBezier(&bez(p(13.0, 2.0), p(13.0, 1.0), p(14.0, 1.0)));
+                sink.AddBezier(&bez(p(15.0, 1.0), p(15.0, 2.0), p(14.0, 2.0)));
+                sink.AddBezier(&bez(p(15.0, 2.0), p(15.0, 3.0), p(14.0, 3.0)));
+                sink.AddBezier(&bez(p(13.0, 3.0), p(13.0, 2.0), p(14.0, 2.0)));
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                // 左眼（实心小圆，半径 1.5，圆心 9,11）
+                sink.BeginFigure(p(9.0, 11.0), D2D1_FIGURE_BEGIN_FILLED);
+                sink.AddBezier(&bez(p(7.5, 11.0), p(7.5, 9.5), p(9.0, 9.5)));
+                sink.AddBezier(&bez(p(10.5, 9.5), p(10.5, 11.0), p(9.0, 11.0)));
+                sink.AddBezier(&bez(p(10.5, 11.0), p(10.5, 12.5), p(9.0, 12.5)));
+                sink.AddBezier(&bez(p(7.5, 12.5), p(7.5, 11.0), p(9.0, 11.0)));
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                // 右眼（实心小圆，半径 1.5，圆心 15,11）
+                sink.BeginFigure(p(15.0, 11.0), D2D1_FIGURE_BEGIN_FILLED);
+                sink.AddBezier(&bez(p(13.5, 11.0), p(13.5, 9.5), p(15.0, 9.5)));
+                sink.AddBezier(&bez(p(16.5, 9.5), p(16.5, 11.0), p(15.0, 11.0)));
+                sink.AddBezier(&bez(p(16.5, 11.0), p(16.5, 12.5), p(15.0, 12.5)));
+                sink.AddBezier(&bez(p(13.5, 12.5), p(13.5, 11.0), p(15.0, 11.0)));
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                // 嘴巴：水平线
+                sink.BeginFigure(p(9.0, 15.0), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(p(15.0, 15.0));
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            }
         }
         sink.Close()?;
     }
@@ -671,5 +905,54 @@ fn create_round_stroke(
             dashOffset: 0.0,
         };
         factory.CreateStrokeStyle(&props, None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IconKind;
+
+    /// 验证 ALL 数组长度为 38（28 原有 + 10 新增）
+    #[test]
+    fn all_icons_count_is_38() {
+        assert_eq!(IconKind::ALL.len(), 38);
+    }
+
+    /// 验证每个新增变体都存在于 ALL 数组中
+    #[test]
+    fn new_variants_present_in_all() {
+        let new_kinds = [
+            IconKind::Back,
+            IconKind::Forward,
+            IconKind::Settings,
+            IconKind::User,
+            IconKind::Close,
+            IconKind::Plus,
+            IconKind::ChevronLeft,
+            IconKind::ChevronRight,
+            IconKind::EmojiSheep,
+            IconKind::Bot,
+        ];
+        for kind in new_kinds {
+            assert!(
+                IconKind::ALL.iter().any(|k| *k == kind),
+                "新增图标 {:?} 未在 ALL 数组中找到",
+                kind
+            );
+        }
+    }
+
+    /// 验证 ALL 数组中无重复项
+    #[test]
+    fn all_icons_no_duplicates() {
+        for i in 0..IconKind::ALL.len() {
+            for j in (i + 1)..IconKind::ALL.len() {
+                assert_ne!(
+                    IconKind::ALL[i], IconKind::ALL[j],
+                    "ALL 数组中存在重复项：索引 {} 与 {} 均为 {:?}",
+                    i, j, IconKind::ALL[i]
+                );
+            }
+        }
     }
 }

@@ -7,6 +7,7 @@ pub struct AppSettings {
     pub ai: AiSettings,
     pub ui: UiSettings,
     pub remote: RemoteSettings,
+    pub auto_save: AutoSaveSettings,
 }
 
 impl std::fmt::Debug for AppSettings {
@@ -15,7 +16,42 @@ impl std::fmt::Debug for AppSettings {
             .field("ai", &self.ai)
             .field("ui", &self.ui)
             .field("remote", &self.remote)
+            .field("auto_save", &self.auto_save)
             .finish()
+    }
+}
+
+/// 自动保存配置
+///
+/// 设计原则：组合式触发（防抖空闲 + 失焦 + 周期兜底），原子写入，
+/// 内容去重，外部修改检测（mtime 轮询）。大文件智能降级。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct AutoSaveSettings {
+    /// 总开关
+    pub enabled: bool,
+    /// 空闲防抖延迟（毫秒）。用户停止输入后等待此时间再保存。
+    pub debounce_ms: u32,
+    /// 失焦立即保存
+    pub focus_loss_save: bool,
+    /// 周期强制保存间隔（毫秒）。0 表示关闭周期兜底。
+    pub periodic_save_ms: u32,
+    /// 大文件阈值（字节）。超过此大小的文件采用更长的防抖、关闭周期保存。
+    pub large_file_threshold: u64,
+    /// 大文件防抖延迟（毫秒）
+    pub large_file_debounce_ms: u32,
+}
+
+impl Default for AutoSaveSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            debounce_ms: 1000,
+            focus_loss_save: true,
+            periodic_save_ms: 30_000,
+            large_file_threshold: 2 * 1024 * 1024,
+            large_file_debounce_ms: 5000,
+        }
     }
 }
 
@@ -359,6 +395,7 @@ impl Default for AppSettings {
             },
             ui: UiSettings::default(),
             remote: RemoteSettings::default(),
+            auto_save: AutoSaveSettings::default(),
         }
     }
 }

@@ -54,8 +54,7 @@ pub enum CommandId {
     EditFind,
     EditReplace,
     EditSelectAll,
-    // 选择
-    SelectAll,
+    // REQ-P3-01: 合并原 SelectAll 到 EditSelectAll（重复定义）
     // 查看
     ViewToggleSidebar,
     ViewToggleActivityBar,
@@ -98,7 +97,6 @@ impl CommandId {
             CommandId::EditFind => "查找",
             CommandId::EditReplace => "替换",
             CommandId::EditSelectAll => "全选",
-            CommandId::SelectAll => "全选",
             CommandId::ViewToggleSidebar => "切换侧边栏",
             CommandId::ViewToggleActivityBar => "切换活动栏",
             CommandId::ViewToggleStatusBar => "切换状态栏",
@@ -122,6 +120,8 @@ pub struct MenuBarItem {
     pub label: String,
     pub items: Vec<MenuItem>,
     pub expanded: bool,
+    /// REQ-P3-02: 子菜单宽度缓存（由 render_submenu 测量后更新，hit_test 时使用）
+    pub submenu_width: f32,
 }
 
 impl MenuBarItem {
@@ -130,6 +130,8 @@ impl MenuBarItem {
             label: label.to_string(),
             items,
             expanded: false,
+            // 默认 220.0 兼容历史行为，render_submenu 会按内容测量更新
+            submenu_width: 220.0,
         }
     }
 
@@ -203,7 +205,8 @@ impl MenuBar {
                 ),
                 MenuBarItem::new(
                     "选择(S)",
-                    vec![MenuItem::new("全选", CommandId::SelectAll).with_shortcut("Ctrl+A")],
+                    // REQ-P3-01: 统一使用 EditSelectAll
+                    vec![MenuItem::new("全选", CommandId::EditSelectAll).with_shortcut("Ctrl+A")],
                 ),
                 MenuBarItem::new(
                     "查看(V)",
@@ -301,10 +304,16 @@ impl MenuBar {
             if !item.expanded {
                 return regions;
             }
+            // REQ-P3-02: 使用测得的 submenu_width 而非硬编码 200.0
+            let width = if item.submenu_width > 0.0 {
+                item.submenu_width
+            } else {
+                200.0
+            };
             let mut item_y = y + 8.0;
             for (i, menu_item) in item.items.iter().enumerate() {
                 let height = if menu_item.label == "-" { 8.0 } else { 26.0 };
-                regions.push((x, item_y, 200.0, height, i));
+                regions.push((x, item_y, width, height, i));
                 item_y += height;
             }
         }
@@ -595,7 +604,6 @@ mod tests {
             EditFind,
             EditReplace,
             EditSelectAll,
-            SelectAll,
             ViewToggleSidebar,
             ViewToggleActivityBar,
             ViewToggleStatusBar,
