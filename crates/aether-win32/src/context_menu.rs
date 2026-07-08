@@ -265,13 +265,15 @@ mod tests {
         assert_eq!(m.items[idx], ExplorerContextMenuItem::NewFile);
 
         // 分隔符区域不可命中（Separator1 位于 NewFile + NewFolder 之后）
-        let sep_y = rect.y + ExplorerContextMenu::TOP_PADDING
+        let sep_y = rect.y
+            + ExplorerContextMenu::TOP_PADDING
             + 2.0 * ExplorerContextMenu::ITEM_HEIGHT
             + ExplorerContextMenu::SEPARATOR_HEIGHT / 2.0;
         assert_eq!(m.hit_test_menu(rect.x + 20.0, sep_y), None);
 
         // Refresh 位于 Separator1 之后
-        let refresh_y = rect.y + ExplorerContextMenu::TOP_PADDING
+        let refresh_y = rect.y
+            + ExplorerContextMenu::TOP_PADDING
             + 2.0 * ExplorerContextMenu::ITEM_HEIGHT
             + ExplorerContextMenu::SEPARATOR_HEIGHT
             + ExplorerContextMenu::ITEM_HEIGHT / 2.0;
@@ -284,7 +286,8 @@ mod tests {
         let m = open_menu_at(50.0, 50.0);
         let rect = m.menu_rect.clone().unwrap();
         // 最后一项 CopyPath 位于底部 padding 之前
-        let last_y = rect.bottom() - ExplorerContextMenu::BOTTOM_PADDING
+        let last_y = rect.bottom()
+            - ExplorerContextMenu::BOTTOM_PADDING
             - ExplorerContextMenu::ITEM_HEIGHT / 2.0;
         let idx = m.hit_test_menu(rect.x + 20.0, last_y).unwrap();
         assert_eq!(m.items[idx], ExplorerContextMenuItem::CopyPath);
@@ -334,4 +337,3 @@ mod tests {
         );
     }
 }
-

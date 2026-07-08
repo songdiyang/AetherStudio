@@ -31,7 +31,12 @@ pub(crate) unsafe fn on_r_button_down(
     };
     let (mouse_x, mouse_y, window_w, window_h) = {
         let st = state.borrow();
-        (raw_x / st.dpi_scale, raw_y / st.dpi_scale, st.window_width as f32, st.window_height as f32)
+        (
+            raw_x / st.dpi_scale,
+            raw_y / st.dpi_scale,
+            st.window_width as f32,
+            st.window_height as f32,
+        )
     };
 
     let mut st = state.borrow_mut();

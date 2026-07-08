@@ -18,9 +18,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use super::{
-    get_and_set_state, invalidate_window, EDITOR_STATE, LP_TIMER_ID,
-};
+use super::{get_and_set_state, invalidate_window, EDITOR_STATE, LP_TIMER_ID};
 
 /// WM_LBUTTONUP
 pub(crate) unsafe fn on_l_button_up(

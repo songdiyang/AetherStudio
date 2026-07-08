@@ -5,9 +5,7 @@
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 
-use super::super::{
-    get_and_set_state, invalidate_window, EDITOR_STATE, PENDING_HIGH_SURROGATE,
-};
+use super::super::{get_and_set_state, invalidate_window, EDITOR_STATE, PENDING_HIGH_SURROGATE};
 
 /// WM_CHAR
 pub(crate) unsafe fn on_char(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
@@ -225,8 +223,7 @@ unsafe fn oc_ssh_manager(hwnd: HWND, c: char) -> Option<LRESULT> {
         s.borrow()
             .as_ref()
             .map(|state| {
-                state.borrow().sidebar_content
-                    == crate::layout::SidebarContent::RemoteManagerPanel
+                state.borrow().sidebar_content == crate::layout::SidebarContent::RemoteManagerPanel
                     && state.borrow().ssh_manager_panel.editing
             })
             .unwrap_or(false)

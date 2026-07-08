@@ -145,8 +145,7 @@ unsafe fn okd_edit_back(hwnd: HWND) {
                 let mut st = state.borrow_mut();
                 if !st.terminal_panel.input_line.is_empty() {
                     st.terminal_panel.input_line.pop();
-                    st.terminal_panel.cursor_pos =
-                        st.terminal_panel.cursor_pos.saturating_sub(1);
+                    st.terminal_panel.cursor_pos = st.terminal_panel.cursor_pos.saturating_sub(1);
                 }
                 invalidate_window(hwnd);
             }

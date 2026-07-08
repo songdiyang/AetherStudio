@@ -12,9 +12,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dialogs::Dialogs;
 
-use super::super::{
-    get_and_set_state, invalidate_window, EDITOR_STATE,
-};
+use super::super::{get_and_set_state, invalidate_window, EDITOR_STATE};
 
 /// WM_KEYDOWN
 pub(crate) unsafe fn on_key_down(hwnd: HWND, msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
@@ -664,10 +662,9 @@ unsafe fn okd_clone_dialog_enter(hwnd: HWND) {
             } else {
                 let url = st.clone_dialog.url.clone();
                 drop(st);
-                if let Some(target_path) = crate::dialogs::Dialogs::open_folder_dialog(
-                    hwnd,
-                    "选择克隆目标文件夹",
-                ) {
+                if let Some(target_path) =
+                    crate::dialogs::Dialogs::open_folder_dialog(hwnd, "选择克隆目标文件夹")
+                {
                     // C-09: Git 克隆移至后台线程，避免阻塞 UI
                     let mut st = state.borrow_mut();
                     st.start_git_clone(url, target_path);

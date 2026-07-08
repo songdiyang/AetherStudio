@@ -118,9 +118,7 @@ unsafe fn on_timer_long_press(hwnd: HWND) -> LRESULT {
             if let Some(target) = st.lpress_target {
                 // 检查按下时间是否达到长按阈值
                 if let Some(start) = st.lpress_start {
-                    if start.elapsed()
-                        >= std::time::Duration::from_millis(LP_THRESHOLD_MS as u64)
-                    {
+                    if start.elapsed() >= std::time::Duration::from_millis(LP_THRESHOLD_MS as u64) {
                         let idx = st.lpress_index;
                         match target {
                             crate::input::PressTarget::ActivityBar => {
@@ -163,7 +161,12 @@ unsafe fn on_timer_autosave_periodic(hwnd: HWND) -> LRESULT {
     }
     LRESULT(0)
 }
-pub(crate) unsafe fn on_wm_app_2(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+pub(crate) unsafe fn on_wm_app_2(
+    hwnd: HWND,
+    _msg: u32,
+    _wparam: WPARAM,
+    _lparam: LPARAM,
+) -> LRESULT {
     // 新建窗口请求
     let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap();
     create_editor_window(instance.into(), Some(hwnd));
@@ -174,7 +177,12 @@ pub(crate) unsafe fn on_wm_app_2(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam
 /// LSP 事件转发：tokio task 通过 PostMessageW 将 LspEvent 投递到 UI 线程。
 /// 由 EditorState::new() 中 spawn 的事件 forwarder task 发送。
 /// 处理诊断更新、补全结果、悬停结果等 LSP 事件。
-pub(crate) unsafe fn on_wm_app_3(_hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+pub(crate) unsafe fn on_wm_app_3(
+    _hwnd: HWND,
+    _msg: u32,
+    _wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     let raw = lparam.0 as usize;
     // H-09: 立即重建 Box 确保 Rust drop 语义保证清理，即使后续处理 panic 也不会内存泄漏
     let _event_guard = unsafe { Box::from_raw(raw as *mut LspEvent) };
@@ -190,7 +198,12 @@ pub(crate) unsafe fn on_wm_app_3(_hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam
 }
 
 /// msg if msg == WM_APP + 7
-pub(crate) unsafe fn on_wm_app_7(_hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+pub(crate) unsafe fn on_wm_app_7(
+    _hwnd: HWND,
+    _msg: u32,
+    _wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     // 文件夹异步扫描批次完成
     let raw = lparam.0 as usize;
     // H-09: 立即重建 Box 确保 Rust drop 语义保证清理，即使 EDITOR_STATE 为 None
@@ -209,7 +222,12 @@ pub(crate) unsafe fn on_wm_app_7(_hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam
 }
 
 /// msg if msg == WM_APP + 4
-pub(crate) unsafe fn on_wm_app_4(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+pub(crate) unsafe fn on_wm_app_4(
+    hwnd: HWND,
+    _msg: u32,
+    wparam: WPARAM,
+    _lparam: LPARAM,
+) -> LRESULT {
     // C-09: SSH 异步连接完成
     let raw = wparam.0;
     EDITOR_STATE.with(|s| {
@@ -222,7 +240,12 @@ pub(crate) unsafe fn on_wm_app_4(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam:
 }
 
 /// msg if msg == WM_APP + 5
-pub(crate) unsafe fn on_wm_app_5(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+pub(crate) unsafe fn on_wm_app_5(
+    hwnd: HWND,
+    _msg: u32,
+    wparam: WPARAM,
+    _lparam: LPARAM,
+) -> LRESULT {
     // C-09: Git 异步克隆完成
     let raw = wparam.0;
     EDITOR_STATE.with(|s| {
@@ -235,7 +258,12 @@ pub(crate) unsafe fn on_wm_app_5(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam:
 }
 
 /// msg if msg == WM_APP + 6
-pub(crate) unsafe fn on_wm_app_6(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+pub(crate) unsafe fn on_wm_app_6(
+    hwnd: HWND,
+    _msg: u32,
+    wparam: WPARAM,
+    _lparam: LPARAM,
+) -> LRESULT {
     // P0-1: 远程子目录异步列目录完成
     let raw = wparam.0;
     EDITOR_STATE.with(|s| {
@@ -248,7 +276,12 @@ pub(crate) unsafe fn on_wm_app_6(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam:
 }
 
 /// WM_DROPFILES
-pub(crate) unsafe fn on_dropfiles(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+pub(crate) unsafe fn on_dropfiles(
+    hwnd: HWND,
+    _msg: u32,
+    wparam: WPARAM,
+    _lparam: LPARAM,
+) -> LRESULT {
     use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
     let hdrop = HDROP(wparam.0 as *mut std::ffi::c_void);
 
@@ -310,7 +343,12 @@ pub(crate) unsafe fn on_size(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPA
 }
 
 /// WM_DPICHANGED
-pub(crate) unsafe fn on_dpichanged(hwnd: HWND, _msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+pub(crate) unsafe fn on_dpichanged(
+    hwnd: HWND,
+    _msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     let new_dpi = (wparam.0 & 0xFFFF) as f32;
     let new_scale = new_dpi / 96.0;
 
@@ -476,7 +514,12 @@ pub(crate) unsafe fn on_paint(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: L
 }
 
 /// REQ-P0-05: WM_SETFOCUS — 窗口获得焦点
-pub(crate) unsafe fn on_set_focus(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+pub(crate) unsafe fn on_set_focus(
+    hwnd: HWND,
+    _msg: u32,
+    _wparam: WPARAM,
+    _lparam: LPARAM,
+) -> LRESULT {
     get_and_set_state(hwnd);
     EDITOR_STATE.with(|s| {
         if let Some(state) = s.borrow().as_ref() {
@@ -487,7 +530,12 @@ pub(crate) unsafe fn on_set_focus(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lpara
 }
 
 /// REQ-P0-05: WM_KILLFOCUS — 窗口失去焦点
-pub(crate) unsafe fn on_kill_focus(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+pub(crate) unsafe fn on_kill_focus(
+    hwnd: HWND,
+    _msg: u32,
+    _wparam: WPARAM,
+    _lparam: LPARAM,
+) -> LRESULT {
     get_and_set_state(hwnd);
     EDITOR_STATE.with(|s| {
         if let Some(state) = s.borrow().as_ref() {
@@ -505,12 +553,7 @@ pub(crate) unsafe fn on_kill_focus(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lpar
 ///
 /// 根据鼠标所在 UI 区域设置对应的光标类型（Arrow/IBeam/Hand/SizeWE/SizeNS）。
 /// 仅在客户区（HTCLIENT）内拦截；非客户区（resize 边框等）交由 DefWindowProcW 处理。
-pub(crate) unsafe fn on_setcursor(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
+pub(crate) unsafe fn on_setcursor(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // lparam 低字 = 命中测试码，高字 = 鼠标消息 ID
     let hit_test = (lparam.0 & 0xFFFF) as u16 as i32;
     // 非客户区（resize 边框、标题栏系统区等）→ 交由系统处理

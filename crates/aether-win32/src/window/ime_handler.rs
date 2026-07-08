@@ -19,7 +19,12 @@ pub(crate) unsafe fn on_ime_startcomposition(
 }
 
 /// WM_IME_COMPOSITION
-pub(crate) unsafe fn on_ime_composition(hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+pub(crate) unsafe fn on_ime_composition(
+    hwnd: HWND,
+    _msg: u32,
+    _wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     // C-12: 键盘消息进入时先同步 thread_local 到当前窗口状态
     get_and_set_state(hwnd);
     let lparam_flags = lparam.0 as u32;
@@ -99,7 +104,12 @@ pub(crate) unsafe fn on_ime_endcomposition(
 }
 
 /// WM_IME_CHAR
-pub(crate) unsafe fn on_ime_char(_hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+pub(crate) unsafe fn on_ime_char(
+    _hwnd: HWND,
+    _msg: u32,
+    _wparam: WPARAM,
+    _lparam: LPARAM,
+) -> LRESULT {
     // P0-2: 阻止 TranslateMessage 从 WM_IME_CHAR 产生 WM_CHAR，
     // 避免中文输入字符被 WM_CHAR 重复插入。
     // 提交文本已通过 WM_IME_COMPOSITION + GCS_RESULTSTR 处理。

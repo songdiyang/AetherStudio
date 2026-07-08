@@ -200,7 +200,10 @@ mod tests {
         let bar = StatusBar::new();
         assert_eq!(bar.sections.len(), 6);
         assert_eq!(bar.hover_index, None);
-        assert_eq!(bar.sections[StatusBarIndex::Status as usize].clickable, true);
+        assert_eq!(
+            bar.sections[StatusBarIndex::Status as usize].clickable,
+            true
+        );
         assert_eq!(
             bar.sections[StatusBarIndex::CursorPos as usize].clickable,
             false
@@ -212,15 +215,14 @@ mod tests {
         // GitBranch width=0 时，section_regions 不应生成该 region
         let mut bar = StatusBar::new();
         bar.update_git_branch(None);
-        assert_eq!(
-            bar.sections[StatusBarIndex::GitBranch as usize].width,
-            0.0
-        );
+        assert_eq!(bar.sections[StatusBarIndex::GitBranch as usize].width, 0.0);
 
         let regions = bar.section_regions(800.0);
         // 不应包含 GitBranch 索引（5）
         assert!(
-            !regions.iter().any(|(idx, _, _, _, _)| *idx == StatusBarIndex::GitBranch as usize),
+            !regions
+                .iter()
+                .any(|(idx, _, _, _, _)| *idx == StatusBarIndex::GitBranch as usize),
             "GitBranch width=0 时不应生成 region"
         );
         // 其他 5 个分区仍应存在
@@ -244,7 +246,10 @@ mod tests {
         let mut bar = StatusBar::new();
         // 初始时 GitBranch 有 label="" 但 width=100.0
         bar.update_git_branch(Some("feature/login"));
-        assert_eq!(bar.sections[StatusBarIndex::GitBranch as usize].label, "feature/login");
+        assert_eq!(
+            bar.sections[StatusBarIndex::GitBranch as usize].label,
+            "feature/login"
+        );
         assert!(bar.sections[StatusBarIndex::GitBranch as usize].width > 0.0);
 
         // 调用 None 后应隐藏
@@ -278,7 +283,11 @@ mod tests {
         bar.update_status("就绪");
         bar.update_language("Rust");
 
-        bar.update_widths(&cache, 12.0, windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL.0 as u32);
+        bar.update_widths(
+            &cache,
+            12.0,
+            windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+        );
 
         for (i, section) in bar.sections.iter().enumerate() {
             if section.width > 0.0 {
@@ -300,7 +309,11 @@ mod tests {
         let mut bar = StatusBar::new();
         // 清空 GitBranch 的 label 和 icon
         bar.update_git_branch(None);
-        bar.update_widths(&cache, 12.0, windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL.0 as u32);
+        bar.update_widths(
+            &cache,
+            12.0,
+            windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+        );
         assert_eq!(bar.sections[StatusBarIndex::GitBranch as usize].width, 0.0);
     }
 

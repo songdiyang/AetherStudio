@@ -276,9 +276,9 @@ unsafe fn lbd_titlebar_menu(
     titlebar_region: &crate::layout::Region,
 ) -> Option<LRESULT> {
     let mut st = state.borrow_mut();
-    let Some(idx) = st
-        .menu_bar
-        .hit_test(mouse_x, mouse_y - titlebar_region.y, titlebar_region.height)
+    let Some(idx) =
+        st.menu_bar
+            .hit_test(mouse_x, mouse_y - titlebar_region.y, titlebar_region.height)
     else {
         return None;
     };
@@ -307,10 +307,7 @@ unsafe fn lbd_titlebar_menu(
 }
 
 /// 标题栏拖动开始（点击了标题栏但非按钮/菜单区域）。
-unsafe fn lbd_titlebar_drag(
-    hwnd: HWND,
-    state: &Rc<RefCell<EditorState>>,
-) -> Option<LRESULT> {
+unsafe fn lbd_titlebar_drag(hwnd: HWND, state: &Rc<RefCell<EditorState>>) -> Option<LRESULT> {
     let mut st = state.borrow_mut();
     st.menu_bar.close_all();
     drop(st);

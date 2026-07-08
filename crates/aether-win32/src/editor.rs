@@ -1317,7 +1317,9 @@ impl EditorState {
         let Some(comp) = self.content.inline_completion.take() else {
             return false;
         };
-        if comp.trigger_line != self.content.cursor_line || comp.trigger_col != self.content.cursor_col {
+        if comp.trigger_line != self.content.cursor_line
+            || comp.trigger_col != self.content.cursor_col
+        {
             return false;
         }
         let pos = self.cursor_byte_pos();
@@ -1366,7 +1368,8 @@ impl EditorState {
         let cursor_x =
             editor_region.x + 60.0 + 5.0 + char_col as f32 * self.text_renderer.char_width()
                 - self.content.scroll_x;
-        let cursor_y = editor_region.y + self.content.cursor_line as f32 * line_height - self.content.scroll_y;
+        let cursor_y =
+            editor_region.y + self.content.cursor_line as f32 * line_height - self.content.scroll_y;
 
         self.event_queue
             .drain_to_dirty_tracker(&mut self.dirty_tracker, |event| {
@@ -1443,7 +1446,9 @@ impl EditorState {
 
     /// 检查当前标签页是否可以重用（空文件且未修改）
     fn can_reuse_current_tab(&self) -> bool {
-        self.content.file_path.is_none() && !self.content.is_dirty && self.content.buffer.len_bytes() == 0
+        self.content.file_path.is_none()
+            && !self.content.is_dirty
+            && self.content.buffer.len_bytes() == 0
     }
 
     /// 重置当前编辑状态到初始值
@@ -1541,7 +1546,10 @@ impl EditorState {
 
         // 文件加载成功后通知 LSP 服务器
         if self.content.file_path.as_ref() == Some(&path) {
-            let text = self.content.buffer.get_text(0, self.content.buffer.len_bytes());
+            let text = self
+                .content
+                .buffer
+                .get_text(0, self.content.buffer.len_bytes());
             self.lsp_open_document(&path, &text);
         }
     }
@@ -1823,7 +1831,10 @@ impl EditorState {
             return; // 跨行编辑，放弃插入
         }
         // 删除触发位置到当前光标之间的文本（用户输入的过滤字符）
-        let delete_count = self.content.cursor_col.saturating_sub(self.completion_trigger_col);
+        let delete_count = self
+            .content
+            .cursor_col
+            .saturating_sub(self.completion_trigger_col);
         for _ in 0..delete_count {
             self.delete_char();
         }
@@ -2299,7 +2310,8 @@ impl EditorState {
             let pos = self.cursor_byte_pos();
             let before_pieces = self.content.buffer.get_pieces();
             let before_add_len = self.content.buffer.add_buffer_len();
-            let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+            let cursor_before =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
             self.content.buffer.insert(pos, &text);
             self.content.is_dirty = true;
@@ -2317,7 +2329,8 @@ impl EditorState {
                     .unwrap_or(0);
             }
 
-            let cursor_after = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+            let cursor_after =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
             self.content.history.record(
                 before_pieces,
                 before_add_len,
@@ -2360,7 +2373,8 @@ impl EditorState {
         if start_byte < end_byte {
             let before_pieces = self.content.buffer.get_pieces();
             let before_add_len = self.content.buffer.add_buffer_len();
-            let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+            let cursor_before =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
             self.content.buffer.delete(start_byte, end_byte);
             self.content.is_dirty = true;
@@ -2369,7 +2383,8 @@ impl EditorState {
             self.content.cursor_line = first_line;
             self.content.cursor_col = first_col;
 
-            let cursor_after = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+            let cursor_after =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
             self.content.history.record(
                 before_pieces,
                 before_add_len,
@@ -2473,10 +2488,7 @@ impl EditorState {
         let mut max_line_chars: usize = 0;
         for line_idx in start_line..end_line {
             if let Some(text) = self.content.cached_lines.get(line_idx) {
-                let chars = text
-                    .chars()
-                    .map(|ch| unicode_char_width(ch))
-                    .sum::<usize>();
+                let chars = text.chars().map(|ch| unicode_char_width(ch)).sum::<usize>();
                 if chars > max_line_chars {
                     max_line_chars = chars;
                 }
@@ -2505,15 +2517,16 @@ impl EditorState {
         let text_visible_width = (editor_region.width - 60.0 - 5.0).max(1.0);
 
         // 光标在当前行的字符列
-        let cursor_char_col = if let Some(text) = self.content.cached_lines.get(self.content.cursor_line) {
-            let byte_pos = text.floor_char_boundary(self.content.cursor_col.min(text.len()));
-            text[..byte_pos]
-                .chars()
-                .map(|ch| unicode_char_width(ch))
-                .sum::<usize>()
-        } else {
-            0
-        };
+        let cursor_char_col =
+            if let Some(text) = self.content.cached_lines.get(self.content.cursor_line) {
+                let byte_pos = text.floor_char_boundary(self.content.cursor_col.min(text.len()));
+                text[..byte_pos]
+                    .chars()
+                    .map(|ch| unicode_char_width(ch))
+                    .sum::<usize>()
+            } else {
+                0
+            };
         let cursor_x = cursor_char_col as f32 * char_width;
 
         let left = self.content.scroll_x;
@@ -2555,7 +2568,11 @@ impl EditorState {
         let max_line = self.content.buffer.len_lines().saturating_sub(1);
         let target_line = line.saturating_sub(1).min(max_line);
 
-        let line_text = self.content.buffer.get_line(target_line).unwrap_or_default();
+        let line_text = self
+            .content
+            .buffer
+            .get_line(target_line)
+            .unwrap_or_default();
         let target_col =
             char_offset_to_byte_offset(&line_text, column.saturating_sub(1)).min(line_text.len());
 
@@ -3330,7 +3347,10 @@ impl EditorState {
     /// P2-7: 仅在当前标签页为空且未修改时才自动加载，避免覆盖用户已有内容
     fn try_open_readme(&mut self, folder: &Path) {
         // 当前标签页有内容或未保存的修改时，不自动加载 README
-        if self.content.is_dirty || self.content.buffer.len_bytes() > 0 || self.content.file_path.is_some() {
+        if self.content.is_dirty
+            || self.content.buffer.len_bytes() > 0
+            || self.content.file_path.is_some()
+        {
             return;
         }
         let candidates = ["README.md", "README.MD", "README", "readme.md", "Readme.md"];
@@ -3632,11 +3652,8 @@ impl EditorState {
                             // REQ-P1-09: 活动标签页的 file_path 在 self.content 中
                             let active_path = self.content.file_path.clone();
                             let active_idx = self.active_tab;
-                            if let Some(existing_tab) = self
-                                .tabs
-                                .iter()
-                                .enumerate()
-                                .position(|(i, tab)| {
+                            if let Some(existing_tab) =
+                                self.tabs.iter().enumerate().position(|(i, tab)| {
                                     if i == active_idx {
                                         active_path.as_ref() == Some(&path)
                                     } else {
@@ -4529,7 +4546,8 @@ impl EditorState {
 
             // 更新选区：保持选中文本不变，扩展到包含括号
             self.content.selection_start = Some((start_line, start_col));
-            self.content.selection_end = Some((end_line, end_col + open_shift + close_ch.len_utf8()));
+            self.content.selection_end =
+                Some((end_line, end_col + open_shift + close_ch.len_utf8()));
 
             self.content.is_dirty = true;
             if let Some(tab) = self.tabs.get_mut(self.active_tab) {
@@ -4537,7 +4555,8 @@ impl EditorState {
             }
             self.content.buffer_version += 1;
 
-            let cursor_after = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+            let cursor_after =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
             self.content.history.record(
                 before_pieces,
                 before_add_len,
@@ -4694,7 +4713,8 @@ impl EditorState {
         let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
         // 获取当前行的前导空白（用于自动缩进）
-        let indent = if let Some(line_text) = self.content.buffer.get_line(self.content.cursor_line) {
+        let indent = if let Some(line_text) = self.content.buffer.get_line(self.content.cursor_line)
+        {
             let leading_ws: String = line_text
                 .chars()
                 .take_while(|c| c.is_whitespace())
@@ -4705,16 +4725,17 @@ impl EditorState {
         };
 
         // 检测是否需要额外缩进（行尾有 { 或 :）
-        let extra_indent = if let Some(line_text) = self.content.buffer.get_line(self.content.cursor_line) {
-            let trimmed = line_text.trim_end();
-            if trimmed.ends_with('{') || trimmed.ends_with(':') {
-                "    "
+        let extra_indent =
+            if let Some(line_text) = self.content.buffer.get_line(self.content.cursor_line) {
+                let trimmed = line_text.trim_end();
+                if trimmed.ends_with('{') || trimmed.ends_with(':') {
+                    "    "
+                } else {
+                    ""
+                }
             } else {
                 ""
-            }
-        } else {
-            ""
-        };
+            };
 
         let full_indent = format!("{}{}", indent, extra_indent);
         let insert_text = if full_indent.is_empty() {
@@ -4754,7 +4775,8 @@ impl EditorState {
             if prev_pos < pos {
                 let before_pieces = self.content.buffer.get_pieces();
                 let before_add_len = self.content.buffer.add_buffer_len();
-                let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+                let cursor_before =
+                    CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
                 self.content.buffer.delete(prev_pos, pos);
                 self.content.cursor_col -= pos - prev_pos;
@@ -4764,7 +4786,8 @@ impl EditorState {
                 }
                 self.content.buffer_version += 1;
 
-                let cursor_after = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+                let cursor_after =
+                    CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
                 self.content.history.record(
                     before_pieces,
                     before_add_len,
@@ -4789,7 +4812,8 @@ impl EditorState {
 
                     let before_pieces = self.content.buffer.get_pieces();
                     let before_add_len = self.content.buffer.add_buffer_len();
-                    let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+                    let cursor_before =
+                        CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
                     self.content.buffer.delete(start, end);
                     self.content.cursor_line = prev_line;
@@ -4800,7 +4824,8 @@ impl EditorState {
                     }
                     self.content.buffer_version += 1;
 
-                    let cursor_after = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+                    let cursor_after =
+                        CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
                     self.content.history.record(
                         before_pieces,
                         before_add_len,
@@ -4824,7 +4849,8 @@ impl EditorState {
         if next_pos > pos {
             let before_pieces = self.content.buffer.get_pieces();
             let before_add_len = self.content.buffer.add_buffer_len();
-            let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+            let cursor_before =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
             self.content.buffer.delete(pos, next_pos);
             self.content.is_dirty = true;
@@ -4833,7 +4859,8 @@ impl EditorState {
             }
             self.content.buffer_version += 1;
 
-            let cursor_after = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+            let cursor_after =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
             self.content.history.record(
                 before_pieces,
                 before_add_len,
@@ -5048,7 +5075,8 @@ impl EditorState {
         let current_cursor = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
         if let Some((pieces, add_len, cursor)) =
-            self.content.history
+            self.content
+                .history
                 .undo(current_pieces, current_add_len, current_cursor)
         {
             self.content.buffer.restore(pieces, add_len);
@@ -5069,7 +5097,8 @@ impl EditorState {
         let current_cursor = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
         if let Some((pieces, add_len, cursor)) =
-            self.content.history
+            self.content
+                .history
                 .redo(current_pieces, current_add_len, current_cursor)
         {
             self.content.buffer.restore(pieces, add_len);
@@ -5692,7 +5721,13 @@ impl EditorState {
         }
         let mut p = pos - 1;
         // P4-1: 使用 byte_at 替代 get_text(p, p+1).as_bytes()[0]，避免 String 堆分配
-        while p > 0 && self.content.buffer.byte_at(p).is_some_and(|b| (b & 0xC0) == 0x80) {
+        while p > 0
+            && self
+                .content
+                .buffer
+                .byte_at(p)
+                .is_some_and(|b| (b & 0xC0) == 0x80)
+        {
             p -= 1;
         }
         p
@@ -5705,7 +5740,13 @@ impl EditorState {
         }
         let mut p = pos + 1;
         // P4-1: 使用 byte_at 避免逐字节 String 分配
-        while p < total && self.content.buffer.byte_at(p).is_some_and(|b| (b & 0xC0) == 0x80) {
+        while p < total
+            && self
+                .content
+                .buffer
+                .byte_at(p)
+                .is_some_and(|b| (b & 0xC0) == 0x80)
+        {
             p += 1;
         }
         p
@@ -5717,8 +5758,15 @@ impl EditorState {
 
         // REQ-P2-01: 变化检测 — 如果 buffer_version、可见范围、总行数均未变化，跳过整个重建
         // 空闲帧（无编辑、无滚动）不会产生任何缓存重建开销
-        let signature = (self.content.buffer_version, visible_start, visible_end, total_lines);
-        if self.content.last_cache_signature == signature && self.content.cached_lines.len() == total_lines {
+        let signature = (
+            self.content.buffer_version,
+            visible_start,
+            visible_end,
+            total_lines,
+        );
+        if self.content.last_cache_signature == signature
+            && self.content.cached_lines.len() == total_lines
+        {
             return;
         }
         self.content.last_cache_signature = signature;
@@ -5733,8 +5781,12 @@ impl EditorState {
 
         // 如果行数变化，重新调整缓存向量大小
         if self.content.cached_lines.len() != total_lines {
-            self.content.cached_lines.resize_with(total_lines, String::new);
-            self.content.cached_tokens.resize_with(total_lines, Vec::new);
+            self.content
+                .cached_lines
+                .resize_with(total_lines, String::new);
+            self.content
+                .cached_tokens
+                .resize_with(total_lines, Vec::new);
             self.content.line_cache_versions.resize(total_lines, 0);
         }
 
@@ -5789,8 +5841,12 @@ impl EditorState {
         let total_lines = self.content.buffer.len_lines().max(1);
 
         if self.content.cached_lines.len() != total_lines {
-            self.content.cached_lines.resize_with(total_lines, String::new);
-            self.content.cached_tokens.resize_with(total_lines, Vec::new);
+            self.content
+                .cached_lines
+                .resize_with(total_lines, String::new);
+            self.content
+                .cached_tokens
+                .resize_with(total_lines, Vec::new);
             self.content.line_cache_versions.resize(total_lines, 0);
         }
 
@@ -5842,8 +5898,12 @@ impl EditorState {
 
         if result.line_delta != 0 {
             // 行数变化，重新调整缓存向量
-            self.content.cached_lines.resize_with(total_lines, String::new);
-            self.content.cached_tokens.resize_with(total_lines, Vec::new);
+            self.content
+                .cached_lines
+                .resize_with(total_lines, String::new);
+            self.content
+                .cached_tokens
+                .resize_with(total_lines, Vec::new);
             self.content.line_cache_versions.resize(total_lines, 0);
         }
 
@@ -6240,7 +6300,10 @@ impl EditorState {
         for attachment in attachments {
             match attachment {
                 AiContextAttachment::CurrentFile => {
-                    let text = self.content.buffer.get_text(0, self.content.buffer.len_bytes());
+                    let text = self
+                        .content
+                        .buffer
+                        .get_text(0, self.content.buffer.len_bytes());
                     parts.push(wrap_code_block(
                         &current_path,
                         current_lang,
@@ -6266,8 +6329,10 @@ impl EditorState {
                         .as_deref()
                         .map(|p| p.to_string_lossy().to_string());
                     let active_lang = language_str(self.content.language);
-                    let active_text =
-                        self.content.buffer.get_text(0, self.content.buffer.len_bytes());
+                    let active_text = self
+                        .content
+                        .buffer
+                        .get_text(0, self.content.buffer.len_bytes());
                     for (i, tab) in self.tabs.iter().enumerate() {
                         let (path, lang, text) = if i == active_idx {
                             (
@@ -6285,8 +6350,10 @@ impl EditorState {
                                 .map(|p| p.to_string_lossy().to_string())
                                 .unwrap_or_else(|| format!("未命名-{}", i + 1));
                             let lang = language_str(tab.content.language);
-                            let text =
-                                tab.content.buffer.get_text(0, tab.content.buffer.len_bytes());
+                            let text = tab
+                                .content
+                                .buffer
+                                .get_text(0, tab.content.buffer.len_bytes());
                             (path, lang, text)
                         };
                         summary.push_str(&wrap_code_block(
@@ -6451,7 +6518,8 @@ impl EditorState {
 
             let before_pieces = self.content.buffer.get_pieces();
             let before_add_len = self.content.buffer.add_buffer_len();
-            let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+            let cursor_before =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
             self.content.buffer.delete(start_byte, end_byte);
             self.content.buffer.insert(start_byte, code);
@@ -6466,7 +6534,8 @@ impl EditorState {
             };
             self.content.cursor_line = new_line;
             self.content.cursor_col = new_col;
-            let cursor_after = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+            let cursor_after =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
             self.content.history.record(
                 before_pieces,
                 before_add_len,
@@ -6544,7 +6613,10 @@ impl EditorState {
             }
 
             // 应用单个编辑
-            let old_text = self.content.buffer.get_text(0, self.content.buffer.len_bytes());
+            let old_text = self
+                .content
+                .buffer
+                .get_text(0, self.content.buffer.len_bytes());
             let new_text = if edit.search.trim().is_empty() {
                 edit.replace.clone()
             } else {
@@ -7094,7 +7166,11 @@ mod tests {
         // max_scroll = 1020 - 760 = 260
         let max = editor.tab_bar_max_scroll(800.0);
         assert!(max > 0.0, "max_scroll 应为正值，实际: {}", max);
-        assert!((max - 260.0).abs() < 0.01, "max_scroll 应为 260，实际: {}", max);
+        assert!(
+            (max - 260.0).abs() < 0.01,
+            "max_scroll 应为 260，实际: {}",
+            max
+        );
     }
 
     /// SubTask 7.5: 验证 scroll_tab_bar 的 clamp 行为
@@ -7157,7 +7233,11 @@ mod tests {
         // delta = 120 → 增量 = 120 * 8 = 960 → clamp 到 260
         let changed = editor.scroll_tab_bar(120.0, 800.0);
         assert!(changed);
-        assert!((editor.tab_scroll_x - 260.0).abs() < 0.01, "应 clamp 到 max_scroll=260，实际: {}", editor.tab_scroll_x);
+        assert!(
+            (editor.tab_scroll_x - 260.0).abs() < 0.01,
+            "应 clamp 到 max_scroll=260，实际: {}",
+            editor.tab_scroll_x
+        );
     }
 
     /// SubTask 7.1: 验证 close_tab 对越界索引返回 false
@@ -7235,7 +7315,7 @@ mod tests {
     fn test_reorder_tabs_active_decrements_when_drag_before_active() {
         let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
         let mut active: usize = 2; // C
-        // drag_idx=0 (A), drop_idx=3 (before D) → A 移到 C 和 D 之间
+                                   // drag_idx=0 (A), drop_idx=3 (before D) → A 移到 C 和 D 之间
         reorder_tabs_with_active(&mut tabs, &mut active, 0, 3);
         assert_eq!(tabs, vec!["B", "C", "A", "D"]);
         assert_eq!(active, 1, "C 从 idx 2 移到 idx 1");
@@ -7246,7 +7326,7 @@ mod tests {
     fn test_reorder_tabs_active_increments_when_drag_after_active() {
         let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
         let mut active: usize = 1; // B
-        // drag_idx=2 (C), drop_idx=0 (before A) → C 移到开头
+                                   // drag_idx=2 (C), drop_idx=0 (before A) → C 移到开头
         reorder_tabs_with_active(&mut tabs, &mut active, 2, 0);
         assert_eq!(tabs, vec!["C", "A", "B", "D"]);
         assert_eq!(active, 2, "B 从 idx 1 移到 idx 2");
@@ -7278,7 +7358,7 @@ mod tests {
     fn test_reorder_tabs_active_unchanged_when_not_in_path() {
         let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
         let mut active: usize = 0; // A
-        // drag_idx=2 (C), drop_idx=4 (末尾) → C 移到 D 之后
+                                   // drag_idx=2 (C), drop_idx=4 (末尾) → C 移到 D 之后
         reorder_tabs_with_active(&mut tabs, &mut active, 2, 4);
         assert_eq!(tabs, vec!["A", "B", "D", "C"]);
         assert_eq!(active, 0, "A 不受影响");
@@ -7317,7 +7397,7 @@ mod tests {
     fn test_reorder_tabs_middle_to_left() {
         let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
         let mut active: usize = 2; // C 是活动标签
-        // drag_idx=2 (C), drop_idx=0 → C 移到开头
+                                   // drag_idx=2 (C), drop_idx=0 → C 移到开头
         reorder_tabs_with_active(&mut tabs, &mut active, 2, 0);
         assert_eq!(tabs, vec!["C", "A", "B", "D"]);
         assert_eq!(active, 0, "C 跟随到 idx 0");
@@ -7328,7 +7408,7 @@ mod tests {
     fn test_reorder_tabs_middle_to_right() {
         let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
         let mut active: usize = 1; // B 是活动标签
-        // drag_idx=1 (B), drop_idx=4 → B 移到末尾
+                                   // drag_idx=1 (B), drop_idx=4 → B 移到末尾
         reorder_tabs_with_active(&mut tabs, &mut active, 1, 4);
         assert_eq!(tabs, vec!["A", "C", "D", "B"]);
         assert_eq!(active, 3, "B 跟随到 idx 3");
@@ -7354,11 +7434,7 @@ mod tests {
     }
 
     /// 模拟 close_tabs_to_the_right 的索引逻辑：保留 0..=idx，移除 idx+1..
-    fn close_tabs_to_the_right_logic<T>(
-        tabs: &mut Vec<T>,
-        active: &mut usize,
-        idx: usize,
-    ) -> bool {
+    fn close_tabs_to_the_right_logic<T>(tabs: &mut Vec<T>, active: &mut usize, idx: usize) -> bool {
         if idx >= tabs.len() {
             return false;
         }
@@ -7376,7 +7452,7 @@ mod tests {
     fn test_close_other_tabs_keeps_only_specified() {
         let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
         let mut active: usize = 2; // C 是活动标签
-        // 保留 idx=1 (B)
+                                   // 保留 idx=1 (B)
         assert!(close_other_tabs_logic(&mut tabs, &mut active, 1));
         assert_eq!(tabs, vec!["B"]);
         assert_eq!(active, 0, "活动标签应重置为 0");
@@ -7431,7 +7507,7 @@ mod tests {
     fn test_close_tabs_to_the_right_adjusts_active() {
         let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
         let mut active: usize = 3; // D 是活动标签
-        // 保留 0..=1，active=3 > 1 → 调整为 1
+                                   // 保留 0..=1，active=3 > 1 → 调整为 1
         assert!(close_tabs_to_the_right_logic(&mut tabs, &mut active, 1));
         assert_eq!(tabs, vec!["A", "B"]);
         assert_eq!(active, 1, "active 超出保留范围时应调整为 idx");
@@ -7530,7 +7606,11 @@ mod tests {
         let mut last_closed: Option<TabContent> = Some(content);
 
         let old_len = tabs.len();
-        assert!(reopen_last_closed_tab_logic(&mut tabs, &mut active, &mut last_closed));
+        assert!(reopen_last_closed_tab_logic(
+            &mut tabs,
+            &mut active,
+            &mut last_closed
+        ));
         assert_eq!(tabs.len(), old_len + 1, "恢复后 tabs 长度应增 1");
         assert_eq!(active, tabs.len() - 1, "active 应指向新标签");
         assert!(last_closed.is_none(), "恢复后 last_closed 应被消费");
@@ -7564,7 +7644,11 @@ mod tests {
         assert!(last_closed.is_some());
 
         // 恢复
-        assert!(reopen_last_closed_tab_logic(&mut tabs, &mut active, &mut last_closed));
+        assert!(reopen_last_closed_tab_logic(
+            &mut tabs,
+            &mut active,
+            &mut last_closed
+        ));
         assert_eq!(tabs.len(), original_len, "恢复后长度应回到原始值");
         assert_eq!(active, tabs.len() - 1, "active 应指向恢复的标签");
         assert!(last_closed.is_none(), "恢复后 last_closed 应为空");

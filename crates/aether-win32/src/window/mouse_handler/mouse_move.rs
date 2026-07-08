@@ -89,9 +89,7 @@ unsafe fn omm_early_returns(
     let mut st = state.borrow_mut();
     // 资源管理器空白区域上下文菜单：更新 hover 状态
     if st.explorer_context_menu.is_open {
-        let changed = st
-            .explorer_context_menu
-            .update_hover(mouse_x, mouse_y);
+        let changed = st.explorer_context_menu.update_hover(mouse_x, mouse_y);
         drop(st);
         if changed {
             invalidate_window(hwnd);
@@ -253,11 +251,9 @@ unsafe fn omm_titlebar_menu_hover(
         let btn_width = 40.0;
         let minimize_x = titlebar_region.x + titlebar_region.width - btn_width * 3.0;
         if mouse_x < minimize_x {
-            st.menu_bar.hover_index = st.menu_bar.hit_test(
-                mouse_x,
-                mouse_y - titlebar_region.y,
-                titlebar_region.height,
-            );
+            st.menu_bar.hover_index =
+                st.menu_bar
+                    .hit_test(mouse_x, mouse_y - titlebar_region.y, titlebar_region.height);
         } else {
             st.menu_bar.hover_index = None;
         }
@@ -557,14 +553,12 @@ unsafe fn omm_hover_tooltip(
     let in_sidebar = sidebar_region.contains(mouse_x, mouse_y)
         && matches!(
             st.sidebar_content,
-            crate::layout::SidebarContent::FileTree
-                | crate::layout::SidebarContent::RemoteFileTree
+            crate::layout::SidebarContent::FileTree | crate::layout::SidebarContent::RemoteFileTree
         );
     let has_hover_node = st.hover_file_node.is_some() || st.hover_remote_node.is_some();
     let dx = mouse_x - st.hover_last_mouse_x;
     let dy = mouse_y - st.hover_last_mouse_y;
-    let moved_beyond_tolerance =
-        dx.abs() > HOVER_MOVE_TOLERANCE || dy.abs() > HOVER_MOVE_TOLERANCE;
+    let moved_beyond_tolerance = dx.abs() > HOVER_MOVE_TOLERANCE || dy.abs() > HOVER_MOVE_TOLERANCE;
     if moved_beyond_tolerance || !in_sidebar || !has_hover_node {
         if st.hover_tooltip.is_some() {
             st.hover_tooltip = None;
@@ -593,8 +587,8 @@ unsafe fn omm_tooltip_state(
     mouse_x: f32,
     mouse_y: f32,
 ) -> bool {
-    use windows::Win32::System::SystemInformation::GetTickCount64;
     use crate::tooltip::{TOOLTIP_DELAY_MS, TOOLTIP_MOVE_TOLERANCE};
+    use windows::Win32::System::SystemInformation::GetTickCount64;
 
     let mut st = state.borrow_mut();
     let (new_key, tooltip_text) = st.compute_tooltip_hover_key();

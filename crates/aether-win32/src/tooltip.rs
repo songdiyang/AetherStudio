@@ -30,14 +30,14 @@ impl crate::editor::EditorState {
         target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
         text_format: &windows::Win32::Graphics::DirectWrite::IDWriteTextFormat,
     ) {
+        use aether_render::d2d::factory::color_f;
         use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
         use windows::Win32::Graphics::Direct2D::{
-            D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ROUNDED_RECT, ID2D1SolidColorBrush,
+            ID2D1SolidColorBrush, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ROUNDED_RECT,
         };
         use windows::Win32::Graphics::DirectWrite::{
             DWRITE_MEASURING_MODE_NATURAL, DWRITE_TEXT_METRICS,
         };
-        use aether_render::d2d::factory::color_f;
 
         let Some(text) = self.tooltip_state.visible_text.as_ref() else {
             return;
@@ -88,17 +88,12 @@ impl crate::editor::EditorState {
 
             // 4. 绘制圆角半透明背景：FillRoundedRectangle
             //    bg_color = RGBA(40, 44, 52, 230)，radius = 4.0
-            let bg_color = color_f(
-                40.0 / 255.0,
-                44.0 / 255.0,
-                52.0 / 255.0,
-                230.0 / 255.0,
-            );
-            let bg_brush: ID2D1SolidColorBrush =
-                match target.CreateSolidColorBrush(&bg_color, None) {
-                    Ok(b) => b,
-                    Err(_) => return,
-                };
+            let bg_color = color_f(40.0 / 255.0, 44.0 / 255.0, 52.0 / 255.0, 230.0 / 255.0);
+            let bg_brush: ID2D1SolidColorBrush = match target.CreateSolidColorBrush(&bg_color, None)
+            {
+                Ok(b) => b,
+                Err(_) => return,
+            };
             let rounded_rect = D2D1_ROUNDED_RECT {
                 rect: D2D_RECT_F {
                     left: tx,
@@ -113,12 +108,7 @@ impl crate::editor::EditorState {
 
             // 5. 绘制文本：DrawText
             //    color = RGBA(220, 220, 220, 255)，使用 D2D1_DRAW_TEXT_OPTIONS_NONE
-            let text_color = color_f(
-                220.0 / 255.0,
-                220.0 / 255.0,
-                220.0 / 255.0,
-                1.0,
-            );
+            let text_color = color_f(220.0 / 255.0, 220.0 / 255.0, 220.0 / 255.0, 1.0);
             let text_brush: ID2D1SolidColorBrush =
                 match target.CreateSolidColorBrush(&text_color, None) {
                     Ok(b) => b,

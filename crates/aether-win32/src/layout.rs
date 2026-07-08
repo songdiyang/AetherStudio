@@ -377,8 +377,8 @@ impl LayoutManager {
     /// 调整右侧面板宽度
     /// clamp: 最小 MIN_RIGHT_PANEL_WIDTH，最大 window_width * 0.8
     pub fn resize_right_panel(&mut self, delta: f32) {
-        let new_width = (self.right_panel_width + delta)
-            .clamp(MIN_RIGHT_PANEL_WIDTH, self.window_width * 0.8);
+        let new_width =
+            (self.right_panel_width + delta).clamp(MIN_RIGHT_PANEL_WIDTH, self.window_width * 0.8);
         self.right_panel_width = new_width;
     }
 
@@ -464,7 +464,10 @@ mod tests {
     #[test]
     fn test_activity_bar_view_label_icon_key() {
         assert_eq!(ActivityBarView::Explorer.label(), "资源管理器");
-        assert_eq!(ActivityBarView::Terminal.icon(), crate::icons::IconKind::Terminal);
+        assert_eq!(
+            ActivityBarView::Terminal.icon(),
+            crate::icons::IconKind::Terminal
+        );
         assert_eq!(ActivityBarView::AiAssistant.key(), "aiAssistant");
     }
 

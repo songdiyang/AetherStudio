@@ -249,7 +249,12 @@ pub(crate) fn apply_launch_args(state: &mut EditorState, args: &LaunchArgs) {
 }
 
 /// WM_COPYDATA：接收来自第二个实例或 CLI 的启动参数
-pub(crate) unsafe fn on_copydata(hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+pub(crate) unsafe fn on_copydata(
+    hwnd: HWND,
+    _msg: u32,
+    _wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     if let Some(args) = parse_copydata_lparam(lparam) {
         if let Some(state) = get_and_set_state(hwnd) {
             apply_launch_args(&mut state.borrow_mut(), &args);
@@ -262,7 +267,12 @@ pub(crate) unsafe fn on_copydata(hwnd: HWND, _msg: u32, _wparam: WPARAM, lparam:
 }
 
 /// WM_DESTROY
-pub(crate) unsafe fn on_destroy(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+pub(crate) unsafe fn on_destroy(
+    hwnd: HWND,
+    _msg: u32,
+    _wparam: WPARAM,
+    _lparam: LPARAM,
+) -> LRESULT {
     // 释放窗口关联的编辑器状态
     let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RefCell<EditorState>;
     if !ptr.is_null() {

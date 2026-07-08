@@ -67,8 +67,7 @@ unsafe fn okd_ctrl_file_ops(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool) {
                         .unwrap_or(true)
                 });
                 if need_dialog {
-                    if let Some(path) =
-                        Dialogs::save_file_dialog(hwnd, "保存文件", "untitled.txt")
+                    if let Some(path) = Dialogs::save_file_dialog(hwnd, "保存文件", "untitled.txt")
                     {
                         EDITOR_STATE.with(|s| {
                             if let Some(state) = s.borrow().as_ref() {

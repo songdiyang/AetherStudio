@@ -49,56 +49,106 @@ fn is_zero_width(cp: u32) -> bool {
     }
 
     // 希伯来语/阿拉伯语组合标记
-    if (0x0591..=0x05BD).contains(&cp) || cp == 0x05BF
-        || (0x05C1..=0x05C2).contains(&cp) || (0x05C4..=0x05C5).contains(&cp)
+    if (0x0591..=0x05BD).contains(&cp)
+        || cp == 0x05BF
+        || (0x05C1..=0x05C2).contains(&cp)
+        || (0x05C4..=0x05C5).contains(&cp)
         || cp == 0x05C7
-        || (0x0610..=0x061A).contains(&cp) || (0x064B..=0x065F).contains(&cp)
-        || cp == 0x0670 || (0x06D6..=0x06DC).contains(&cp)
-        || (0x06DF..=0x06E4).contains(&cp) || (0x06E7..=0x06E8).contains(&cp)
+        || (0x0610..=0x061A).contains(&cp)
+        || (0x064B..=0x065F).contains(&cp)
+        || cp == 0x0670
+        || (0x06D6..=0x06DC).contains(&cp)
+        || (0x06DF..=0x06E4).contains(&cp)
+        || (0x06E7..=0x06E8).contains(&cp)
         || (0x06EA..=0x06ED).contains(&cp)
-        || cp == 0x0711 || (0x0730..=0x074A).contains(&cp)
-        || (0x07A6..=0x07B0).contains(&cp) || (0x07EB..=0x07F3).contains(&cp)
-        || (0x0816..=0x0819).contains(&cp) || (0x081B..=0x0823).contains(&cp)
-        || (0x0825..=0x0827).contains(&cp) || (0x0829..=0x082D).contains(&cp)
-        || (0x0859..=0x085B).contains(&cp) || (0x08D4..=0x08E1).contains(&cp)
-        || (0x08E3..=0x0902).contains(&cp) || cp == 0x093A || cp == 0x093C
-        || (0x0941..=0x0948).contains(&cp) || cp == 0x094D
-        || (0x0951..=0x0957).contains(&cp) || (0x0962..=0x0963).contains(&cp)
-        || cp == 0x0981 || cp == 0x09BC
-        || (0x09C1..=0x09C4).contains(&cp) || cp == 0x09CD
+        || cp == 0x0711
+        || (0x0730..=0x074A).contains(&cp)
+        || (0x07A6..=0x07B0).contains(&cp)
+        || (0x07EB..=0x07F3).contains(&cp)
+        || (0x0816..=0x0819).contains(&cp)
+        || (0x081B..=0x0823).contains(&cp)
+        || (0x0825..=0x0827).contains(&cp)
+        || (0x0829..=0x082D).contains(&cp)
+        || (0x0859..=0x085B).contains(&cp)
+        || (0x08D4..=0x08E1).contains(&cp)
+        || (0x08E3..=0x0902).contains(&cp)
+        || cp == 0x093A
+        || cp == 0x093C
+        || (0x0941..=0x0948).contains(&cp)
+        || cp == 0x094D
+        || (0x0951..=0x0957).contains(&cp)
+        || (0x0962..=0x0963).contains(&cp)
+        || cp == 0x0981
+        || cp == 0x09BC
+        || (0x09C1..=0x09C4).contains(&cp)
+        || cp == 0x09CD
         || (0x09E2..=0x09E3).contains(&cp)
-        || (0x0A01..=0x0A02).contains(&cp) || cp == 0x0A3C
-        || (0x0A41..=0x0A42).contains(&cp) || (0x0A47..=0x0A48).contains(&cp)
-        || (0x0A4B..=0x0A4D).contains(&cp) || cp == 0x0A51
-        || (0x0A70..=0x0A71).contains(&cp) || cp == 0x0A75
+        || (0x0A01..=0x0A02).contains(&cp)
+        || cp == 0x0A3C
+        || (0x0A41..=0x0A42).contains(&cp)
+        || (0x0A47..=0x0A48).contains(&cp)
+        || (0x0A4B..=0x0A4D).contains(&cp)
+        || cp == 0x0A51
+        || (0x0A70..=0x0A71).contains(&cp)
+        || cp == 0x0A75
     {
         return true;
     }
 
     // 继续覆盖 Devanagari / Bengali / Gurmukhi / Gujarati / Oriya / Tamil / Telugu / Kannada / Malayalam / Sinhala / Thai / Lao / Tibetan / Myanmar 组合标记
-    if (0x0A81..=0x0A82).contains(&cp) || cp == 0x0ABC
-        || (0x0AC1..=0x0AC5).contains(&cp) || (0x0AC7..=0x0AC8).contains(&cp)
-        || cp == 0x0ACD || (0x0AE2..=0x0AE3).contains(&cp)
-        || cp == 0x0B01 || cp == 0x0B3C || cp == 0x0B3F
-        || (0x0B41..=0x0B44).contains(&cp) || cp == 0x0B4D || cp == 0x0B56
-        || (0x0B62..=0x0B63).contains(&cp) || cp == 0x0B82 || cp == 0x0BC0 || cp == 0x0BCD
-        || cp == 0x0C00 || (0x0C3E..=0x0C40).contains(&cp)
-        || (0x0C46..=0x0C48).contains(&cp) || (0x0C4A..=0x0C4D).contains(&cp)
-        || (0x0C55..=0x0C56).contains(&cp) || (0x0C62..=0x0C63).contains(&cp)
-        || cp == 0x0C81 || cp == 0x0CBC || cp == 0x0CBF || cp == 0x0CC6
-        || (0x0CCC..=0x0CCD).contains(&cp) || (0x0CE2..=0x0CE3).contains(&cp)
-        || (0x0D00..=0x0D01).contains(&cp) || (0x0D3B..=0x0D3C).contains(&cp)
-        || (0x0D41..=0x0D44).contains(&cp) || cp == 0x0D4D
-        || (0x0D62..=0x0D63).contains(&cp) || cp == 0x0DCA
-        || (0x0DD2..=0x0DD4).contains(&cp) || cp == 0x0DD6
-        || cp == 0x0E31 || (0x0E34..=0x0E3A).contains(&cp)
-        || (0x0E47..=0x0E4E).contains(&cp) || cp == 0x0EB1
-        || (0x0EB4..=0x0EB9).contains(&cp) || (0x0EBB..=0x0EBC).contains(&cp)
+    if (0x0A81..=0x0A82).contains(&cp)
+        || cp == 0x0ABC
+        || (0x0AC1..=0x0AC5).contains(&cp)
+        || (0x0AC7..=0x0AC8).contains(&cp)
+        || cp == 0x0ACD
+        || (0x0AE2..=0x0AE3).contains(&cp)
+        || cp == 0x0B01
+        || cp == 0x0B3C
+        || cp == 0x0B3F
+        || (0x0B41..=0x0B44).contains(&cp)
+        || cp == 0x0B4D
+        || cp == 0x0B56
+        || (0x0B62..=0x0B63).contains(&cp)
+        || cp == 0x0B82
+        || cp == 0x0BC0
+        || cp == 0x0BCD
+        || cp == 0x0C00
+        || (0x0C3E..=0x0C40).contains(&cp)
+        || (0x0C46..=0x0C48).contains(&cp)
+        || (0x0C4A..=0x0C4D).contains(&cp)
+        || (0x0C55..=0x0C56).contains(&cp)
+        || (0x0C62..=0x0C63).contains(&cp)
+        || cp == 0x0C81
+        || cp == 0x0CBC
+        || cp == 0x0CBF
+        || cp == 0x0CC6
+        || (0x0CCC..=0x0CCD).contains(&cp)
+        || (0x0CE2..=0x0CE3).contains(&cp)
+        || (0x0D00..=0x0D01).contains(&cp)
+        || (0x0D3B..=0x0D3C).contains(&cp)
+        || (0x0D41..=0x0D44).contains(&cp)
+        || cp == 0x0D4D
+        || (0x0D62..=0x0D63).contains(&cp)
+        || cp == 0x0DCA
+        || (0x0DD2..=0x0DD4).contains(&cp)
+        || cp == 0x0DD6
+        || cp == 0x0E31
+        || (0x0E34..=0x0E3A).contains(&cp)
+        || (0x0E47..=0x0E4E).contains(&cp)
+        || cp == 0x0EB1
+        || (0x0EB4..=0x0EB9).contains(&cp)
+        || (0x0EBB..=0x0EBC).contains(&cp)
         || (0x0EC8..=0x0ECD).contains(&cp)
-        || (0x0F18..=0x0F19).contains(&cp) || cp == 0x0F35 || cp == 0x0F37 || cp == 0x0F39
-        || (0x0F71..=0x0F7E).contains(&cp) || (0x0F80..=0x0F84).contains(&cp)
-        || (0x0F86..=0x0F87).contains(&cp) || (0x0F8D..=0x0F97).contains(&cp)
-        || (0x0F99..=0x0FBC).contains(&cp) || cp == 0x0FC6
+        || (0x0F18..=0x0F19).contains(&cp)
+        || cp == 0x0F35
+        || cp == 0x0F37
+        || cp == 0x0F39
+        || (0x0F71..=0x0F7E).contains(&cp)
+        || (0x0F80..=0x0F84).contains(&cp)
+        || (0x0F86..=0x0F87).contains(&cp)
+        || (0x0F8D..=0x0F97).contains(&cp)
+        || (0x0F99..=0x0FBC).contains(&cp)
+        || cp == 0x0FC6
     {
         return true;
     }
@@ -154,8 +204,10 @@ fn is_zero_width(cp: u32) -> bool {
     }
 
     // 音乐符号组合
-    if (0x1D167..=0x1D169).contains(&cp) || (0x1D17B..=0x1D182).contains(&cp)
-        || (0x1D185..=0x1D18B).contains(&cp) || (0x1D1AA..=0x1D1AD).contains(&cp)
+    if (0x1D167..=0x1D169).contains(&cp)
+        || (0x1D17B..=0x1D182).contains(&cp)
+        || (0x1D185..=0x1D18B).contains(&cp)
+        || (0x1D1AA..=0x1D1AD).contains(&cp)
     {
         return true;
     }

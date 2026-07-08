@@ -258,14 +258,35 @@ mod tests {
         assert!(m.visible);
         // 8 项：1 隐藏 + 1 自定义排序 + 1 分隔符 + 5 视图切换
         assert_eq!(m.items.len(), 8);
-        assert_eq!(m.items[0].command, ActivityBarContextMenuCommand::HideActivityBar);
-        assert_eq!(m.items[1].command, ActivityBarContextMenuCommand::CustomizeSort);
+        assert_eq!(
+            m.items[0].command,
+            ActivityBarContextMenuCommand::HideActivityBar
+        );
+        assert_eq!(
+            m.items[1].command,
+            ActivityBarContextMenuCommand::CustomizeSort
+        );
         assert!(m.items[2].is_separator());
-        assert_eq!(m.items[3].command, ActivityBarContextMenuCommand::SwitchToExplorer);
-        assert_eq!(m.items[4].command, ActivityBarContextMenuCommand::SwitchToSourceControl);
-        assert_eq!(m.items[5].command, ActivityBarContextMenuCommand::SwitchToTerminal);
-        assert_eq!(m.items[6].command, ActivityBarContextMenuCommand::SwitchToRemoteManager);
-        assert_eq!(m.items[7].command, ActivityBarContextMenuCommand::SwitchToAiAssistant);
+        assert_eq!(
+            m.items[3].command,
+            ActivityBarContextMenuCommand::SwitchToExplorer
+        );
+        assert_eq!(
+            m.items[4].command,
+            ActivityBarContextMenuCommand::SwitchToSourceControl
+        );
+        assert_eq!(
+            m.items[5].command,
+            ActivityBarContextMenuCommand::SwitchToTerminal
+        );
+        assert_eq!(
+            m.items[6].command,
+            ActivityBarContextMenuCommand::SwitchToRemoteManager
+        );
+        assert_eq!(
+            m.items[7].command,
+            ActivityBarContextMenuCommand::SwitchToAiAssistant
+        );
     }
 
     #[test]
@@ -352,7 +373,10 @@ mod tests {
         // 第一项（隐藏活动栏）位于 top_padding 起始处
         let first_y = m.y + m.top_padding + 1.0;
         let idx = m.hit_test(m.x + 20.0, first_y).unwrap();
-        assert_eq!(m.items[idx].command, ActivityBarContextMenuCommand::HideActivityBar);
+        assert_eq!(
+            m.items[idx].command,
+            ActivityBarContextMenuCommand::HideActivityBar
+        );
     }
 
     #[test]
@@ -365,10 +389,13 @@ mod tests {
         assert_eq!(m.hit_test(m.x + 20.0, sep_y), None);
 
         // 分隔符之后的 Explorer
-        let explorer_y = m.y + m.top_padding + 2.0 * m.item_height + m.separator_height
-            + m.item_height / 2.0;
+        let explorer_y =
+            m.y + m.top_padding + 2.0 * m.item_height + m.separator_height + m.item_height / 2.0;
         let idx = m.hit_test(m.x + 20.0, explorer_y).unwrap();
-        assert_eq!(m.items[idx].command, ActivityBarContextMenuCommand::SwitchToExplorer);
+        assert_eq!(
+            m.items[idx].command,
+            ActivityBarContextMenuCommand::SwitchToExplorer
+        );
     }
 
     #[test]
@@ -379,7 +406,10 @@ mod tests {
         // 最后一项 AiAssistant 位于底部 padding 之前
         let last_y = m.y + m.menu_height() - m.bottom_padding - m.item_height / 2.0;
         let idx = m.hit_test(m.x + 20.0, last_y).unwrap();
-        assert_eq!(m.items[idx].command, ActivityBarContextMenuCommand::SwitchToAiAssistant);
+        assert_eq!(
+            m.items[idx].command,
+            ActivityBarContextMenuCommand::SwitchToAiAssistant
+        );
     }
 
     #[test]

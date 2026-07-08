@@ -188,8 +188,8 @@ impl EditorState {
         self.flush_events_to_dirty_tracker();
 
         // 脏矩形检测：对比上一帧状态，标记变化区域（兼容层）
-        let cursor_moved =
-            self.content.cursor_line != self.last_cursor_line || self.content.cursor_col != self.last_cursor_col;
+        let cursor_moved = self.content.cursor_line != self.last_cursor_line
+            || self.content.cursor_col != self.last_cursor_col;
         let scroll_changed = (self.content.scroll_y - self.last_scroll_y).abs() > 0.01;
         let selection_changed = self.content.selection_start != self.last_selection_start
             || self.content.selection_end != self.last_selection_end;
@@ -295,7 +295,8 @@ impl EditorState {
                 crate::dirty_rect::RenderCommand::EditorOnly => {
                     let line_height = self.text_renderer.line_height();
                     let editor_content_region = self.layout.editor_content_region(show_tab_bar);
-                    let cursor_y = editor_content_region.y + self.content.cursor_line as f32 * line_height
+                    let cursor_y = editor_content_region.y
+                        + self.content.cursor_line as f32 * line_height
                         - self.content.scroll_y;
                     self.dirty_tracker.mark_cursor(
                         editor_content_region.x,
@@ -395,7 +396,9 @@ impl EditorState {
                     .iter()
                     .map(|r| (r.x, r.y, r.width, r.height))
                     .collect();
-                use_layer = self.render_ctx.push_multi_clip(&self.d2d_factory.factory(), &rect_tuples);
+                use_layer = self
+                    .render_ctx
+                    .push_multi_clip(&self.d2d_factory.factory(), &rect_tuples);
             }
         }
 
@@ -1241,11 +1244,7 @@ impl EditorState {
                 target.FillRectangle(&input_rect, &input_bg_brush);
                 target.DrawRectangle(&input_rect, &sep_brush, 1.0, None);
 
-                let value_text: Vec<u16> = input
-                    .value
-                    .encode_utf16()
-                    .chain(Some(0))
-                    .collect();
+                let value_text: Vec<u16> = input.value.encode_utf16().chain(Some(0)).collect();
                 let value_rect = D2D_RECT_F {
                     left: input_rect.left + 6.0,
                     top: input_rect.top + 2.0,
@@ -4331,10 +4330,8 @@ impl EditorState {
                         DWRITE_PARAGRAPH_ALIGNMENT_CENTER.0 as u32,
                     )
                     .unwrap();
-                let hint_text: Vec<u16> = "按 Ctrl+` 启动终端"
-                    .encode_utf16()
-                    .chain(Some(0))
-                    .collect();
+                let hint_text: Vec<u16> =
+                    "按 Ctrl+` 启动终端".encode_utf16().chain(Some(0)).collect();
                 let hint_rect = D2D_RECT_F {
                     left: x,
                     top: content_y,
@@ -8252,7 +8249,9 @@ impl EditorState {
             // 光标：将字节列转换为字符列计算x坐标
             // UI-H04: 使用字符宽度累加而非简单 char count * char_width，
             // 支持 CJK 等双宽度字符的正确光标定位
-            let cursor_char_col = if let Some(text) = self.content.cached_lines.get(self.content.cursor_line) {
+            let cursor_char_col = if let Some(text) =
+                self.content.cached_lines.get(self.content.cursor_line)
+            {
                 let byte_pos = text.floor_char_boundary(self.content.cursor_col.min(text.len()));
                 text[..byte_pos]
                     .chars()
@@ -8262,9 +8261,10 @@ impl EditorState {
                 0
             };
             // P0-3: 光标 x 减去水平滚动偏移
-            let cursor_x =
-                x + line_number_width + 5.0 - self.content.scroll_x + cursor_char_col as f32 * char_width;
-            let cursor_y = y + (self.content.cursor_line.saturating_sub(start_line)) as f32 * line_height
+            let cursor_x = x + line_number_width + 5.0 - self.content.scroll_x
+                + cursor_char_col as f32 * char_width;
+            let cursor_y = y
+                + (self.content.cursor_line.saturating_sub(start_line)) as f32 * line_height
                 - (self.content.scroll_y % line_height);
             // UI-L02: 更新 IME 候选窗口位置到光标处
             self.ime.set_candidate_window_position(
@@ -8276,10 +8276,8 @@ impl EditorState {
                 if let Some(comp) = self.composition.as_ref() {
                     if !comp.is_empty() {
                         // 合成串宽度（按字符宽度累加，CJK 字符 2 倍宽）
-                        let comp_char_width: usize = comp
-                            .chars()
-                            .map(|ch| unicode_char_width(ch))
-                            .sum();
+                        let comp_char_width: usize =
+                            comp.chars().map(|ch| unicode_char_width(ch)).sum();
                         let comp_pixel_width = comp_char_width as f32 * char_width;
 
                         // 渲染合成串文本（与代码格式一致）
@@ -8351,7 +8349,9 @@ impl EditorState {
         };
 
         // 仅当建议触发位置与当前光标位置匹配时渲染，避免错位
-        if comp.trigger_line != self.content.cursor_line || comp.trigger_col != self.content.cursor_col {
+        if comp.trigger_line != self.content.cursor_line
+            || comp.trigger_col != self.content.cursor_col
+        {
             return;
         }
 
@@ -8362,7 +8362,9 @@ impl EditorState {
                 return;
             };
 
-            let cursor_char_col = if let Some(text) = self.content.cached_lines.get(self.content.cursor_line) {
+            let cursor_char_col = if let Some(text) =
+                self.content.cached_lines.get(self.content.cursor_line)
+            {
                 let byte_pos = text.floor_char_boundary(self.content.cursor_col.min(text.len()));
                 text[..byte_pos]
                     .chars()
@@ -8372,9 +8374,10 @@ impl EditorState {
                 0
             };
 
-            let ghost_x =
-                x + line_number_width + 5.0 - self.content.scroll_x + cursor_char_col as f32 * char_width;
-            let ghost_y = y + (self.content.cursor_line.saturating_sub(start_line)) as f32 * line_height
+            let ghost_x = x + line_number_width + 5.0 - self.content.scroll_x
+                + cursor_char_col as f32 * char_width;
+            let ghost_y = y
+                + (self.content.cursor_line.saturating_sub(start_line)) as f32 * line_height
                 - (self.content.scroll_y % line_height);
 
             let text_utf16: Vec<u16> = comp.text.encode_utf16().collect();
@@ -9064,12 +9067,7 @@ impl EditorState {
             // Task 8.5: 拖拽插入指示线（蓝色 2px 垂直线）
             if let (Some(drag_idx), Some(drop_idx)) = (self.dragging_tab, self.tab_drop_index) {
                 if drag_idx < self.tabs.len() && drop_idx <= self.tabs.len() {
-                    let drop_line_color = color_f(
-                        100.0 / 255.0,
-                        150.0 / 255.0,
-                        255.0 / 255.0,
-                        1.0,
-                    );
+                    let drop_line_color = color_f(100.0 / 255.0, 150.0 / 255.0, 255.0 / 255.0, 1.0);
                     let drop_line_brush = self
                         .render_ctx
                         .brush_cache
@@ -9267,11 +9265,7 @@ impl EditorState {
             {
                 let cache_ref: &aether_render::d2d::brush_cache::TextFormatCache =
                     &self.render_ctx.text_format_cache;
-                status.update_widths(
-                    cache_ref,
-                    12.0,
-                    DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
-                );
+                status.update_widths(cache_ref, 12.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32);
             }
 
             // SubTask 10.1: hover 背景画刷（RGBA(255,255,255,30) 半透明白色）
@@ -10086,8 +10080,16 @@ impl EditorState {
 
             // 用户头像按钮：人形轮廓
             let user_btn_hover = self.user_menu.is_open || self.titlebar_hover_button == Some(3);
-            let user_bg = if user_btn_hover { &hover_min_bg } else { &default_bg };
-            let user_bg_brush = self.render_ctx.brush_cache.get_brush(target, user_bg).unwrap();
+            let user_bg = if user_btn_hover {
+                &hover_min_bg
+            } else {
+                &default_bg
+            };
+            let user_bg_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, user_bg)
+                .unwrap();
             let user_btn_top = y + (btn_height - user_btn_size) / 2.0;
             let user_rect = D2D_RECT_F {
                 left: user_btn_x,
@@ -10430,11 +10432,7 @@ impl EditorState {
             } else {
                 color_f(0.18, 0.18, 0.18, 1.0)
             };
-            let bg_brush = match self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &bg_color)
-            {
+            let bg_brush = match self.render_ctx.brush_cache.get_brush(target, &bg_color) {
                 Ok(b) => b,
                 Err(_) => return,
             };
@@ -10447,11 +10445,7 @@ impl EditorState {
 
             // 阴影（右侧 + 底部，与 user_menu 一致）
             let shadow_color = color_f(0.0, 0.0, 0.0, 0.35);
-            if let Ok(shadow_brush) = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &shadow_color)
-            {
+            if let Ok(shadow_brush) = self.render_ctx.brush_cache.get_brush(target, &shadow_color) {
                 let shadow_right = D2D_RECT_F {
                     left: menu_rect.right,
                     top: menu_rect.top + 4.0,
@@ -10472,11 +10466,7 @@ impl EditorState {
 
             // 边框
             let border_color = color_f(0.3, 0.3, 0.3, 1.0);
-            if let Ok(border_brush) = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &border_color)
-            {
+            if let Ok(border_brush) = self.render_ctx.brush_cache.get_brush(target, &border_color) {
                 target.DrawRectangle(&menu_rect, &border_brush, 1.0, None);
             }
 
@@ -10489,29 +10479,17 @@ impl EditorState {
             ));
 
             let text_color = color_f(0.85, 0.85, 0.85, 1.0);
-            let text_brush = match self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &text_color)
-            {
+            let text_brush = match self.render_ctx.brush_cache.get_brush(target, &text_color) {
                 Ok(b) => b,
                 Err(_) => return,
             };
             let hover_bg = color_f(0.0, 0.47, 0.83, 1.0);
-            let hover_brush = match self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &hover_bg)
-            {
+            let hover_brush = match self.render_ctx.brush_cache.get_brush(target, &hover_bg) {
                 Ok(b) => b,
                 Err(_) => return,
             };
             let sep_color = color_f(0.3, 0.3, 0.3, 1.0);
-            let sep_brush = match self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &sep_color)
-            {
+            let sep_brush = match self.render_ctx.brush_cache.get_brush(target, &sep_color) {
                 Ok(b) => b,
                 Err(_) => return,
             };
@@ -10551,8 +10529,7 @@ impl EditorState {
                         target.FillRectangle(&item_rect, &hover_brush);
                     }
 
-                    let label_wide: Vec<u16> =
-                        item.label().encode_utf16().chain(Some(0)).collect();
+                    let label_wide: Vec<u16> = item.label().encode_utf16().chain(Some(0)).collect();
                     let label_rect = D2D_RECT_F {
                         left: menu_x + 16.0,
                         top: current_y,
@@ -10637,34 +10614,41 @@ impl EditorState {
 
             // 文本画刷
             let normal_text_color = color_f(220.0 / 255.0, 220.0 / 255.0, 220.0 / 255.0, 1.0);
-            let normal_text_brush =
-                match self.render_ctx.brush_cache.get_brush(target, &normal_text_color) {
-                    Ok(b) => b,
-                    Err(_) => return,
-                };
+            let normal_text_brush = match self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &normal_text_color)
+            {
+                Ok(b) => b,
+                Err(_) => return,
+            };
             let hover_text_color = color_f(1.0, 1.0, 1.0, 1.0);
-            let hover_text_brush =
-                match self.render_ctx.brush_cache.get_brush(target, &hover_text_color) {
-                    Ok(b) => b,
-                    Err(_) => return,
-                };
+            let hover_text_brush = match self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &hover_text_color)
+            {
+                Ok(b) => b,
+                Err(_) => return,
+            };
             let disabled_text_color = color_f(120.0 / 255.0, 120.0 / 255.0, 120.0 / 255.0, 1.0);
-            let disabled_text_brush =
-                match self.render_ctx.brush_cache.get_brush(target, &disabled_text_color) {
-                    Ok(b) => b,
-                    Err(_) => return,
-                };
-            let hover_bg_color = color_f(
-                80.0 / 255.0,
-                120.0 / 255.0,
-                200.0 / 255.0,
-                200.0 / 255.0,
-            );
-            let hover_bg_brush =
-                match self.render_ctx.brush_cache.get_brush(target, &hover_bg_color) {
-                    Ok(b) => b,
-                    Err(_) => return,
-                };
+            let disabled_text_brush = match self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &disabled_text_color)
+            {
+                Ok(b) => b,
+                Err(_) => return,
+            };
+            let hover_bg_color = color_f(80.0 / 255.0, 120.0 / 255.0, 200.0 / 255.0, 200.0 / 255.0);
+            let hover_bg_brush = match self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &hover_bg_color)
+            {
+                Ok(b) => b,
+                Err(_) => return,
+            };
             let sep_color = color_f(80.0 / 255.0, 80.0 / 255.0, 80.0 / 255.0, 200.0 / 255.0);
             let sep_brush = match self.render_ctx.brush_cache.get_brush(target, &sep_color) {
                 Ok(b) => b,
@@ -10691,7 +10675,8 @@ impl EditorState {
                         left: menu_x + 8.0,
                         top: current_y + (self.tab_context_menu.separator_height - 1.0) / 2.0,
                         right: menu_x + menu_width - 8.0,
-                        bottom: current_y + (self.tab_context_menu.separator_height - 1.0) / 2.0
+                        bottom: current_y
+                            + (self.tab_context_menu.separator_height - 1.0) / 2.0
                             + 1.0,
                     };
                     target.FillRectangle(&sep_rect, &sep_brush);
@@ -10706,18 +10691,16 @@ impl EditorState {
                             right: menu_x + menu_width - 3.0,
                             bottom: current_y + self.tab_context_menu.item_height,
                         };
-                        let item_rounded =
-                            windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT {
-                                rect: item_rect,
-                                radiusX: 3.0,
-                                radiusY: 3.0,
-                            };
+                        let item_rounded = windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT {
+                            rect: item_rect,
+                            radiusX: 3.0,
+                            radiusY: 3.0,
+                        };
                         target.FillRoundedRectangle(&item_rounded, &hover_bg_brush);
                     }
 
                     // 文本
-                    let label_wide: Vec<u16> =
-                        item.label.encode_utf16().chain(Some(0)).collect();
+                    let label_wide: Vec<u16> = item.label.encode_utf16().chain(Some(0)).collect();
                     let label_rect = D2D_RECT_F {
                         left: menu_x + 12.0,
                         top: current_y,
@@ -10810,34 +10793,41 @@ impl EditorState {
 
             // 文本画刷
             let normal_text_color = color_f(220.0 / 255.0, 220.0 / 255.0, 220.0 / 255.0, 1.0);
-            let normal_text_brush =
-                match self.render_ctx.brush_cache.get_brush(target, &normal_text_color) {
-                    Ok(b) => b,
-                    Err(_) => return,
-                };
+            let normal_text_brush = match self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &normal_text_color)
+            {
+                Ok(b) => b,
+                Err(_) => return,
+            };
             let hover_text_color = color_f(1.0, 1.0, 1.0, 1.0);
-            let hover_text_brush =
-                match self.render_ctx.brush_cache.get_brush(target, &hover_text_color) {
-                    Ok(b) => b,
-                    Err(_) => return,
-                };
+            let hover_text_brush = match self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &hover_text_color)
+            {
+                Ok(b) => b,
+                Err(_) => return,
+            };
             let disabled_text_color = color_f(120.0 / 255.0, 120.0 / 255.0, 120.0 / 255.0, 1.0);
-            let disabled_text_brush =
-                match self.render_ctx.brush_cache.get_brush(target, &disabled_text_color) {
-                    Ok(b) => b,
-                    Err(_) => return,
-                };
-            let hover_bg_color = color_f(
-                80.0 / 255.0,
-                120.0 / 255.0,
-                200.0 / 255.0,
-                200.0 / 255.0,
-            );
-            let hover_bg_brush =
-                match self.render_ctx.brush_cache.get_brush(target, &hover_bg_color) {
-                    Ok(b) => b,
-                    Err(_) => return,
-                };
+            let disabled_text_brush = match self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &disabled_text_color)
+            {
+                Ok(b) => b,
+                Err(_) => return,
+            };
+            let hover_bg_color = color_f(80.0 / 255.0, 120.0 / 255.0, 200.0 / 255.0, 200.0 / 255.0);
+            let hover_bg_brush = match self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &hover_bg_color)
+            {
+                Ok(b) => b,
+                Err(_) => return,
+            };
             let sep_color = color_f(80.0 / 255.0, 80.0 / 255.0, 80.0 / 255.0, 200.0 / 255.0);
             let sep_brush = match self.render_ctx.brush_cache.get_brush(target, &sep_color) {
                 Ok(b) => b,
@@ -10887,12 +10877,11 @@ impl EditorState {
                             right: menu_x + menu_width - 3.0,
                             bottom: current_y + self.activity_bar_context_menu.item_height,
                         };
-                        let item_rounded =
-                            windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT {
-                                rect: item_rect,
-                                radiusX: 3.0,
-                                radiusY: 3.0,
-                            };
+                        let item_rounded = windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT {
+                            rect: item_rect,
+                            radiusX: 3.0,
+                            radiusY: 3.0,
+                        };
                         target.FillRoundedRectangle(&item_rounded, &hover_bg_brush);
                     }
 
@@ -10901,16 +10890,24 @@ impl EditorState {
                         let cx = menu_x + 12.0;
                         let cy = current_y;
                         // ✓ 由两段线段构成：下笔 → 底部 → 右上
-                        let p0 = D2D_POINT_2F { x: cx, y: cy + 15.0 };
-                        let p1 = D2D_POINT_2F { x: cx + 4.0, y: cy + 19.0 };
-                        let p2 = D2D_POINT_2F { x: cx + 10.0, y: cy + 11.0 };
+                        let p0 = D2D_POINT_2F {
+                            x: cx,
+                            y: cy + 15.0,
+                        };
+                        let p1 = D2D_POINT_2F {
+                            x: cx + 4.0,
+                            y: cy + 19.0,
+                        };
+                        let p2 = D2D_POINT_2F {
+                            x: cx + 10.0,
+                            y: cy + 11.0,
+                        };
                         target.DrawLine(p0, p1, &check_brush, 1.5, None);
                         target.DrawLine(p1, p2, &check_brush, 1.5, None);
                     }
 
                     // 文本（统一缩进 32px，为勾选标记预留空间）
-                    let label_wide: Vec<u16> =
-                        item.label.encode_utf16().chain(Some(0)).collect();
+                    let label_wide: Vec<u16> = item.label.encode_utf16().chain(Some(0)).collect();
                     let label_rect = D2D_RECT_F {
                         left: menu_x + 32.0,
                         top: current_y,
@@ -10966,9 +10963,11 @@ impl EditorState {
                 .shortcut
                 .as_ref()
                 .and_then(|s| {
-                    self.render_ctx
-                        .text_format_cache
-                        .measure_text_width(s, SHORTCUT_FONT_SIZE, normal_weight)
+                    self.render_ctx.text_format_cache.measure_text_width(
+                        s,
+                        SHORTCUT_FONT_SIZE,
+                        normal_weight,
+                    )
                 })
                 .unwrap_or(0.0);
             let row_w = label_w + 24.0 + shortcut_w;

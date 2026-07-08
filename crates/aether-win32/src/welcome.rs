@@ -729,7 +729,10 @@ impl EditorState {
                 let icon_x = center_x - icon_size / 2.0;
                 let icon_y = layout.project_start_y;
                 let empty_icon_brush = target
-                    .CreateSolidColorBrush(&color_f(150.0 / 255.0, 150.0 / 255.0, 150.0 / 255.0, 200.0 / 255.0), None)
+                    .CreateSolidColorBrush(
+                        &color_f(150.0 / 255.0, 150.0 / 255.0, 150.0 / 255.0, 200.0 / 255.0),
+                        None,
+                    )
                     .unwrap_or_else(|e| {
                         eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
                         panic!("D2D device lost")
@@ -769,7 +772,10 @@ impl EditorState {
                     bottom: main_y + 20.0,
                 };
                 let empty_main_brush = target
-                    .CreateSolidColorBrush(&color_f(180.0 / 255.0, 180.0 / 255.0, 180.0 / 255.0, 1.0), None)
+                    .CreateSolidColorBrush(
+                        &color_f(180.0 / 255.0, 180.0 / 255.0, 180.0 / 255.0, 1.0),
+                        None,
+                    )
                     .unwrap_or_else(|e| {
                         eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
                         panic!("D2D device lost")
@@ -800,7 +806,8 @@ impl EditorState {
                     });
                 let _ = empty_sub_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                 let sub_y = main_y + 20.0 + 6.0;
-                let sub_text: Vec<u16> = "打开文件夹开始编辑".encode_utf16().chain(Some(0)).collect();
+                let sub_text: Vec<u16> =
+                    "打开文件夹开始编辑".encode_utf16().chain(Some(0)).collect();
                 let sub_rect = D2D_RECT_F {
                     left: layout.right_col_x,
                     top: sub_y,
@@ -808,7 +815,10 @@ impl EditorState {
                     bottom: sub_y + 16.0,
                 };
                 let empty_sub_brush = target
-                    .CreateSolidColorBrush(&color_f(140.0 / 255.0, 140.0 / 255.0, 140.0 / 255.0, 1.0), None)
+                    .CreateSolidColorBrush(
+                        &color_f(140.0 / 255.0, 140.0 / 255.0, 140.0 / 255.0, 1.0),
+                        None,
+                    )
                     .unwrap_or_else(|e| {
                         eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
                         panic!("D2D device lost")
@@ -851,8 +861,7 @@ impl EditorState {
                     target.FillRoundedRectangle(&rounded, &btn_brush);
 
                     // 按钮文本 "打开文件夹" 白色居中
-                    let btn_text: Vec<u16> =
-                        "打开文件夹".encode_utf16().chain(Some(0)).collect();
+                    let btn_text: Vec<u16> = "打开文件夹".encode_utf16().chain(Some(0)).collect();
                     let btn_text_rect = D2D_RECT_F {
                         left: bl,
                         top: bt + 6.0,
@@ -1037,10 +1046,7 @@ mod tests {
         assert_eq!(bottom - top, 32.0, "按钮高度应为 32px");
         // 按钮应水平居中于右侧列
         let center_x = layout.right_col_x + layout.right_col_width / 2.0;
-        assert!(
-            (left + right) / 2.0 - center_x < 0.01,
-            "按钮应居中于右侧列"
-        );
+        assert!((left + right) / 2.0 - center_x < 0.01, "按钮应居中于右侧列");
         // 按钮应在 project_start_y 下方
         assert!(
             top > layout.project_start_y,

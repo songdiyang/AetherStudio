@@ -150,7 +150,13 @@ mod release_impl {
     use super::*;
 
     #[inline]
-    pub fn register_hit_region(_action: impl Into<String>, _x: f32, _y: f32, _width: f32, _height: f32) {
+    pub fn register_hit_region(
+        _action: impl Into<String>,
+        _x: f32,
+        _y: f32,
+        _width: f32,
+        _height: f32,
+    ) {
         // release 构建：空操作，零开销
     }
 

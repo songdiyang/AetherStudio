@@ -12,9 +12,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use crate::dialogs::Dialogs;
 use crate::editor::EditorState;
 
-use super::super::super::{
-    invalidate_window, LP_THRESHOLD_MS, LP_TIMER_ID,
-};
+use super::super::super::{invalidate_window, LP_THRESHOLD_MS, LP_TIMER_ID};
 
 /// 活动栏点击 + 长按检测。
 pub(super) unsafe fn lbd_activity_bar(
@@ -305,10 +303,11 @@ unsafe fn lbd_right_panel_actions(
             let settings = st.app_settings.ai.clone();
             let action_clone = *action;
             drop(st);
-            let _ = state
-                .borrow_mut()
-                .ai_panel
-                .send_quick_action(action_clone, &selected_code, &settings);
+            let _ = state.borrow_mut().ai_panel.send_quick_action(
+                action_clone,
+                &selected_code,
+                &settings,
+            );
             invalidate_window(hwnd);
             return Some(LRESULT(0));
         }
@@ -488,7 +487,8 @@ pub(super) unsafe fn lbd_welcome_or_editor(
                 0.0
             }
     };
-    let welcome_region = crate::layout::Region::new(welcome_x, welcome_y, welcome_width, welcome_height);
+    let welcome_region =
+        crate::layout::Region::new(welcome_x, welcome_y, welcome_width, welcome_height);
     if !welcome_region.contains(mouse_x, mouse_y) {
         return None;
     }

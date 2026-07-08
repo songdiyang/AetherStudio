@@ -1,15 +1,15 @@
-use windows::core::Result;
+use std::mem::ManuallyDrop;
 use windows::core::Interface;
+use windows::core::Result;
+use windows::Foundation::Numerics::Matrix3x2;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
-use windows::Foundation::Numerics::Matrix3x2;
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Factory1, ID2D1HwndRenderTarget, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
     D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
     D2D1_LAYER_PARAMETERS, D2D1_PRESENT_OPTIONS, D2D1_RENDER_TARGET_PROPERTIES,
     D2D1_RENDER_TARGET_TYPE_HARDWARE,
 };
-use std::mem::ManuallyDrop;
 
 /// Direct2D工厂管理器
 pub struct D2DFactory {

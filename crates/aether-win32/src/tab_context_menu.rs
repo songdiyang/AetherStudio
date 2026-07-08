@@ -346,8 +346,8 @@ mod tests {
         assert_eq!(m.hit_test(m.x + 20.0, sep_y), None);
 
         // 分隔符之后的 CopyPath
-        let copy_y = m.y + m.top_padding + 4.0 * m.item_height + m.separator_height
-            + m.item_height / 2.0;
+        let copy_y =
+            m.y + m.top_padding + 4.0 * m.item_height + m.separator_height + m.item_height / 2.0;
         let idx = m.hit_test(m.x + 20.0, copy_y).unwrap();
         assert_eq!(m.items[idx].command, TabContextMenuCommand::CopyPath);
     }
@@ -360,7 +360,10 @@ mod tests {
         // 最后一项 RevealInExplorer 位于底部 padding 之前
         let last_y = m.y + m.menu_height() - m.bottom_padding - m.item_height / 2.0;
         let idx = m.hit_test(m.x + 20.0, last_y).unwrap();
-        assert_eq!(m.items[idx].command, TabContextMenuCommand::RevealInExplorer);
+        assert_eq!(
+            m.items[idx].command,
+            TabContextMenuCommand::RevealInExplorer
+        );
     }
 
     #[test]
@@ -402,12 +405,12 @@ mod tests {
 
     #[test]
     fn test_enabled_if_fluent() {
-        let item = TabContextMenuItem::new("复制路径", TabContextMenuCommand::CopyPath)
-            .enabled_if(false);
+        let item =
+            TabContextMenuItem::new("复制路径", TabContextMenuCommand::CopyPath).enabled_if(false);
         assert!(!item.enabled);
 
-        let item2 = TabContextMenuItem::new("复制路径", TabContextMenuCommand::CopyPath)
-            .enabled_if(true);
+        let item2 =
+            TabContextMenuItem::new("复制路径", TabContextMenuCommand::CopyPath).enabled_if(true);
         assert!(item2.enabled);
     }
 }

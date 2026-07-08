@@ -948,9 +948,12 @@ mod tests {
         for i in 0..IconKind::ALL.len() {
             for j in (i + 1)..IconKind::ALL.len() {
                 assert_ne!(
-                    IconKind::ALL[i], IconKind::ALL[j],
+                    IconKind::ALL[i],
+                    IconKind::ALL[j],
                     "ALL 数组中存在重复项：索引 {} 与 {} 均为 {:?}",
-                    i, j, IconKind::ALL[i]
+                    i,
+                    j,
+                    IconKind::ALL[i]
                 );
             }
         }

@@ -186,18 +186,14 @@ impl EditorState {
     pub(crate) fn note_save_succeeded(&mut self) {
         self.content.last_saved_buffer_version = self.content.buffer_version;
         self.content.auto_save_conflict = false;
-        self.content.last_known_mtime = self
-            .content
-            .file_path
-            .as_ref()
-            .and_then(|p| {
-                // 仅本地文件有 mtime；远程文件（remote: 前缀）跳过
-                if p.to_str().map_or(false, |s| s.starts_with("remote:")) {
-                    None
-                } else {
-                    std::fs::metadata(p).and_then(|m| m.modified()).ok()
-                }
-            });
+        self.content.last_known_mtime = self.content.file_path.as_ref().and_then(|p| {
+            // 仅本地文件有 mtime；远程文件（remote: 前缀）跳过
+            if p.to_str().map_or(false, |s| s.starts_with("remote:")) {
+                None
+            } else {
+                std::fs::metadata(p).and_then(|m| m.modified()).ok()
+            }
+        });
         self.stop_autosave_debounce();
     }
 
@@ -214,8 +210,8 @@ impl EditorState {
             Some(known) if current_mtime > known => {
                 if !self.content.auto_save_conflict {
                     self.content.auto_save_conflict = true;
-                    self.status_message = "文件已被外部修改，自动保存已暂停。按 Ctrl+S 覆盖或重新载入"
-                        .to_string();
+                    self.status_message =
+                        "文件已被外部修改，自动保存已暂停。按 Ctrl+S 覆盖或重新载入".to_string();
                 }
                 true
             }
