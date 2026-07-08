@@ -1286,7 +1286,7 @@ impl PieceTable {
         const PIECE_SIZE: usize = 32; // 8 * 4 bytes
 
         // 1) pieces_data 长度必须是 PIECE_SIZE 的整数倍，否则字节流已损坏
-        if state.pieces_data.len() % PIECE_SIZE != 0 {
+        if !state.pieces_data.len().is_multiple_of(PIECE_SIZE) {
             return Err(format!(
                 "pieces_data 长度 {} 不是 {} 的整数倍",
                 state.pieces_data.len(),

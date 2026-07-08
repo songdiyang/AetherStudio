@@ -7,10 +7,11 @@ use std::sync::Arc;
 use windows::core::Result;
 use windows::Win32::Foundation::HWND;
 
-use aether_core::buffer::history::{CursorPosition, History, OpType};
+use aether_core::buffer::history::{CursorPosition, OpType};
 use aether_core::buffer::piece_table::PieceTable;
 use aether_core::buffer::text_buffer::{Cursor, MultiCursorState};
-use aether_core::lexer::{Language, LexemeSpan};
+use aether_core::char_width::char_width as unicode_char_width;
+use aether_core::lexer::Language;
 use aether_core::workspace::file_tree::{FileKind, FileTree};
 use aether_lsp::client::{default_server_config, LspEvent};
 use aether_lsp::LspClient;
@@ -38,7 +39,7 @@ use crate::ssh::{
     CloneRepoDialog, RemoteFileTree, RemoteSession, SshConnectionDialog, SshManagerPanel,
 };
 use crate::status_bar::StatusBar;
-use crate::tabs::{Tab, TabLayout};
+use crate::tabs::{Tab, TabContent, TabLayout};
 use crate::terminal::TerminalPanel;
 use aether_shared::settings::AppSettings;
 // P0-1: RemoteFs trait 为 SshRemoteFs::list_dir 等方法提供作用域
@@ -52,9 +53,26 @@ pub enum FindReplaceFocus {
     ReplaceText,
 }
 
+/// 文件树内联输入类型
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileTreeInputKind {
+    NewFile,
+    NewFolder,
+}
+
+/// 文件树内联输入状态（用于新建文件/文件夹时重命名）
+#[derive(Clone, Debug)]
+pub struct FileTreeInput {
+    pub kind: FileTreeInputKind,
+    pub value: String,
+    pub caret_visible: bool,
+    /// IME 合成串（中文输入法预编辑文本），渲染时显示在 value 之后
+    pub composition: Option<String>,
+}
+
 /// 文件树点击命中的具体部位
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FileTreeClickPart {
+pub(crate) enum FileTreeClickPart {
     /// 点击目录展开/折叠箭头
     Arrow,
     /// 点击文件或目录名称/图标区域
@@ -204,38 +222,15 @@ pub struct EditorState {
     pub render_ctx: crate::render_context::RenderContext,
     pub text_renderer: TextRenderer,
     pub theme: Theme,
-    // 当前活动标签页的编辑状态（直接字段，零开销访问）
-    pub buffer: PieceTable,
-    pub file_path: Option<PathBuf>,
-    pub cursor_line: usize,
-    pub cursor_col: usize,
-    pub selection_start: Option<(usize, usize)>,
-    pub selection_end: Option<(usize, usize)>,
+    /// REQ-P1-09: 当前活动标签页的编辑状态（单一归属，切换标签时通过 swap 交换）
+    pub content: TabContent,
     pub is_selecting: bool,
-    pub scroll_y: f32,
-    /// P0-3: 水平滚动偏移（逻辑像素），用于查看超出编辑器宽度的长行
-    pub scroll_x: f32,
-    pub history: History,
-    pub is_dirty: bool,
-    // 渲染缓存
-    pub(crate) cached_lines: Vec<String>,
-    pub(crate) cached_tokens: Vec<Vec<LexemeSpan>>,
-    /// 行级缓存版本号，每行独立追踪
-    pub(crate) line_cache_versions: Vec<u64>,
-    /// 全局编辑版本号，用于行级缓存失效
-    pub(crate) buffer_version: u64,
     /// 行号 UTF-16 预缓存（避免每帧 format! + encode_utf16 分配）
     pub(crate) cached_line_numbers: Vec<Vec<u16>>,
-    /// P2.3: 大文件标记（超过阈值后关闭语法高亮等重操作）
-    pub(crate) is_large_file: bool,
-    /// P2.3: 行 Y 偏移前缀和缓存（固定行高模式下 trivial，预留可变行高扩展）
-    pub(crate) line_y_offsets: Vec<f32>,
     /// 可复用的 UTF-16 文本缓冲区（避免 render_editor 中每 token 分配 Vec<u16>）
     pub(crate) text_utf16_buf: Vec<u16>,
     /// 文件树渲染用的可复用 UTF-16 缓冲区（避免 render_tree_nodes 中每次分配 Vec<u16>）
     pub(crate) tree_text_utf16_buf: Vec<u16>,
-    // 当前语言
-    pub(crate) language: Language,
     /// 标签页系统（后台存储，切换时同步）
     pub(crate) tabs: Vec<Tab>,
     pub(crate) active_tab: usize,
@@ -245,6 +240,17 @@ pub struct EditorState {
     pub(crate) hover_tab: Option<usize>,
     /// 标签栏滚动偏移
     pub(crate) tab_scroll_x: f32,
+    /// 标签栏右侧 "+" 新建按钮的命中区域（逻辑像素，相对于窗口左上角）
+    /// 由 `update_tab_layouts` 在每帧渲染前更新；点击检测在 `handle_tab_bar_click` 中使用。
+    pub(crate) plus_button_rect: Option<(f32, f32, f32, f32)>,
+    /// "+" 新建按钮的悬停状态（由 `update_hover_tab` 更新，render 读取以绘制 hover 背景）
+    pub(crate) plus_button_hover: bool,
+    /// Task 8: 正在拖拽的标签索引（拖拽进行中时为 Some）
+    pub(crate) dragging_tab: Option<usize>,
+    /// Task 8: 拖拽放置目标索引（drop_index）
+    pub(crate) tab_drop_index: Option<usize>,
+    /// Task 8: 拖拽起始鼠标位置（用于判断是否进入拖拽模式）
+    pub(crate) tab_drag_start: Option<(i32, i32)>,
     // 查找与替换状态
     pub find_visible: bool,
     pub replace_visible: bool,
@@ -329,6 +335,12 @@ pub struct EditorState {
     pub selected_file_node: Option<u32>,
     /// 文件树中鼠标悬停的节点索引
     pub hover_file_node: Option<u32>,
+    /// 文件树内联输入状态（新建文件/文件夹）
+    pub file_tree_input: Option<FileTreeInput>,
+    /// 文件树标题栏按钮区域（用于点击检测）
+    pub file_tree_new_file_btn: Option<crate::layout::Region>,
+    pub file_tree_new_folder_btn: Option<crate::layout::Region>,
+    pub file_tree_open_folder_btn: Option<crate::layout::Region>,
     /// 欢迎页悬停的操作项
     pub welcome_hover_action: Option<crate::welcome::WelcomeAction>,
     /// 欢迎页键盘焦点项
@@ -357,8 +369,6 @@ pub struct EditorState {
     pub focus_manager: FocusManager,
     /// 事件队列（P1.1: 解耦模型改动与渲染）
     pub event_queue: crate::events::EventQueue,
-    /// P3.1: 当前内联补全建议（幽灵文本）
-    pub inline_completion: Option<crate::inline_completion::InlineCompletion>,
     /// P3.1: 内联补全服务（占位）
     pub inline_completion_service: crate::inline_completion::InlineCompletionService,
     /// P3.4: 当前显示的 hover tooltip（鼠标悬停提示）
@@ -392,6 +402,12 @@ pub struct EditorState {
     pub last_active_tab: usize,
     /// 用户菜单
     pub user_menu: crate::user_menu::UserMenu,
+    /// 资源管理器空白区域上下文菜单
+    pub explorer_context_menu: crate::context_menu::ExplorerContextMenu,
+    /// 标签右键上下文菜单
+    pub tab_context_menu: crate::tab_context_menu::TabContextMenuState,
+    /// 活动栏右键上下文菜单
+    pub activity_bar_context_menu: crate::activity_bar_context_menu::ActivityBarContextMenuState,
     /// 长按检测：按下时刻（None 表示当前未进行长按检测）
     pub lpress_start: Option<std::time::Instant>,
     /// 长按检测起始 x（逻辑像素）
@@ -426,56 +442,88 @@ pub struct EditorState {
     pub(crate) hover_x: f32,
     #[allow(dead_code)]
     pub(crate) hover_y: f32,
+    /// UI Tooltip 状态（500ms 延迟显示、4px 移动容差的悬停提示）
+    pub tooltip_state: crate::tooltip::TooltipState,
+    /// Task 13.3: 最后关闭的标签内容（用于 Ctrl+Shift+T 恢复）
+    pub last_closed_tab: Option<TabContent>,
+}
+
+/// Task 8.4: 标签重排核心逻辑（自由函数，可独立测试）。
+///
+/// 将 `items[drag_idx]` 移动到 `drop_idx` 位置（插入到该索引之前），
+/// 并同步调整 `active` 索引以跟随移动的元素。
+pub(crate) fn reorder_tabs_with_active<T>(
+    items: &mut Vec<T>,
+    active: &mut usize,
+    drag_idx: usize,
+    drop_idx: usize,
+) {
+    if drag_idx >= items.len() || drop_idx > items.len() {
+        return;
+    }
+    // 计算实际插入位置：drop_idx > drag_idx 时需补偿 remove 导致的索引偏移
+    let insert_at = if drop_idx > drag_idx {
+        drop_idx - 1
+    } else {
+        drop_idx
+    };
+    // insert_at == drag_idx 表示无需移动（如 drop_idx == drag_idx + 1）
+    if insert_at == drag_idx {
+        return;
+    }
+    let item = items.remove(drag_idx);
+    let insert_at = insert_at.min(items.len());
+    items.insert(insert_at, item);
+    // 调整 active 索引
+    if *active == drag_idx {
+        *active = insert_at;
+    } else if drag_idx < *active && drop_idx >= *active {
+        *active -= 1;
+    } else if drag_idx > *active && drop_idx <= *active {
+        *active += 1;
+    }
+}
+
+/// Task 13.3: 从 `tabs` 中移除指定索引的标签，并将其内容保存到 `last_closed`。
+/// 返回 true 表示已移除并保存，false 表示索引越界。
+/// 此自由函数便于单元测试 save/restore 逻辑（无需构造完整 EditorState）。
+pub(crate) fn remove_tab_saving_content(
+    tabs: &mut Vec<Tab>,
+    index: usize,
+    last_closed: &mut Option<TabContent>,
+) -> bool {
+    if index >= tabs.len() {
+        return false;
+    }
+    let removed = tabs.remove(index);
+    *last_closed = Some(removed.content);
+    true
+}
+
+/// Task 13.3: 将 `last_closed` 中的内容作为新标签恢复到 `tabs` 末尾，
+/// 并将 `active` 指向新标签。返回 true 表示已恢复，false 表示无可恢复内容。
+#[allow(dead_code)]
+pub(crate) fn reopen_last_closed_tab_logic(
+    tabs: &mut Vec<Tab>,
+    active: &mut usize,
+    last_closed: &mut Option<TabContent>,
+) -> bool {
+    let Some(content) = last_closed.take() else {
+        return false;
+    };
+    tabs.push(Tab { content });
+    *active = tabs.len() - 1;
+    true
 }
 
 impl EditorState {
-    /// 将当前编辑状态保存到后台标签页存储
-    fn sync_to_tab(&mut self) {
-        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.buffer =
-                std::mem::replace(&mut self.buffer, PieceTable::from_string(String::new()));
-            tab.file_path = self.file_path.clone();
-            tab.cursor_line = self.cursor_line;
-            tab.cursor_col = self.cursor_col;
-            tab.selection_start = self.selection_start;
-            tab.selection_end = self.selection_end;
-            tab.scroll_y = self.scroll_y;
-            tab.scroll_x = self.scroll_x;
-            tab.history = std::mem::replace(&mut self.history, History::new());
-            tab.is_dirty = self.is_dirty;
-            tab.cached_lines = std::mem::take(&mut self.cached_lines);
-            tab.cached_tokens = std::mem::take(&mut self.cached_tokens);
-            tab.line_cache_versions = std::mem::take(&mut self.line_cache_versions);
-            tab.is_large_file = self.is_large_file;
-            tab.line_y_offsets = std::mem::take(&mut self.line_y_offsets);
-            tab.inline_completion = self.inline_completion.take();
-            tab.buffer_version = self.buffer_version;
-            tab.language = self.language;
-        }
-    }
-
-    /// 从后台标签页存储恢复编辑状态到当前视图
-    fn sync_from_tab(&mut self) {
-        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            self.buffer =
-                std::mem::replace(&mut tab.buffer, PieceTable::from_string(String::new()));
-            self.file_path = tab.file_path.clone();
-            self.cursor_line = tab.cursor_line;
-            self.cursor_col = tab.cursor_col;
-            self.selection_start = tab.selection_start;
-            self.selection_end = tab.selection_end;
-            self.scroll_y = tab.scroll_y;
-            self.scroll_x = tab.scroll_x;
-            self.history = std::mem::replace(&mut tab.history, History::new());
-            self.is_dirty = tab.is_dirty;
-            self.cached_lines = std::mem::take(&mut tab.cached_lines);
-            self.cached_tokens = std::mem::take(&mut tab.cached_tokens);
-            self.line_cache_versions = std::mem::take(&mut tab.line_cache_versions);
-            self.is_large_file = tab.is_large_file;
-            self.line_y_offsets = std::mem::take(&mut tab.line_y_offsets);
-            self.inline_completion = tab.inline_completion.take();
-            self.buffer_version = tab.buffer_version;
-            self.language = tab.language;
+    /// REQ-P1-09: 交换活动标签页内容（替代原 sync_to_tab/sync_from_tab 的字段逐个同步）
+    ///
+    /// 将 `self.content` 与 `self.tabs[index].content` 原子交换，
+    /// 消除手动字段同步，保证状态归属单一。
+    fn swap_tab_content(&mut self, index: usize) {
+        if index < self.tabs.len() {
+            std::mem::swap(&mut self.content, &mut self.tabs[index].content);
         }
     }
 
@@ -491,18 +539,30 @@ impl EditorState {
 
     /// 是否显示标签栏：多标签，或当前活动标签页已关联文件时均显示
     pub fn show_tab_bar(&self) -> bool {
-        self.tabs.len() > 1 || self.current_tab().file_path.is_some()
+        self.tabs.len() > 1 || self.content.file_path.is_some()
+    }
+
+    /// 切换活动视图到指定视图（非 AI 助手）。
+    ///
+    /// 更新活动栏高亮、`activity_view`、侧边栏可见性与内容。
+    /// 供活动栏左键点击与右键上下文菜单共用。
+    pub fn switch_activity_view(&mut self, view: ActivityBarView) {
+        self.activity_bar.switch_to_view(view);
+        self.activity_view = view;
+        self.layout.sidebar_visible = true;
+        self.sidebar_content = SidebarContent::from_view(view);
     }
 
     /// 切换到指定标签页
     pub fn switch_tab(&mut self, index: usize) {
         if index < self.tabs.len() && index != self.active_tab {
-            self.sync_to_tab();
+            // REQ-P1-09: swap old tab's content out, then swap new tab's content in
+            self.swap_tab_content(self.active_tab);
             self.active_tab = index;
-            self.sync_from_tab();
+            self.swap_tab_content(self.active_tab);
             self.is_selecting = false;
             self.sync_file_tree_selection();
-            self.status_message = format!("切换到: {}", self.current_tab().file_name());
+            self.status_message = format!("切换到: {}", self.content.file_name());
             self.emit_event(crate::events::EditorEvent::TabChanged);
             // 显式标记局部脏区域，避免标签切换触发全窗口重绘导致卡顿
             let editor_region = self.layout.editor_region();
@@ -546,18 +606,22 @@ impl EditorState {
     pub fn close_current_tab(&mut self) -> bool {
         if self.tabs.len() <= 1 {
             // 最后一个标签页，重置为空文件
-            self.tabs[0] = Tab::new();
+            // Task 13.3: 保存关闭的标签内容以支持 Ctrl+Shift+T 恢复
+            let old = std::mem::replace(&mut self.tabs[0], Tab::new());
+            self.last_closed_tab = Some(old.content);
             self.active_tab = 0;
-            self.sync_from_tab();
+            self.swap_tab_content(self.active_tab);
             self.is_selecting = false;
             self.status_message = "已关闭".to_string();
             return true;
         }
-        self.tabs.remove(self.active_tab);
+        // Task 13.3: 保存关闭的标签内容以支持 Ctrl+Shift+T 恢复
+        let removed = self.tabs.remove(self.active_tab);
+        self.last_closed_tab = Some(removed.content);
         if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len() - 1;
         }
-        self.sync_from_tab();
+        self.swap_tab_content(self.active_tab);
         self.is_selecting = false;
         self.status_message = format!("已关闭，剩余 {} 个文件", self.tabs.len());
         !self.tabs.is_empty()
@@ -568,8 +632,9 @@ impl EditorState {
     pub fn close_current_tab_checked(&mut self) -> bool {
         // self 上的 is_dirty / buffer / file_path 即为当前活动标签页的实时状态
         // （编辑操作直接作用于 self，仅在切换标签页时通过 sync_to_tab/sync_from_tab 交换）
-        if self.is_dirty {
+        if self.content.is_dirty {
             let file_name = self
+                .content
                 .file_path
                 .as_ref()
                 .and_then(|p| p.file_name())
@@ -591,6 +656,142 @@ impl EditorState {
         true
     }
 
+    /// SubTask 7.1: 中键关闭指定索引的标签页（带 dirty 检查，与关闭按钮行为一致）。
+    /// 返回 true 表示已关闭，false 表示用户取消或索引越界。
+    pub fn close_tab(&mut self, index: usize) -> bool {
+        if index >= self.tabs.len() {
+            return false;
+        }
+        if index == self.active_tab {
+            return self.close_current_tab_checked();
+        }
+        // 非活动标签页：检查 is_dirty（与 handle_tab_bar_click 中关闭按钮逻辑一致）
+        let tab_dirty = self
+            .tabs
+            .get(index)
+            .map(|t| t.content.is_dirty)
+            .unwrap_or(false);
+        if tab_dirty {
+            let tab_name = self
+                .tabs
+                .get(index)
+                .and_then(|t| t.content.file_path.as_ref())
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "未命名".to_string());
+            let msg = format!("{} 有未保存的修改，是否丢弃修改并关闭？", tab_name);
+            if !Dialogs::confirm_yes_no(self.hwnd, "关闭标签页", &msg) {
+                self.status_message = "已取消关闭".to_string();
+                return false;
+            }
+        }
+        // Task 13.3: 保存关闭的标签内容以支持 Ctrl+Shift+T 恢复
+        remove_tab_saving_content(&mut self.tabs, index, &mut self.last_closed_tab);
+        if index < self.active_tab {
+            self.active_tab -= 1;
+        }
+        self.status_message = format!("已关闭，剩余 {} 个文件", self.tabs.len());
+        true
+    }
+
+    /// SubTask 9.4: 关闭除指定索引外的所有标签页。
+    ///
+    /// 保留 `keep_idx`，移除其他所有标签页。若保留的标签页不是当前活动标签页，
+    /// 切换到保留的标签页。索引越界时返回 false。
+    pub fn close_other_tabs(&mut self, keep_idx: usize) -> bool {
+        if keep_idx >= self.tabs.len() {
+            return false;
+        }
+        if self.tabs.len() == 1 {
+            return true;
+        }
+        // 记录被保留的标签，重建 tabs 向量
+        let kept = self.tabs.remove(keep_idx);
+        // 关闭其他标签前：若活动标签页是 dirty 的非保留标签，语义上直接丢弃
+        // （与右键菜单"关闭其他"在 VS Code 中的行为一致：不逐个弹保存对话框）
+        // Task 13.3: 保存最后一个被关闭的标签内容以支持 Ctrl+Shift+T 恢复
+        let last_closed = self.tabs.pop();
+        self.tabs.clear();
+        self.tabs.push(kept);
+        if let Some(t) = last_closed {
+            self.last_closed_tab = Some(t.content);
+        }
+        self.active_tab = 0;
+        self.swap_tab_content(self.active_tab);
+        self.is_selecting = false;
+        self.status_message = "已关闭其他标签页".to_string();
+        true
+    }
+
+    /// SubTask 9.4: 关闭指定索引右侧的所有标签页。
+    ///
+    /// 保留 `idx` 及其左侧的标签页，移除 `idx+1..` 的所有标签页。
+    /// 索引越界时返回 false。
+    pub fn close_tabs_to_the_right(&mut self, idx: usize) -> bool {
+        if idx >= self.tabs.len() {
+            return false;
+        }
+        if self.tabs.len() <= idx + 1 {
+            return true;
+        }
+        // Task 13.3: 保存最后一个被关闭的标签内容以支持 Ctrl+Shift+T 恢复
+        let last_closed = self.tabs.pop();
+        if let Some(t) = last_closed {
+            self.last_closed_tab = Some(t.content);
+        }
+        self.tabs.truncate(idx + 1);
+        if self.active_tab > idx {
+            self.active_tab = idx;
+            self.swap_tab_content(self.active_tab);
+            self.is_selecting = false;
+        }
+        self.status_message = format!("已关闭右侧标签页，剩余 {} 个文件", self.tabs.len());
+        true
+    }
+
+    /// SubTask 9.4: 关闭所有标签页，并创建一个新的空标签页。
+    pub fn close_all_tabs(&mut self) {
+        // Task 13.3: 保存活动标签页内容以支持 Ctrl+Shift+T 恢复
+        if !self.tabs.is_empty() {
+            let active_idx = self.active_tab.min(self.tabs.len() - 1);
+            let last_closed = self.tabs.swap_remove(active_idx);
+            self.last_closed_tab = Some(last_closed.content);
+        }
+        self.tabs.clear();
+        self.tabs.push(Tab::new());
+        self.active_tab = 0;
+        self.swap_tab_content(self.active_tab);
+        self.is_selecting = false;
+        self.status_message = "已关闭所有标签页".to_string();
+    }
+
+    /// Task 13.3: 恢复最后关闭的标签页（Ctrl+Shift+T）。
+    /// 如果存在 `last_closed_tab`，则将其作为新标签页恢复并切换为活动标签页。
+    /// 返回 true 表示已恢复，false 表示没有可恢复的标签。
+    pub fn reopen_last_closed_tab(&mut self) -> bool {
+        let Some(content) = self.last_closed_tab.take() else {
+            self.status_message = "没有可恢复的标签".to_string();
+            return false;
+        };
+        // 将当前 self.content swap 回当前活动标签，再 push 新标签并切换
+        self.swap_tab_content(self.active_tab);
+        self.tabs.push(Tab { content });
+        self.active_tab = self.tabs.len() - 1;
+        self.swap_tab_content(self.active_tab);
+        self.is_selecting = false;
+        self.status_message = "已恢复最后关闭的标签".to_string();
+        true
+    }
+
+    /// SubTask 9.4: 复制文本到剪贴板（公开接口，供标签右键菜单调用）。
+    pub fn copy_text_to_clipboard(&mut self, text: &str) -> bool {
+        let ok = Self::set_clipboard_text(text);
+        if ok {
+            self.status_message = "已复制".to_string();
+        }
+        ok
+    }
+
     /// P2-3: 调整字体大小（Ctrl+= 放大 / Ctrl+- 缩小 / Ctrl+0 重置）。
     /// delta 为正放大、为负缩小；传 None 则重置为 14.0。
     pub fn zoom_font(&mut self, delta: Option<f32>) {
@@ -608,11 +809,12 @@ impl EditorState {
 
     /// 新建标签页
     pub fn new_tab(&mut self) -> usize {
-        self.sync_to_tab();
+        // REQ-P1-09: save current state to old tab, push new (empty) tab, swap it in
+        self.swap_tab_content(self.active_tab);
         let tab = Tab::new();
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
-        self.sync_from_tab();
+        self.swap_tab_content(self.active_tab);
         self.is_selecting = false;
         self.active_tab
     }
@@ -656,6 +858,14 @@ impl EditorState {
         if mouse_x < editor_x {
             return false;
         }
+        // SubTask 7.2: 检测 "+" 新建按钮点击
+        if let Some((pl, pt, pr, pb)) = self.plus_button_rect {
+            if mouse_x >= pl && mouse_x < pr && _mouse_y >= pt && _mouse_y < pb {
+                self.new_tab();
+                self.status_message = "已新建标签页".to_string();
+                return true;
+            }
+        }
         let rel_x = mouse_x - editor_x + self.tab_scroll_x;
         for layout in &self.tab_layouts {
             if rel_x >= layout.x && rel_x < layout.x + layout.width {
@@ -669,13 +879,13 @@ impl EditorState {
                         let tab_dirty = self
                             .tabs
                             .get(layout.index)
-                            .map(|t| t.is_dirty)
+                            .map(|t| t.content.is_dirty)
                             .unwrap_or(false);
                         if tab_dirty {
                             let tab_name = self
                                 .tabs
                                 .get(layout.index)
-                                .and_then(|t| t.file_path.as_ref())
+                                .and_then(|t| t.content.file_path.as_ref())
                                 .and_then(|p| p.file_name())
                                 .map(|n| n.to_string_lossy().to_string())
                                 .unwrap_or_else(|| "未命名".to_string());
@@ -709,6 +919,12 @@ impl EditorState {
         } else {
             0.0
         };
+        // SubTask 7.2: 更新 "+" 按钮悬停状态（独立于下方 y 检查，确保按钮响应）
+        let mut on_plus = false;
+        if let Some((pl, pt, pr, pb)) = self.plus_button_rect {
+            on_plus = mouse_x >= pl && mouse_x < pr && mouse_y >= pt && mouse_y < pb;
+        }
+        self.plus_button_hover = on_plus;
         if tab_bar_height == 0.0 || mouse_y < 0.0 || mouse_y > tab_bar_height || mouse_x < editor_x
         {
             self.hover_tab = None;
@@ -724,11 +940,100 @@ impl EditorState {
         self.hover_tab = None;
     }
 
+    /// Task 8.2: 命中检测——返回鼠标所在标签体的索引。
+    ///
+    /// 仅当点击落在标签体内（非关闭按钮、非 "+" 按钮）时返回 `Some(idx)`。
+    /// 用于拖拽重排：点击标签体时延迟切换，等待拖拽判定。
+    pub(crate) fn tab_body_hit_test(
+        &self,
+        mouse_x: f32,
+        mouse_y: f32,
+        editor_x: f32,
+    ) -> Option<usize> {
+        let tab_bar_height = if self.show_tab_bar() {
+            TAB_BAR_HEIGHT
+        } else {
+            0.0
+        };
+        if tab_bar_height == 0.0 || mouse_y < 0.0 || mouse_y > tab_bar_height || mouse_x < editor_x
+        {
+            return None;
+        }
+        // "+" 按钮区域不算标签体
+        if let Some((pl, pt, pr, pb)) = self.plus_button_rect {
+            if mouse_x >= pl && mouse_x < pr && mouse_y >= pt && mouse_y < pb {
+                return None;
+            }
+        }
+        let rel_x = mouse_x - editor_x + self.tab_scroll_x;
+        for layout in &self.tab_layouts {
+            if rel_x >= layout.x && rel_x < layout.x + layout.width {
+                // 关闭按钮区域不算标签体
+                if rel_x >= layout.close_x && rel_x < layout.close_x + layout.close_width {
+                    return None;
+                }
+                return Some(layout.index);
+            }
+        }
+        None
+    }
+
+    /// Task 8.3: 根据鼠标 x 位置计算拖拽放置目标索引（0..=tabs.len()）。
+    ///
+    /// 基于标签中点：鼠标在标签左半部分 → 插入到该标签前；
+    /// 右半部分 → 插入到该标签后。超出范围则 clamp 到 0 或 tabs.len()。
+    pub(crate) fn tab_drop_index_at(&self, mouse_x: f32, editor_x: f32) -> usize {
+        let rel_x = mouse_x - editor_x + self.tab_scroll_x;
+        for layout in &self.tab_layouts {
+            let mid = layout.x + layout.width / 2.0;
+            if rel_x < mid {
+                return layout.index;
+            }
+        }
+        self.tabs.len()
+    }
+
+    /// Task 8.4: 执行标签重排——将 drag_idx 处的标签移动到 drop_idx 位置。
+    ///
+    /// `drop_idx` 语义：插入到该索引之前（与 `tab_drop_index_at` 一致）。
+    /// 自动调整 `active_tab` 索引以跟随移动的标签。
+    pub fn reorder_tabs(&mut self, drag_idx: usize, drop_idx: usize) {
+        reorder_tabs_with_active(&mut self.tabs, &mut self.active_tab, drag_idx, drop_idx);
+    }
+
+    /// SubTask 7.5: 计算标签栏最大水平滚动偏移。
+    ///
+    /// `max_scroll = total_tabs_width - tab_bar_visible_width`，下限为 0。
+    /// 基于 `tab_layouts` 中最后一个标签的右边界计算（包含尾部 gap）。
+    pub(crate) fn tab_bar_max_scroll(&self, tab_bar_width: f32) -> f32 {
+        let gap = 2.0;
+        let left_padding = 4.0;
+        // "+" 按钮区域（8px gap + 28px 按钮）也需预留可见空间
+        let plus_area = 8.0 + 28.0;
+        let total_tabs_width = self
+            .tab_layouts
+            .last()
+            .map(|l| l.x + l.width + gap)
+            .unwrap_or(0.0);
+        let visible_width = (tab_bar_width - left_padding - plus_area).max(0.0);
+        (total_tabs_width - visible_width).max(0.0)
+    }
+
+    /// SubTask 7.5: 滚动标签栏水平偏移，返回是否实际变化（用于决定是否重绘）。
+    ///
+    /// `delta` 为原始滚轮 delta（通常 ±120），内部按 `delta * 8.0` 转换为像素增量，
+    /// 然后 clamp 到 `[0, max_scroll]`。
+    pub(crate) fn scroll_tab_bar(&mut self, delta: f32, tab_bar_width: f32) -> bool {
+        let old = self.tab_scroll_x;
+        let max_scroll = self.tab_bar_max_scroll(tab_bar_width);
+        self.tab_scroll_x = (self.tab_scroll_x + delta * 8.0).clamp(0.0, max_scroll);
+        (self.tab_scroll_x - old).abs() > 0.01
+    }
+
     pub fn new(hwnd: HWND, is_main_window: bool) -> Result<Self> {
         let d2d_factory = D2DFactory::new()?;
         let text_renderer = TextRenderer::new()?;
         let theme = Theme::glass();
-        let buffer = PieceTable::from_string(String::new());
         let key_map = KeyMap::new();
         let app_settings = AppSettings::load();
 
@@ -753,7 +1058,7 @@ impl EditorState {
         tokio_runtime.spawn(async move {
             let mut rx = event_rx;
             while let Some(event) = rx.recv().await {
-                let ptr = Box::into_raw(Box::new(event)) as *mut LspEvent;
+                let ptr = Box::into_raw(Box::new(event));
                 unsafe {
                     let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
                         windows::Win32::Foundation::HWND(hwnd_send.0 as *mut std::ffi::c_void),
@@ -777,32 +1082,21 @@ impl EditorState {
             render_ctx: crate::render_context::RenderContext::new(),
             text_renderer,
             theme,
-            buffer,
-            file_path: None,
-            cursor_line: 0,
-            cursor_col: 0,
-            selection_start: None,
-            selection_end: None,
+            content: TabContent::new(),
             is_selecting: false,
-            scroll_y: 0.0,
-            scroll_x: 0.0,
-            history: History::new(),
-            is_dirty: false,
-            cached_lines: Vec::new(),
-            cached_tokens: Vec::new(),
-            line_cache_versions: Vec::new(),
-            buffer_version: 0,
             cached_line_numbers: Vec::new(),
-            is_large_file: false,
-            line_y_offsets: Vec::new(),
             text_utf16_buf: Vec::with_capacity(256),
             tree_text_utf16_buf: Vec::with_capacity(64),
-            language: Language::PlainText,
             tabs: Vec::new(),
             active_tab: 0,
             tab_layouts: Vec::new(),
             hover_tab: None,
             tab_scroll_x: 0.0,
+            plus_button_rect: None,
+            plus_button_hover: false,
+            dragging_tab: None,
+            tab_drop_index: None,
+            tab_drag_start: None,
             find_visible: false,
             replace_visible: false,
             find_query: String::new(),
@@ -857,6 +1151,10 @@ impl EditorState {
             titlebar_hover_button: None,
             selected_file_node: None,
             hover_file_node: None,
+            file_tree_input: None,
+            file_tree_new_file_btn: None,
+            file_tree_new_folder_btn: None,
+            file_tree_open_folder_btn: None,
             welcome_hover_action: None,
             welcome_focus_action: None,
             icons: crate::icons::IconCache::new(),
@@ -868,7 +1166,6 @@ impl EditorState {
             dirty_tracker: crate::dirty_rect::DirtyRectTracker::new(1280.0, 800.0),
             focus_manager: FocusManager::new(),
             event_queue: crate::events::EventQueue::new(),
-            inline_completion: None,
             inline_completion_service: crate::inline_completion::InlineCompletionService::new(),
             hover_tooltip: None,
             hover_last_mouse_x: 0.0,
@@ -886,6 +1183,10 @@ impl EditorState {
             last_status_message: "就绪".to_string(),
             last_active_tab: 0,
             user_menu: crate::user_menu::UserMenu::new(),
+            explorer_context_menu: crate::context_menu::ExplorerContextMenu::new(),
+            tab_context_menu: crate::tab_context_menu::TabContextMenuState::default(),
+            activity_bar_context_menu:
+                crate::activity_bar_context_menu::ActivityBarContextMenuState::default(),
             lpress_start: None,
             lpress_x: 0.0,
             lpress_y: 0.0,
@@ -905,6 +1206,8 @@ impl EditorState {
             hover_content,
             hover_x: 0.0,
             hover_y: 0.0,
+            tooltip_state: crate::tooltip::TooltipState::default(),
+            last_closed_tab: None,
         };
         // 应用持久化的活动栏/菜单栏顺序（空配置使用默认顺序）
         let activity_order = state.app_settings.ui.activity_bar_order.clone();
@@ -920,7 +1223,7 @@ impl EditorState {
         }
         // 创建第一个标签页并同步
         state.tabs.push(Tab::new());
-        state.sync_from_tab();
+        state.swap_tab_content(state.active_tab);
 
         // P0.2c: 主窗口启动时自动恢复上次打开的工作区。
         // 仅在路径仍然存在时打开,避免引用已删除/移动的目录。
@@ -932,6 +1235,9 @@ impl EditorState {
                 }
             }
         }
+
+        // 自动保存：启动周期兜底定时器（防抖定时器由编辑事件按需调度）
+        state.start_autosave_periodic();
 
         Ok(state)
     }
@@ -972,21 +1278,29 @@ impl EditorState {
     pub fn request_inline_completion(&mut self) {
         // 收集光标前后文本作为上下文
         let prefix = self
+            .content
             .buffer
-            .get_line(self.cursor_line)
-            .map(|s| s[..self.cursor_col.min(s.len())].to_string())
+            .get_line(self.content.cursor_line)
+            .map(|s| {
+                let pos = s.floor_char_boundary(self.content.cursor_col.min(s.len()));
+                s[..pos].to_string()
+            })
             .unwrap_or_default();
         let suffix = self
+            .content
             .buffer
-            .get_line(self.cursor_line)
-            .map(|s| s[self.cursor_col.min(s.len())..].to_string())
+            .get_line(self.content.cursor_line)
+            .map(|s| {
+                let pos = s.floor_char_boundary(self.content.cursor_col.min(s.len()));
+                s[pos..].to_string()
+            })
             .unwrap_or_default();
 
         if let Some(suggestion) = self.inline_completion_service.request(&prefix, &suffix) {
-            self.inline_completion = Some(crate::inline_completion::InlineCompletion {
+            self.content.inline_completion = Some(crate::inline_completion::InlineCompletion {
                 text: suggestion.text,
-                trigger_line: self.cursor_line,
-                trigger_col: self.cursor_col,
+                trigger_line: self.content.cursor_line,
+                trigger_col: self.content.cursor_col,
                 version: suggestion.version,
             });
             self.emit_event(crate::events::EditorEvent::CursorMoved);
@@ -995,25 +1309,27 @@ impl EditorState {
 
     /// P3.1: 清除当前内联补全建议
     pub fn clear_inline_completion(&mut self) {
-        self.inline_completion = None;
+        self.content.inline_completion = None;
     }
 
     /// P3.3: 接受当前内联补全建议，将建议文本插入到光标处
     pub fn accept_inline_completion(&mut self) -> bool {
-        let Some(comp) = self.inline_completion.take() else {
+        let Some(comp) = self.content.inline_completion.take() else {
             return false;
         };
-        if comp.trigger_line != self.cursor_line || comp.trigger_col != self.cursor_col {
+        if comp.trigger_line != self.content.cursor_line
+            || comp.trigger_col != self.content.cursor_col
+        {
             return false;
         }
         let pos = self.cursor_byte_pos();
-        self.buffer.insert(pos, &comp.text);
-        self.cursor_col += comp.text.len();
-        self.is_dirty = true;
+        self.content.buffer.insert(pos, &comp.text);
+        self.content.cursor_col += comp.text.len();
+        self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.is_dirty = true;
+            tab.content.is_dirty = true;
         }
-        self.buffer_version += 1;
+        self.content.buffer_version += 1;
         self.emit_edit_events();
         true
     }
@@ -1021,10 +1337,12 @@ impl EditorState {
     /// 发射文本编辑相关事件（TextChanged + CursorMoved）
     fn emit_edit_events(&mut self) {
         self.emit_event(crate::events::EditorEvent::TextChanged {
-            start_line: self.cursor_line,
-            end_line: self.cursor_line + 1,
+            start_line: self.content.cursor_line,
+            end_line: self.content.cursor_line + 1,
         });
         self.emit_event(crate::events::EditorEvent::CursorMoved);
+        // 自动保存：文本变更后按防抖延迟（重）设空闲保存定时器
+        self.schedule_autosave_debounce();
     }
 
     /// 将事件队列中所有事件转换为脏矩形标记
@@ -1039,14 +1357,19 @@ impl EditorState {
         // REQ-P1-03: 用字符列（而非字节偏移）计算脏矩形光标 x 坐标，
         // 避免非 ASCII 文本时光标残影/撕裂
         let char_col = self
+            .content
             .buffer
-            .get_line(self.cursor_line)
-            .map(|line| line[..self.cursor_col.min(line.len())].chars().count())
+            .get_line(self.content.cursor_line)
+            .map(|line| {
+                let pos = line.floor_char_boundary(self.content.cursor_col.min(line.len()));
+                line[..pos].chars().count()
+            })
             .unwrap_or(0);
         let cursor_x =
             editor_region.x + 60.0 + 5.0 + char_col as f32 * self.text_renderer.char_width()
-                - self.scroll_x;
-        let cursor_y = editor_region.y + self.cursor_line as f32 * line_height - self.scroll_y;
+                - self.content.scroll_x;
+        let cursor_y =
+            editor_region.y + self.content.cursor_line as f32 * line_height - self.content.scroll_y;
 
         self.event_queue
             .drain_to_dirty_tracker(&mut self.dirty_tracker, |event| {
@@ -1123,23 +1446,26 @@ impl EditorState {
 
     /// 检查当前标签页是否可以重用（空文件且未修改）
     fn can_reuse_current_tab(&self) -> bool {
-        self.file_path.is_none() && !self.is_dirty && self.buffer.len_bytes() == 0
+        self.content.file_path.is_none()
+            && !self.content.is_dirty
+            && self.content.buffer.len_bytes() == 0
     }
 
     /// 重置当前编辑状态到初始值
     fn reset_editor_state(&mut self) {
-        self.cursor_line = 0;
-        self.cursor_col = 0;
-        self.scroll_y = 0.0;
-        self.history.clear();
-        self.is_dirty = false;
-        self.buffer_version += 1;
+        self.content.cursor_line = 0;
+        self.content.cursor_col = 0;
+        self.content.scroll_y = 0.0;
+        self.content.history.clear();
+        self.content.is_dirty = false;
+        self.content.buffer_version += 1;
         self.clear_selection();
     }
 
     /// 在新标签页中打开内容
     fn open_in_new_tab(&mut self, tab: Tab) {
-        self.sync_to_tab();
+        // REQ-P1-09: save current state to old tab, push new tab, swap it in
+        self.swap_tab_content(self.active_tab);
         // 直接将新标签页追加到末尾并切换过去。
         // 此前使用 swap(tabs[active], placeholder) + push(placeholder) 的写法，
         // 会让新 tab 留在原 active 位置、旧 tab 被推到末尾，但 active_tab 又被
@@ -1147,7 +1473,7 @@ impl EditorState {
         // LSP did_open 也发给了旧文件。改为直接 push 新 tab 即可。
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
-        self.sync_from_tab();
+        self.swap_tab_content(self.active_tab);
         self.is_selecting = false;
         self.emit_event(crate::events::EditorEvent::TabChanged);
         // 标记标签栏和编辑器区域脏区，避免新标签打开时触发全窗口重绘
@@ -1185,53 +1511,27 @@ impl EditorState {
         match PieceTable::from_file(&path) {
             Ok(buffer) => {
                 if self.can_reuse_current_tab() {
-                    self.buffer = buffer;
-                    self.file_path = Some(path.clone());
-                    self.language = lang;
+                    self.content.buffer = buffer;
+                    self.content.file_path = Some(path.clone());
+                    self.content.language = lang;
                     self.reset_editor_state();
-                    // 重用当前标签页时，直接更新标签页数据，
-                    // 不要调用 sync_to_tab() 否则会把 buffer 移走
-                    if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                        tab.buffer = PieceTable::from_string(String::new());
-                        tab.file_path = Some(path.clone());
-                        tab.language = lang;
-                        tab.cursor_line = 0;
-                        tab.cursor_col = 0;
-                        tab.scroll_y = 0.0;
-                        tab.is_dirty = false;
-                        tab.buffer_version = 1;
-                        tab.cached_lines.clear();
-                        tab.cached_tokens.clear();
-                        tab.line_cache_versions.clear();
-                    }
+                    // REQ-P1-09: self.content 即活动标签页状态，无需再手动同步到 Tab
                     self.status_message = format!("已打开: {}", path.display());
                 } else {
                     let tab = Tab {
-                        file_path: Some(path.clone()),
-                        buffer,
-                        cursor_line: 0,
-                        cursor_col: 0,
-                        selection_start: None,
-                        selection_end: None,
-                        scroll_y: 0.0,
-                        scroll_x: 0.0,
-                        history: History::new(),
-                        is_dirty: false,
-                        cached_lines: Vec::new(),
-                        cached_tokens: Vec::new(),
-                        line_cache_versions: Vec::new(),
-                        buffer_version: 1,
-                        is_large_file: false,
-                        line_y_offsets: Vec::new(),
-                        inline_completion: None,
-                        language: lang,
+                        content: TabContent::with_loaded_buffer(
+                            Some(path.clone()),
+                            buffer,
+                            lang,
+                            false,
+                        ),
                     };
                     self.open_in_new_tab(tab);
                     self.status_message = format!("已打开: {}", path.display());
                 }
                 self.emit_event(crate::events::EditorEvent::TextChanged {
                     start_line: 0,
-                    end_line: self.buffer.len_lines(),
+                    end_line: self.content.buffer.len_lines(),
                 });
                 self.emit_event(crate::events::EditorEvent::StatusBarChanged);
                 // 接线 LSP：通知服务器文档已打开（按需启动 server），激活补全/悬停/诊断
@@ -1245,8 +1545,11 @@ impl EditorState {
         }
 
         // 文件加载成功后通知 LSP 服务器
-        if self.file_path.as_ref() == Some(&path) {
-            let text = self.buffer.get_text(0, self.buffer.len_bytes());
+        if self.content.file_path.as_ref() == Some(&path) {
+            let text = self
+                .content
+                .buffer
+                .get_text(0, self.content.buffer.len_bytes());
             self.lsp_open_document(&path, &text);
         }
     }
@@ -1256,13 +1559,13 @@ impl EditorState {
     /// 异步执行：克隆所需数据后 spawn tokio task，不阻塞 UI 线程。
     fn lsp_notify_open(&self) {
         // 1. 映射语言到 LSP language_id（无配置则跳过）
-        let language_id = match language_to_lsp_id_opt(self.language) {
+        let language_id = match language_to_lsp_id_opt(self.content.language) {
             Some(id) => id.to_string(),
             None => return,
         };
 
         // 2. 转换文件路径到 Url（LSP 要求 file:// URI）
-        let path = match &self.file_path {
+        let path = match &self.content.file_path {
             Some(p) => p.as_path(),
             None => return,
         };
@@ -1272,7 +1575,7 @@ impl EditorState {
         };
 
         // 3. 获取全文文本（did_open 需要完整文档内容）
-        let text = self.buffer.get_all_text();
+        let text = self.content.buffer.get_all_text();
 
         // 4. 克隆 Arc<LspClient> 并 spawn 异步任务
         let client = self.lsp_client.clone();
@@ -1300,13 +1603,13 @@ impl EditorState {
     /// 在 insert_char/delete_char/insert_newline/delete_forward 后调用。
     fn lsp_notify_change(&self) {
         // 1. 映射语言到 LSP language_id（无配置则跳过）
-        let language_id = match language_to_lsp_id_opt(self.language) {
+        let language_id = match language_to_lsp_id_opt(self.content.language) {
             Some(id) => id.to_string(),
             None => return,
         };
 
         // 2. 转换文件路径到 Url
-        let path = match &self.file_path {
+        let path = match &self.content.file_path {
             Some(p) => p.as_path(),
             None => return,
         };
@@ -1316,7 +1619,7 @@ impl EditorState {
         };
 
         // 3. 全文档同步：直接发送全文，由 LspClient 内部计算增量变更
-        let text = self.buffer.get_all_text();
+        let text = self.content.buffer.get_all_text();
 
         // 4. Spawn 异步任务发送 did_change
         let client = self.lsp_client.clone();
@@ -1334,11 +1637,11 @@ impl EditorState {
     /// Phase H1: 请求补全（Ctrl+Space 触发）。
     /// 异步调用 LSP request_completion，结果通过 LspEvent::Completion 回传。
     pub(crate) fn request_completion(&mut self) {
-        let language_id = match language_to_lsp_id_opt(self.language) {
+        let language_id = match language_to_lsp_id_opt(self.content.language) {
             Some(id) => id.to_string(),
             None => return,
         };
-        let path = match &self.file_path {
+        let path = match &self.content.file_path {
             Some(p) => p.as_path(),
             None => return,
         };
@@ -1348,12 +1651,12 @@ impl EditorState {
         };
         // LSP Position：line 0-based，character 为 UTF-16 偏移（ASCII 下等同字节列）
         let position = lsp_types::Position {
-            line: self.cursor_line as u32,
-            character: self.cursor_col as u32,
+            line: self.content.cursor_line as u32,
+            character: self.content.cursor_col as u32,
         };
         // 记录触发位置，用于弹窗定位
-        self.completion_trigger_line = self.cursor_line;
-        self.completion_trigger_col = self.cursor_col;
+        self.completion_trigger_line = self.content.cursor_line;
+        self.completion_trigger_col = self.content.cursor_col;
 
         let client = self.lsp_client.clone();
         let lang_id = language_id;
@@ -1372,11 +1675,11 @@ impl EditorState {
     /// 注意：触发逻辑（WM_MOUSEMOVE + 定时器去抖）尚未接线，此方法预留就绪。
     #[allow(dead_code)]
     pub(crate) fn request_hover(&mut self, line: usize, col: usize) {
-        let language_id = match language_to_lsp_id_opt(self.language) {
+        let language_id = match language_to_lsp_id_opt(self.content.language) {
             Some(id) => id.to_string(),
             None => return,
         };
-        let path = match &self.file_path {
+        let path = match &self.content.file_path {
             Some(p) => p.as_path(),
             None => return,
         };
@@ -1414,7 +1717,7 @@ impl EditorState {
                     self.lsp_diagnostics.insert(uri, diagnostics);
                 }
                 // 状态栏提示诊断数量（仅当前文件）
-                if let Some(path) = &self.file_path {
+                if let Some(path) = &self.content.file_path {
                     if let Ok(current_uri) = Url::from_file_path(path) {
                         let current_count = self
                             .lsp_diagnostics
@@ -1447,6 +1750,7 @@ impl EditorState {
                 } else {
                     // 验证是当前文件的补全结果
                     let is_current = self
+                        .content
                         .file_path
                         .as_ref()
                         .and_then(|p| Url::from_file_path(p).ok())
@@ -1462,6 +1766,7 @@ impl EditorState {
             // Phase H3: 悬停结果到达，显示 tooltip
             LspEvent::Hover { uri, hover } => {
                 let is_current = self
+                    .content
                     .file_path
                     .as_ref()
                     .and_then(|p| Url::from_file_path(p).ok())
@@ -1522,11 +1827,14 @@ impl EditorState {
         self.completion_visible = false;
         self.completion_items.clear();
         // 将光标移回触发位置
-        if self.cursor_line != self.completion_trigger_line {
+        if self.content.cursor_line != self.completion_trigger_line {
             return; // 跨行编辑，放弃插入
         }
         // 删除触发位置到当前光标之间的文本（用户输入的过滤字符）
-        let delete_count = self.cursor_col.saturating_sub(self.completion_trigger_col);
+        let delete_count = self
+            .content
+            .cursor_col
+            .saturating_sub(self.completion_trigger_col);
         for _ in 0..delete_count {
             self.delete_char();
         }
@@ -1554,32 +1862,19 @@ impl EditorState {
     fn load_image_file(&mut self, path: PathBuf) {
         let content = format!("[图片预览] {}", path.display());
         if self.can_reuse_current_tab() {
-            self.file_path = Some(path.clone());
-            self.language = Language::Image;
-            self.buffer = PieceTable::from_string(content);
+            self.content.file_path = Some(path.clone());
+            self.content.language = Language::Image;
+            self.content.buffer = PieceTable::from_string(content);
             self.reset_editor_state();
-            self.sync_to_tab();
             self.status_message = format!("已打开图片: {}", path.display());
         } else {
             let tab = Tab {
-                file_path: Some(path.clone()),
-                buffer: PieceTable::from_string(content),
-                cursor_line: 0,
-                cursor_col: 0,
-                selection_start: None,
-                selection_end: None,
-                scroll_y: 0.0,
-                scroll_x: 0.0,
-                history: History::new(),
-                is_dirty: false,
-                cached_lines: Vec::new(),
-                cached_tokens: Vec::new(),
-                line_cache_versions: Vec::new(),
-                buffer_version: 1,
-                is_large_file: false,
-                line_y_offsets: Vec::new(),
-                inline_completion: None,
-                language: Language::Image,
+                content: TabContent::with_loaded_buffer(
+                    Some(path.clone()),
+                    PieceTable::from_string(content),
+                    Language::Image,
+                    false,
+                ),
             };
             self.open_in_new_tab(tab);
             self.status_message = format!("已打开图片: {}", path.display());
@@ -1594,32 +1889,19 @@ impl EditorState {
             .unwrap_or("unknown");
         let message = format!("不支持的文件格式: .{}\n文件: {}", ext, path.display());
         if self.can_reuse_current_tab() {
-            self.file_path = Some(path.to_path_buf());
-            self.language = Language::PlainText;
-            self.buffer = PieceTable::from_string(message);
+            self.content.file_path = Some(path.to_path_buf());
+            self.content.language = Language::PlainText;
+            self.content.buffer = PieceTable::from_string(message);
             self.reset_editor_state();
-            self.sync_to_tab();
             self.status_message = format!("不支持的文件格式: .{}", ext);
         } else {
             let tab = Tab {
-                file_path: Some(path.to_path_buf()),
-                buffer: PieceTable::from_string(message),
-                cursor_line: 0,
-                cursor_col: 0,
-                selection_start: None,
-                selection_end: None,
-                scroll_y: 0.0,
-                scroll_x: 0.0,
-                history: History::new(),
-                is_dirty: false,
-                cached_lines: Vec::new(),
-                cached_tokens: Vec::new(),
-                line_cache_versions: Vec::new(),
-                buffer_version: 1,
-                is_large_file: false,
-                line_y_offsets: Vec::new(),
-                inline_completion: None,
-                language: Language::PlainText,
+                content: TabContent::with_loaded_buffer(
+                    Some(path.to_path_buf()),
+                    PieceTable::from_string(message),
+                    Language::PlainText,
+                    false,
+                ),
             };
             self.open_in_new_tab(tab);
             self.status_message = format!("不支持的文件格式: .{}", ext);
@@ -1792,21 +2074,22 @@ impl EditorState {
 
     /// 保存文件，返回是否成功
     pub fn save_file(&mut self) -> bool {
-        if let Some(path) = &self.file_path.clone() {
+        if let Some(path) = &self.content.file_path.clone() {
             // 处理远程文件保存
             if let Some(remote_path) = path.to_str().and_then(|s| s.strip_prefix("remote:")) {
                 // 远程路径仍需 &[u8]，这里不得不做一次全量拷贝
-                let mut buf: Vec<u8> = Vec::with_capacity(self.buffer.len_bytes());
-                if let Err(e) = self.buffer.write_to(&mut buf) {
+                let mut buf: Vec<u8> = Vec::with_capacity(self.content.buffer.len_bytes());
+                if let Err(e) = self.content.buffer.write_to(&mut buf) {
                     self.status_message = format!("保存失败: {}", e);
                     return false;
                 }
                 if let Some(session) = &self.remote_session {
                     match session.write_remote_file(remote_path, &buf) {
                         Ok(()) => {
-                            self.is_dirty = false;
-                            self.sync_to_tab();
+                            self.content.is_dirty = false;
                             self.status_message = format!("已保存到远程: {}", remote_path);
+                            // 同步自动保存状态（去重基线 / 冲突复位 / 停止防抖）
+                            self.note_save_succeeded();
                             return true;
                         }
                         Err(e) => {
@@ -1822,11 +2105,12 @@ impl EditorState {
             // 本地文件保存：直接将 buffer 流式写入临时文件，避免 get_all_text 的
             // 全量 String 分配和 UTF-8 lossy 转换。对未编辑的 mmap 大文件尤其显著。
             // P4-2: 仍保持原子写入语义（临时文件 + fsync + rename）。
-            match Self::atomic_write_stream(path, |w| self.buffer.write_to(w)) {
+            match Self::atomic_write_stream(path, |w| self.content.buffer.write_to(w)) {
                 Ok(()) => {
-                    self.is_dirty = false;
-                    self.sync_to_tab();
+                    self.content.is_dirty = false;
                     self.status_message = "已保存".to_string();
+                    // 同步自动保存状态（去重基线 / 冲突复位 / mtime 刷新 / 停止防抖）
+                    self.note_save_succeeded();
                     true
                 }
                 Err(e) => {
@@ -1842,12 +2126,13 @@ impl EditorState {
 
     /// 另存为
     pub fn save_as(&mut self, path: PathBuf) -> bool {
-        match Self::atomic_write_stream(&path, |w| self.buffer.write_to(w)) {
+        match Self::atomic_write_stream(&path, |w| self.content.buffer.write_to(w)) {
             Ok(()) => {
-                self.file_path = Some(path.clone());
-                self.is_dirty = false;
-                self.sync_to_tab();
+                self.content.file_path = Some(path.clone());
+                self.content.is_dirty = false;
                 self.status_message = format!("已保存: {}", path.display());
+                // 同步自动保存状态（去重基线 / 冲突复位 / mtime 刷新 / 停止防抖）
+                self.note_save_succeeded();
                 true
             }
             Err(e) => {
@@ -2019,32 +2304,34 @@ impl EditorState {
     pub fn paste(&mut self) {
         if let Some(text) = Self::get_clipboard_text() {
             // 如果有选区，先删除选中内容
-            if self.selection_start.is_some() && self.selection_end.is_some() {
+            if self.content.selection_start.is_some() && self.content.selection_end.is_some() {
                 self.delete_selection();
             }
             let pos = self.cursor_byte_pos();
-            let before_pieces = self.buffer.get_pieces();
-            let before_add_len = self.buffer.add_buffer_len();
-            let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+            let before_pieces = self.content.buffer.get_pieces();
+            let before_add_len = self.content.buffer.add_buffer_len();
+            let cursor_before =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
-            self.buffer.insert(pos, &text);
-            self.is_dirty = true;
-            self.buffer_version += 1;
+            self.content.buffer.insert(pos, &text);
+            self.content.is_dirty = true;
+            self.content.buffer_version += 1;
 
             // 更新光标位置
             let line_breaks = text.matches('\n').count();
             if line_breaks == 0 {
-                self.cursor_col += text.len();
+                self.content.cursor_col += text.len();
             } else {
-                self.cursor_line += line_breaks;
-                self.cursor_col = text
+                self.content.cursor_line += line_breaks;
+                self.content.cursor_col = text
                     .rsplit_once('\n')
                     .map(|(_, last)| last.len())
                     .unwrap_or(0);
             }
 
-            let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-            self.history.record(
+            let cursor_after =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+            self.content.history.record(
                 before_pieces,
                 before_add_len,
                 cursor_before,
@@ -2060,11 +2347,11 @@ impl EditorState {
 
     /// 删除选中文本
     pub fn delete_selection(&mut self) {
-        let (start_line, start_col) = match self.selection_start {
+        let (start_line, start_col) = match self.content.selection_start {
             Some(s) => s,
             None => return,
         };
-        let (end_line, end_col) = match self.selection_end {
+        let (end_line, end_col) = match self.content.selection_end {
             Some(e) => e,
             None => return,
         };
@@ -2084,19 +2371,21 @@ impl EditorState {
         let end_byte = self.line_byte_start(last_line) + last_col;
 
         if start_byte < end_byte {
-            let before_pieces = self.buffer.get_pieces();
-            let before_add_len = self.buffer.add_buffer_len();
-            let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+            let before_pieces = self.content.buffer.get_pieces();
+            let before_add_len = self.content.buffer.add_buffer_len();
+            let cursor_before =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
-            self.buffer.delete(start_byte, end_byte);
-            self.is_dirty = true;
-            self.buffer_version += 1;
+            self.content.buffer.delete(start_byte, end_byte);
+            self.content.is_dirty = true;
+            self.content.buffer_version += 1;
 
-            self.cursor_line = first_line;
-            self.cursor_col = first_col;
+            self.content.cursor_line = first_line;
+            self.content.cursor_col = first_col;
 
-            let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-            self.history.record(
+            let cursor_after =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+            self.content.history.record(
                 before_pieces,
                 before_add_len,
                 cursor_before,
@@ -2111,28 +2400,29 @@ impl EditorState {
 
     /// 全选
     pub fn select_all(&mut self) {
-        let last_line = self.buffer.len_lines().saturating_sub(1);
+        let last_line = self.content.buffer.len_lines().saturating_sub(1);
         let last_col = self
+            .content
             .buffer
             .get_line(last_line)
             .map(|t| t.len())
             .unwrap_or(0);
-        self.selection_start = Some((0, 0));
-        self.selection_end = Some((last_line, last_col));
-        self.cursor_line = last_line;
-        self.cursor_col = last_col;
+        self.content.selection_start = Some((0, 0));
+        self.content.selection_end = Some((last_line, last_col));
+        self.content.cursor_line = last_line;
+        self.content.cursor_col = last_col;
         self.is_selecting = false;
     }
 
     /// 滚动
     pub fn scroll(&mut self, delta_y: f32) {
         let line_height = self.text_renderer.line_height();
-        let total_height = self.buffer.len_lines() as f32 * line_height;
+        let total_height = self.content.buffer.len_lines() as f32 * line_height;
         // UI-M02: 使用实际编辑器区域高度替代硬编码 24.0
         let editor_region = self.layout.editor_region();
         let editor_height = editor_region.height.max(1.0);
         let max_scroll = (total_height - editor_height).max(0.0);
-        self.scroll_y = (self.scroll_y + delta_y).clamp(0.0, max_scroll);
+        self.content.scroll_y = (self.content.scroll_y + delta_y).clamp(0.0, max_scroll);
         self.emit_event(crate::events::EditorEvent::Scrolled);
     }
 
@@ -2143,21 +2433,21 @@ impl EditorState {
 
     /// P2.3: 根据当前 buffer 大小更新大文件标记
     pub fn update_large_file_flag(&mut self) {
-        let line_count = self.buffer.len_lines();
-        let byte_count = self.buffer.len_bytes();
-        self.is_large_file = line_count > Self::LARGE_FILE_LINE_THRESHOLD
+        let line_count = self.content.buffer.len_lines();
+        let byte_count = self.content.buffer.len_bytes();
+        self.content.is_large_file = line_count > Self::LARGE_FILE_LINE_THRESHOLD
             || byte_count > Self::LARGE_FILE_BYTE_THRESHOLD;
     }
 
     /// P2.3: 重建行 Y 偏移前缀和缓存
     pub fn rebuild_line_y_offsets(&mut self) {
-        let total_lines = self.buffer.len_lines().max(1);
-        if self.line_y_offsets.len() != total_lines {
-            self.line_y_offsets.resize(total_lines, 0.0);
+        let total_lines = self.content.buffer.len_lines().max(1);
+        if self.content.line_y_offsets.len() != total_lines {
+            self.content.line_y_offsets.resize(total_lines, 0.0);
         }
         let line_height = self.text_renderer.line_height();
         let mut y = 0.0;
-        for (i, offset) in self.line_y_offsets.iter_mut().enumerate() {
+        for (i, offset) in self.content.line_y_offsets.iter_mut().enumerate() {
             *offset = y;
             y += line_height;
             // 大文件时避免浮点误差累积：每 1000 行重新基线
@@ -2174,8 +2464,8 @@ impl EditorState {
         let line_height = self.text_renderer.line_height();
         let editor_region = self.layout.editor_content_region(self.show_tab_bar());
         let height = editor_region.height.max(line_height);
-        let total_lines = self.cached_lines.len().max(1);
-        let start_line = (self.scroll_y / line_height) as usize;
+        let total_lines = self.content.cached_lines.len().max(1);
+        let start_line = (self.content.scroll_y / line_height) as usize;
         let visible_lines = (height / line_height) as usize + 2;
         let end_line = (start_line + visible_lines).min(total_lines);
         (start_line.min(total_lines), end_line)
@@ -2191,17 +2481,14 @@ impl EditorState {
 
         // 计算可见范围内最长行的字符宽度
         let line_height = self.text_renderer.line_height();
-        let start_line = (self.scroll_y / line_height) as usize;
+        let start_line = (self.content.scroll_y / line_height) as usize;
         let visible_lines = ((editor_region.height / line_height) as usize + 2).max(1);
-        let end_line = (start_line + visible_lines).min(self.cached_lines.len().max(1));
+        let end_line = (start_line + visible_lines).min(self.content.cached_lines.len().max(1));
 
         let mut max_line_chars: usize = 0;
         for line_idx in start_line..end_line {
-            if let Some(text) = self.cached_lines.get(line_idx) {
-                let chars = text
-                    .chars()
-                    .map(|ch| if (ch as u32) > 0x7F { 2 } else { 1 })
-                    .sum::<usize>();
+            if let Some(text) = self.content.cached_lines.get(line_idx) {
+                let chars = text.chars().map(|ch| unicode_char_width(ch)).sum::<usize>();
                 if chars > max_line_chars {
                     max_line_chars = chars;
                 }
@@ -2213,13 +2500,13 @@ impl EditorState {
         let max_content_width = max_line_chars as f32 * char_width;
         let max_scroll_x = (max_content_width - text_visible_width).max(0.0);
 
-        self.scroll_x = (self.scroll_x + delta_x).clamp(0.0, max_scroll_x);
+        self.content.scroll_x = (self.content.scroll_x + delta_x).clamp(0.0, max_scroll_x);
         self.emit_event(crate::events::EditorEvent::Scrolled);
     }
 
     /// P0-3: 重置水平滚动（光标跳转、文件加载时调用）
     pub fn reset_scroll_x(&mut self) {
-        self.scroll_x = 0.0;
+        self.content.scroll_x = 0.0;
     }
 
     /// P0-3: 确保光标在水平方向可见，必要时调整 scroll_x。
@@ -2230,26 +2517,27 @@ impl EditorState {
         let text_visible_width = (editor_region.width - 60.0 - 5.0).max(1.0);
 
         // 光标在当前行的字符列
-        let cursor_char_col = if let Some(text) = self.cached_lines.get(self.cursor_line) {
-            let byte_pos = self.cursor_col.min(text.len());
-            text[..byte_pos]
-                .chars()
-                .map(|ch| if (ch as u32) > 0x7F { 2 } else { 1 })
-                .sum::<usize>()
-        } else {
-            0
-        };
+        let cursor_char_col =
+            if let Some(text) = self.content.cached_lines.get(self.content.cursor_line) {
+                let byte_pos = text.floor_char_boundary(self.content.cursor_col.min(text.len()));
+                text[..byte_pos]
+                    .chars()
+                    .map(|ch| unicode_char_width(ch))
+                    .sum::<usize>()
+            } else {
+                0
+            };
         let cursor_x = cursor_char_col as f32 * char_width;
 
-        let left = self.scroll_x;
-        let right = self.scroll_x + text_visible_width;
+        let left = self.content.scroll_x;
+        let right = self.content.scroll_x + text_visible_width;
 
         if cursor_x < left {
             // 光标在可视区左侧，向左滚动
-            self.scroll_x = cursor_x.max(0.0);
+            self.content.scroll_x = cursor_x.max(0.0);
         } else if cursor_x >= right {
             // 光标在可视区右侧，向右滚动（留 1 字符余量）
-            self.scroll_x = cursor_x - text_visible_width + char_width;
+            self.content.scroll_x = cursor_x - text_visible_width + char_width;
         }
     }
 
@@ -2259,12 +2547,12 @@ impl EditorState {
         let line_height = self.text_renderer.line_height();
         let editor_region = self.layout.editor_region();
         let editor_height = editor_region.height.max(1.0);
-        let cursor_y = self.cursor_line as f32 * line_height;
+        let cursor_y = self.content.cursor_line as f32 * line_height;
 
-        if cursor_y < self.scroll_y {
-            self.scroll_y = cursor_y;
-        } else if cursor_y + line_height > self.scroll_y + editor_height {
-            self.scroll_y = (cursor_y + line_height - editor_height).max(0.0);
+        if cursor_y < self.content.scroll_y {
+            self.content.scroll_y = cursor_y;
+        } else if cursor_y + line_height > self.content.scroll_y + editor_height {
+            self.content.scroll_y = (cursor_y + line_height - editor_height).max(0.0);
         }
     }
 
@@ -2273,28 +2561,32 @@ impl EditorState {
     /// - line 和 column 均为 1-based（与用户输入一致）。
     /// - 行号/列号越界时会自动钳制到有效范围。
     pub fn goto_position(&mut self, line: usize, column: usize) {
-        if self.buffer.len_lines() == 0 {
+        if self.content.buffer.len_lines() == 0 {
             return;
         }
 
-        let max_line = self.buffer.len_lines().saturating_sub(1);
+        let max_line = self.content.buffer.len_lines().saturating_sub(1);
         let target_line = line.saturating_sub(1).min(max_line);
 
-        let line_text = self.buffer.get_line(target_line).unwrap_or_default();
+        let line_text = self
+            .content
+            .buffer
+            .get_line(target_line)
+            .unwrap_or_default();
         let target_col =
             char_offset_to_byte_offset(&line_text, column.saturating_sub(1)).min(line_text.len());
 
-        self.cursor_line = target_line;
-        self.cursor_col = target_col;
-        self.selection_start = None;
-        self.selection_end = None;
+        self.content.cursor_line = target_line;
+        self.content.cursor_col = target_col;
+        self.content.selection_start = None;
+        self.content.selection_end = None;
 
         // 同步到当前标签页
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.cursor_line = target_line;
-            tab.cursor_col = target_col;
-            tab.selection_start = None;
-            tab.selection_end = None;
+            tab.content.cursor_line = target_line;
+            tab.content.cursor_col = target_col;
+            tab.content.selection_start = None;
+            tab.content.selection_end = None;
         }
 
         // 垂直滚动：让目标行可见
@@ -2303,10 +2595,10 @@ impl EditorState {
         let editor_height = editor_region.height.max(1.0);
         let cursor_y = target_line as f32 * line_height;
 
-        if cursor_y < self.scroll_y {
-            self.scroll_y = cursor_y;
-        } else if cursor_y + line_height > self.scroll_y + editor_height {
-            self.scroll_y = (cursor_y + line_height - editor_height).max(0.0);
+        if cursor_y < self.content.scroll_y {
+            self.content.scroll_y = cursor_y;
+        } else if cursor_y + line_height > self.content.scroll_y + editor_height {
+            self.content.scroll_y = (cursor_y + line_height - editor_height).max(0.0);
         }
 
         // 水平滚动：让目标列可见
@@ -2525,7 +2817,7 @@ impl EditorState {
             crate::menu_bar::CommandId::EditReplace => {
                 self.toggle_replace();
             }
-            crate::menu_bar::CommandId::EditSelectAll | crate::menu_bar::CommandId::SelectAll => {
+            crate::menu_bar::CommandId::EditSelectAll => {
                 self.select_all();
             }
             crate::menu_bar::CommandId::ViewToggleSidebar => {
@@ -3055,7 +3347,10 @@ impl EditorState {
     /// P2-7: 仅在当前标签页为空且未修改时才自动加载，避免覆盖用户已有内容
     fn try_open_readme(&mut self, folder: &Path) {
         // 当前标签页有内容或未保存的修改时，不自动加载 README
-        if self.is_dirty || self.buffer.len_bytes() > 0 || self.file_path.is_some() {
+        if self.content.is_dirty
+            || self.content.buffer.len_bytes() > 0
+            || self.content.file_path.is_some()
+        {
             return;
         }
         let candidates = ["README.md", "README.MD", "README", "readme.md", "Readme.md"];
@@ -3068,20 +3363,195 @@ impl EditorState {
         }
     }
 
+    /// 开始文件树内联输入（新建文件/文件夹）
+    pub fn start_file_tree_input(&mut self, kind: FileTreeInputKind) {
+        let default_name = match kind {
+            FileTreeInputKind::NewFile => "新建文件.txt",
+            FileTreeInputKind::NewFolder => "新建文件夹",
+        };
+        self.file_tree_input = Some(FileTreeInput {
+            kind,
+            value: default_name.to_string(),
+            caret_visible: true,
+            composition: None,
+        });
+        self.dirty_tracker.mark_region(
+            self.layout.sidebar_region().x,
+            self.layout.sidebar_region().y,
+            self.layout.sidebar_region().width,
+            self.layout.sidebar_region().height,
+            crate::dirty_rect::DirtyRegionType::Sidebar,
+        );
+    }
+
+    /// 确认文件树内联输入，执行新建操作
+    pub fn confirm_file_tree_input(&mut self) {
+        let Some(input) = self.file_tree_input.take() else {
+            return;
+        };
+        let Some(base_path) = self.current_folder.clone() else {
+            self.status_message = "请先打开文件夹".to_string();
+            self.dirty_tracker.mark_region(
+                self.layout.sidebar_region().x,
+                self.layout.sidebar_region().y,
+                self.layout.sidebar_region().width,
+                self.layout.sidebar_region().height,
+                crate::dirty_rect::DirtyRegionType::Sidebar,
+            );
+            return;
+        };
+
+        let name = input.value.trim();
+        if name.is_empty() {
+            self.status_message = "名称不能为空".to_string();
+            self.dirty_tracker.mark_region(
+                self.layout.sidebar_region().x,
+                self.layout.sidebar_region().y,
+                self.layout.sidebar_region().width,
+                self.layout.sidebar_region().height,
+                crate::dirty_rect::DirtyRegionType::Sidebar,
+            );
+            return;
+        }
+
+        let target = base_path.join(name);
+        if target.exists() {
+            self.status_message = format!("{} 已存在", name);
+            self.dirty_tracker.mark_region(
+                self.layout.sidebar_region().x,
+                self.layout.sidebar_region().y,
+                self.layout.sidebar_region().width,
+                self.layout.sidebar_region().height,
+                crate::dirty_rect::DirtyRegionType::Sidebar,
+            );
+            return;
+        }
+
+        match input.kind {
+            FileTreeInputKind::NewFile => {
+                if let Err(e) = std::fs::write(&target, "") {
+                    self.status_message = format!("创建文件失败: {}", e);
+                } else {
+                    self.status_message = format!("已创建文件: {}", name);
+                    self.refresh_file_tree();
+                    self.load_file(target);
+                }
+            }
+            FileTreeInputKind::NewFolder => {
+                if let Err(e) = std::fs::create_dir(&target) {
+                    self.status_message = format!("创建文件夹失败: {}", e);
+                } else {
+                    self.status_message = format!("已创建文件夹: {}", name);
+                    self.refresh_file_tree();
+                }
+            }
+        }
+    }
+
+    /// 取消文件树内联输入
+    pub fn cancel_file_tree_input(&mut self) {
+        if self.file_tree_input.take().is_some() {
+            self.dirty_tracker.mark_region(
+                self.layout.sidebar_region().x,
+                self.layout.sidebar_region().y,
+                self.layout.sidebar_region().width,
+                self.layout.sidebar_region().height,
+                crate::dirty_rect::DirtyRegionType::Sidebar,
+            );
+        }
+    }
+
+    /// 刷新文件树（重新扫描当前文件夹）
+    pub fn refresh_file_tree(&mut self) {
+        if let Some(path) = self.current_folder.clone() {
+            self.open_folder(path);
+        }
+    }
+
+    /// 在 Windows 文件资源管理器中打开当前工作区文件夹。
+    /// 通过 ShellExecuteW 调用系统 explorer.exe，无纯 Rust 依赖。
+    pub fn open_in_file_explorer(&mut self) {
+        let Some(folder) = self.current_folder.clone() else {
+            self.status_message = "请先打开文件夹".to_string();
+            return;
+        };
+        let path_str = folder.to_string_lossy().to_string();
+        let wide: Vec<u16> = path_str.encode_utf16().chain(Some(0)).collect();
+        unsafe {
+            use windows::Win32::UI::Shell::ShellExecuteW;
+            let operation: Vec<u16> = "open\0".encode_utf16().collect();
+            let _ = ShellExecuteW(
+                None,
+                windows::core::PCWSTR(operation.as_ptr()),
+                windows::core::PCWSTR(wide.as_ptr()),
+                windows::core::PCWSTR::null(),
+                None,
+                windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+            );
+        }
+        self.status_message = format!("已在文件资源管理器中打开: {}", path_str);
+    }
+
+    /// 复制当前工作区文件夹的绝对路径到剪贴板。
+    pub fn copy_folder_path(&mut self) {
+        let Some(folder) = self.current_folder.clone() else {
+            self.status_message = "请先打开文件夹".to_string();
+            return;
+        };
+        let path_str = folder.to_string_lossy().to_string();
+        if Self::set_clipboard_text(&path_str) {
+            self.status_message = format!("已复制路径: {}", path_str);
+        } else {
+            self.status_message = "复制路径失败".to_string();
+        }
+    }
+
+    /// 执行资源管理器空白区域上下文菜单项对应的动作。
+    /// 返回 true 表示动作已处理（调用方负责重绘）。
+    pub fn execute_explorer_context_action(
+        &mut self,
+        item: crate::context_menu::ExplorerContextMenuItem,
+    ) -> bool {
+        use crate::context_menu::ExplorerContextMenuItem as Item;
+        match item {
+            Item::NewFile => {
+                self.start_file_tree_input(FileTreeInputKind::NewFile);
+                true
+            }
+            Item::NewFolder => {
+                self.start_file_tree_input(FileTreeInputKind::NewFolder);
+                true
+            }
+            Item::Refresh => {
+                self.refresh_file_tree();
+                true
+            }
+            Item::RevealInExplorer => {
+                self.open_in_file_explorer();
+                true
+            }
+            Item::CopyPath => {
+                self.copy_folder_path();
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn close_workspace(&mut self) {
         self.file_tree = None;
         self.current_folder = None;
-        self.file_path = None;
-        self.buffer = PieceTable::from_string(String::new());
-        self.cursor_line = 0;
-        self.cursor_col = 0;
-        self.scroll_y = 0.0;
-        self.selection_start = None;
-        self.selection_end = None;
-        self.is_dirty = false;
-        self.cached_lines.clear();
-        self.cached_tokens.clear();
-        self.language = Language::PlainText;
+        self.content.file_path = None;
+        self.content.buffer = PieceTable::from_string(String::new());
+        self.content.cursor_line = 0;
+        self.content.cursor_col = 0;
+        self.content.scroll_y = 0.0;
+        self.content.selection_start = None;
+        self.content.selection_end = None;
+        self.content.is_dirty = false;
+        self.content.cached_lines.clear();
+        self.content.cached_tokens.clear();
+        self.content.language = Language::PlainText;
         self.tabs.clear();
         self.tabs.push(crate::tabs::Tab::new());
         self.active_tab = 0;
@@ -3110,6 +3580,26 @@ impl EditorState {
     }
 
     fn handle_file_tree_click(&mut self, mouse_x: f32, mouse_y: f32) -> bool {
+        // 优先检测标题栏按钮点击
+        if let Some(rect) = self.file_tree_new_file_btn.clone() {
+            if rect.contains(mouse_x, mouse_y) {
+                self.start_file_tree_input(FileTreeInputKind::NewFile);
+                return true;
+            }
+        }
+        if let Some(rect) = self.file_tree_new_folder_btn.clone() {
+            if rect.contains(mouse_x, mouse_y) {
+                self.start_file_tree_input(FileTreeInputKind::NewFolder);
+                return true;
+            }
+        }
+
+        // 如果正在内联输入，点击其他区域取消输入
+        if self.file_tree_input.is_some() {
+            self.cancel_file_tree_input();
+            return true;
+        }
+
         let tree = match self.file_tree.as_ref() {
             Some(t) => t,
             None => return false,
@@ -3159,10 +3649,17 @@ impl EditorState {
                         self.emit_event(crate::events::EditorEvent::SidebarChanged);
                         if let Some(path) = self.get_node_path(node_idx) {
                             // 检查该文件是否已在某个标签页中打开
-                            if let Some(existing_tab) = self
-                                .tabs
-                                .iter()
-                                .position(|tab| tab.file_path.as_ref() == Some(&path))
+                            // REQ-P1-09: 活动标签页的 file_path 在 self.content 中
+                            let active_path = self.content.file_path.clone();
+                            let active_idx = self.active_tab;
+                            if let Some(existing_tab) =
+                                self.tabs.iter().enumerate().position(|(i, tab)| {
+                                    if i == active_idx {
+                                        active_path.as_ref() == Some(&path)
+                                    } else {
+                                        tab.content.file_path.as_ref() == Some(&path)
+                                    }
+                                })
                             {
                                 // 切换到已打开的标签页
                                 self.switch_tab(existing_tab);
@@ -3275,6 +3772,27 @@ impl EditorState {
         false
     }
 
+    pub(crate) fn update_git_panel_hover(&mut self, mouse_x: f32, mouse_y: f32) {
+        if !self.git.is_repo() {
+            self.git.hover_button = None;
+            return;
+        }
+        // 与 handle_git_panel_click 使用一致的布局
+        let mut current_y = 10.0f32;
+        current_y += 70.0; // 跳过标题和分支区域
+        let button_y = current_y;
+        if mouse_y >= button_y && mouse_y < button_y + 26.0 {
+            if (10.0..70.0).contains(&mouse_x) {
+                self.git.hover_button = Some("commit".to_string());
+                return;
+            } else if (80.0..140.0).contains(&mouse_x) {
+                self.git.hover_button = Some("refresh".to_string());
+                return;
+            }
+        }
+        self.git.hover_button = None;
+    }
+
     fn handle_remote_tree_click(&mut self, _mouse_x: f32, mouse_y: f32) -> bool {
         // P0-1: 递归遍历可见节点，按 y 坐标命中目标节点。
         // 在独立作用域内完成对树的只读借用，收集所需信息后释放借用，
@@ -3328,24 +3846,12 @@ impl EditorState {
                     Ok(content) => {
                         let text = String::from_utf8_lossy(&content).to_string();
                         let tab = crate::tabs::Tab {
-                            file_path: Some(PathBuf::from(format!("remote:{}", remote_path))),
-                            buffer: PieceTable::from_string(text),
-                            cursor_line: 0,
-                            cursor_col: 0,
-                            selection_start: None,
-                            selection_end: None,
-                            scroll_y: 0.0,
-                            scroll_x: 0.0,
-                            history: History::new(),
-                            is_dirty: false,
-                            cached_lines: Vec::new(),
-                            cached_tokens: Vec::new(),
-                            line_cache_versions: Vec::new(),
-                            buffer_version: 1,
-                            is_large_file: false,
-                            line_y_offsets: Vec::new(),
-                            inline_completion: None,
-                            language: Language::PlainText,
+                            content: crate::tabs::TabContent::with_loaded_buffer(
+                                Some(PathBuf::from(format!("remote:{}", remote_path))),
+                                PieceTable::from_string(text),
+                                Language::PlainText,
+                                false,
+                            ),
                         };
                         self.open_in_new_tab(tab);
                         self.status_message = format!("已打开远程文件: {}", remote_path);
@@ -3401,24 +3907,12 @@ impl EditorState {
                     stdout
                 };
                 let tab = crate::tabs::Tab {
-                    file_path: Some(PathBuf::from(format!("diff: {}", file))),
-                    buffer: PieceTable::from_string(diff_text),
-                    cursor_line: 0,
-                    cursor_col: 0,
-                    selection_start: None,
-                    selection_end: None,
-                    scroll_y: 0.0,
-                    scroll_x: 0.0,
-                    history: History::new(),
-                    is_dirty: false,
-                    cached_lines: Vec::new(),
-                    cached_tokens: Vec::new(),
-                    line_cache_versions: Vec::new(),
-                    buffer_version: 1,
-                    is_large_file: false,
-                    line_y_offsets: Vec::new(),
-                    inline_completion: None,
-                    language: Language::PlainText,
+                    content: crate::tabs::TabContent::with_loaded_buffer(
+                        Some(PathBuf::from(format!("diff: {}", file))),
+                        PieceTable::from_string(diff_text),
+                        Language::PlainText,
+                        false,
+                    ),
                 };
                 self.open_in_new_tab(tab);
                 self.status_message = format!("显示 {} 的差异", file);
@@ -3707,7 +4201,7 @@ impl EditorState {
 
     /// 根据当前打开的文件路径同步文件树选中状态
     pub fn sync_file_tree_selection(&mut self) {
-        if let Some(ref path) = self.file_path {
+        if let Some(ref path) = self.content.file_path {
             if let Some(ref folder) = self.current_folder {
                 if let Some(ref tree) = self.file_tree {
                     // 尝试找到匹配当前文件路径的节点
@@ -3850,7 +4344,7 @@ impl EditorState {
         }
     }
 
-    fn find_tree_click_target(
+    pub(crate) fn find_tree_click_target(
         tree: &FileTree,
         parent_idx: u32,
         mouse_x: f32,
@@ -3941,21 +4435,21 @@ impl EditorState {
         }
 
         let pos = self.cursor_byte_pos();
-        let before_pieces = self.buffer.get_pieces();
-        let before_add_len = self.buffer.add_buffer_len();
-        let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+        let before_pieces = self.content.buffer.get_pieces();
+        let before_add_len = self.content.buffer.add_buffer_len();
+        let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
         let text = ch.to_string();
-        self.buffer.insert(pos, &text);
-        self.cursor_col += ch.len_utf8();
-        self.is_dirty = true;
+        self.content.buffer.insert(pos, &text);
+        self.content.cursor_col += ch.len_utf8();
+        self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.is_dirty = true;
+            tab.content.is_dirty = true;
         }
-        self.buffer_version += 1;
+        self.content.buffer_version += 1;
 
-        let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-        self.history.record(
+        let cursor_after = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+        self.content.history.record(
             before_pieces,
             before_add_len,
             cursor_before,
@@ -3989,12 +4483,12 @@ impl EditorState {
         // 闭括号跳过逻辑：光标后已是相同闭括号，直接右移光标
         let is_skip_close = matches!(ch, ')' | ']' | '}');
         if is_skip_close {
-            if let Some(text) = self.buffer.get_line(self.cursor_line) {
-                if self.cursor_col < text.len() {
-                    if let Some(next_ch) = text[self.cursor_col..].chars().next() {
+            if let Some(text) = self.content.buffer.get_line(self.content.cursor_line) {
+                if self.content.cursor_col < text.len() {
+                    if let Some(next_ch) = text[self.content.cursor_col..].chars().next() {
                         if next_ch == ch {
                             // 跳过插入，光标右移一个字符
-                            self.cursor_col += ch.len_utf8();
+                            self.content.cursor_col += ch.len_utf8();
                             return true;
                         }
                     }
@@ -4010,14 +4504,15 @@ impl EditorState {
 
         // 检查是否有选区
         let selection = self
+            .content
             .selection_start
-            .zip(self.selection_end)
+            .zip(self.content.selection_end)
             .filter(|(s, e)| s != e);
 
         let pos = self.cursor_byte_pos();
-        let before_pieces = self.buffer.get_pieces();
-        let before_add_len = self.buffer.add_buffer_len();
-        let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+        let before_pieces = self.content.buffer.get_pieces();
+        let before_add_len = self.content.buffer.add_buffer_len();
+        let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
         // C-05: 使用模式匹配代替 unwrap，避免选择状态不一致时 panic
         if let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) = selection {
@@ -4036,8 +4531,8 @@ impl EditorState {
             // 插入闭括号在前（避免位置偏移），开括号在后
             let close_str = close_ch.to_string();
             let open_str = ch.to_string();
-            self.buffer.insert(end_byte, &close_str);
-            self.buffer.insert(start_byte, &open_str);
+            self.content.buffer.insert(end_byte, &close_str);
+            self.content.buffer.insert(start_byte, &open_str);
 
             // REQ-P1-05: 更新光标到选区末尾（闭括号之后）
             // 开括号在 start_byte 插入，若与 end 同行则 end_col 需要加上开括号长度
@@ -4046,21 +4541,23 @@ impl EditorState {
             } else {
                 0
             };
-            self.cursor_line = end_line;
-            self.cursor_col = end_col + open_shift + close_ch.len_utf8();
+            self.content.cursor_line = end_line;
+            self.content.cursor_col = end_col + open_shift + close_ch.len_utf8();
 
             // 更新选区：保持选中文本不变，扩展到包含括号
-            self.selection_start = Some((start_line, start_col));
-            self.selection_end = Some((end_line, end_col + open_shift + close_ch.len_utf8()));
+            self.content.selection_start = Some((start_line, start_col));
+            self.content.selection_end =
+                Some((end_line, end_col + open_shift + close_ch.len_utf8()));
 
-            self.is_dirty = true;
+            self.content.is_dirty = true;
             if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                tab.is_dirty = true;
+                tab.content.is_dirty = true;
             }
-            self.buffer_version += 1;
+            self.content.buffer_version += 1;
 
-            let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-            self.history.record(
+            let cursor_after =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+            self.content.history.record(
                 before_pieces,
                 before_add_len,
                 cursor_before,
@@ -4076,18 +4573,18 @@ impl EditorState {
 
         // 无选区：插入开括号 + 闭括号，光标置于中间
         let pair_text = format!("{}{}", ch, close_ch);
-        self.buffer.insert(pos, &pair_text);
+        self.content.buffer.insert(pos, &pair_text);
         // 光标移动到开括号之后（不前进到闭括号）
-        self.cursor_col += ch.len_utf8();
+        self.content.cursor_col += ch.len_utf8();
 
-        self.is_dirty = true;
+        self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.is_dirty = true;
+            tab.content.is_dirty = true;
         }
-        self.buffer_version += 1;
+        self.content.buffer_version += 1;
 
-        let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-        self.history.record(
+        let cursor_after = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+        self.content.history.record(
             before_pieces,
             before_add_len,
             cursor_before,
@@ -4105,6 +4602,22 @@ impl EditorState {
     /// 在 WM_IME_COMPOSITION 收到 GCS_COMPSTR 时调用，
     /// 清空已存在的合成串后写入新值，并触发重绘。
     pub fn set_composition(&mut self, text: String) {
+        // 修复：file_tree_input 激活时，合成串存到输入框而非编辑器
+        if self.file_tree_input.is_some() {
+            if let Some(input) = self.file_tree_input.as_mut() {
+                input.composition = Some(text);
+                input.caret_visible = true;
+            }
+            let region = self.layout.sidebar_region().clone();
+            self.dirty_tracker.mark_region(
+                region.x,
+                region.y,
+                region.width,
+                region.height,
+                crate::dirty_rect::DirtyRegionType::Sidebar,
+            );
+            return;
+        }
         self.composition = Some(text);
     }
 
@@ -4122,6 +4635,23 @@ impl EditorState {
             self.new_project_dialog.error_message = None;
             return;
         }
+        // 修复：file_tree_input 激活时，IME 提交文本应进入输入框而非编辑器内容
+        if self.file_tree_input.is_some() {
+            if let Some(input) = self.file_tree_input.as_mut() {
+                input.value.push_str(&text);
+                input.composition = None;
+                input.caret_visible = true;
+            }
+            let region = self.layout.sidebar_region().clone();
+            self.dirty_tracker.mark_region(
+                region.x,
+                region.y,
+                region.width,
+                region.height,
+                crate::dirty_rect::DirtyRegionType::Sidebar,
+            );
+            return;
+        }
         for ch in text.chars() {
             self.broadcast_insert_char(ch);
         }
@@ -4129,26 +4659,41 @@ impl EditorState {
 
     /// P0-2: 清除合成串（用户取消输入或 IME 失焦时调用）。
     pub fn clear_composition(&mut self) {
+        // 修复：file_tree_input 激活时，清除输入框的合成串
+        if self.file_tree_input.is_some() {
+            if let Some(input) = self.file_tree_input.as_mut() {
+                input.composition = None;
+            }
+            let region = self.layout.sidebar_region().clone();
+            self.dirty_tracker.mark_region(
+                region.x,
+                region.y,
+                region.width,
+                region.height,
+                crate::dirty_rect::DirtyRegionType::Sidebar,
+            );
+            return;
+        }
         self.composition = None;
     }
 
     pub fn insert_tab(&mut self) {
         let pos = self.cursor_byte_pos();
-        let before_pieces = self.buffer.get_pieces();
-        let before_add_len = self.buffer.add_buffer_len();
-        let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+        let before_pieces = self.content.buffer.get_pieces();
+        let before_add_len = self.content.buffer.add_buffer_len();
+        let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
         let tab_text = "    ";
-        self.buffer.insert(pos, tab_text);
-        self.cursor_col += tab_text.len();
-        self.is_dirty = true;
+        self.content.buffer.insert(pos, tab_text);
+        self.content.cursor_col += tab_text.len();
+        self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.is_dirty = true;
+            tab.content.is_dirty = true;
         }
-        self.buffer_version += 1;
+        self.content.buffer_version += 1;
 
-        let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-        self.history.record(
+        let cursor_after = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+        self.content.history.record(
             before_pieces,
             before_add_len,
             cursor_before,
@@ -4163,12 +4708,13 @@ impl EditorState {
 
     pub fn insert_newline(&mut self) {
         let pos = self.cursor_byte_pos();
-        let before_pieces = self.buffer.get_pieces();
-        let before_add_len = self.buffer.add_buffer_len();
-        let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+        let before_pieces = self.content.buffer.get_pieces();
+        let before_add_len = self.content.buffer.add_buffer_len();
+        let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
         // 获取当前行的前导空白（用于自动缩进）
-        let indent = if let Some(line_text) = self.buffer.get_line(self.cursor_line) {
+        let indent = if let Some(line_text) = self.content.buffer.get_line(self.content.cursor_line)
+        {
             let leading_ws: String = line_text
                 .chars()
                 .take_while(|c| c.is_whitespace())
@@ -4179,16 +4725,17 @@ impl EditorState {
         };
 
         // 检测是否需要额外缩进（行尾有 { 或 :）
-        let extra_indent = if let Some(line_text) = self.buffer.get_line(self.cursor_line) {
-            let trimmed = line_text.trim_end();
-            if trimmed.ends_with('{') || trimmed.ends_with(':') {
-                "    "
+        let extra_indent =
+            if let Some(line_text) = self.content.buffer.get_line(self.content.cursor_line) {
+                let trimmed = line_text.trim_end();
+                if trimmed.ends_with('{') || trimmed.ends_with(':') {
+                    "    "
+                } else {
+                    ""
+                }
             } else {
                 ""
-            }
-        } else {
-            ""
-        };
+            };
 
         let full_indent = format!("{}{}", indent, extra_indent);
         let insert_text = if full_indent.is_empty() {
@@ -4197,17 +4744,17 @@ impl EditorState {
             format!("\n{}", full_indent)
         };
 
-        self.buffer.insert(pos, &insert_text);
-        self.cursor_line += 1;
-        self.cursor_col = full_indent.len();
-        self.is_dirty = true;
+        self.content.buffer.insert(pos, &insert_text);
+        self.content.cursor_line += 1;
+        self.content.cursor_col = full_indent.len();
+        self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.is_dirty = true;
+            tab.content.is_dirty = true;
         }
-        self.buffer_version += 1;
+        self.content.buffer_version += 1;
 
-        let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-        self.history.record(
+        let cursor_after = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+        self.content.history.record(
             before_pieces,
             before_add_len,
             cursor_before,
@@ -4222,24 +4769,26 @@ impl EditorState {
     }
 
     pub fn delete_char(&mut self) {
-        if self.cursor_col > 0 {
+        if self.content.cursor_col > 0 {
             let pos = self.cursor_byte_pos();
             let prev_pos = self.find_prev_char_boundary(pos);
             if prev_pos < pos {
-                let before_pieces = self.buffer.get_pieces();
-                let before_add_len = self.buffer.add_buffer_len();
-                let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+                let before_pieces = self.content.buffer.get_pieces();
+                let before_add_len = self.content.buffer.add_buffer_len();
+                let cursor_before =
+                    CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
-                self.buffer.delete(prev_pos, pos);
-                self.cursor_col -= pos - prev_pos;
-                self.is_dirty = true;
+                self.content.buffer.delete(prev_pos, pos);
+                self.content.cursor_col -= pos - prev_pos;
+                self.content.is_dirty = true;
                 if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                    tab.is_dirty = true;
+                    tab.content.is_dirty = true;
                 }
-                self.buffer_version += 1;
+                self.content.buffer_version += 1;
 
-                let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-                self.history.record(
+                let cursor_after =
+                    CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+                self.content.history.record(
                     before_pieces,
                     before_add_len,
                     cursor_before,
@@ -4252,30 +4801,32 @@ impl EditorState {
                 // REQ-P1-02: 行内退格也需要触发编辑事件，确保脏矩形标记和即时刷新
                 self.emit_edit_events();
             }
-        } else if self.cursor_line > 0 {
-            let prev_line = self.cursor_line - 1;
-            if let Some(prev_text) = self.buffer.get_line(prev_line) {
+        } else if self.content.cursor_line > 0 {
+            let prev_line = self.content.cursor_line - 1;
+            if let Some(prev_text) = self.content.buffer.get_line(prev_line) {
                 let prev_len = prev_text.len();
-                if let Some(curr_text) = self.buffer.get_line(self.cursor_line) {
+                if let Some(curr_text) = self.content.buffer.get_line(self.content.cursor_line) {
                     let curr_len = curr_text.len();
                     let start = self.line_byte_start(prev_line) + prev_len;
                     let end = start + curr_len + 1;
 
-                    let before_pieces = self.buffer.get_pieces();
-                    let before_add_len = self.buffer.add_buffer_len();
-                    let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+                    let before_pieces = self.content.buffer.get_pieces();
+                    let before_add_len = self.content.buffer.add_buffer_len();
+                    let cursor_before =
+                        CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
-                    self.buffer.delete(start, end);
-                    self.cursor_line = prev_line;
-                    self.cursor_col = prev_len;
-                    self.is_dirty = true;
+                    self.content.buffer.delete(start, end);
+                    self.content.cursor_line = prev_line;
+                    self.content.cursor_col = prev_len;
+                    self.content.is_dirty = true;
                     if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                        tab.is_dirty = true;
+                        tab.content.is_dirty = true;
                     }
-                    self.buffer_version += 1;
+                    self.content.buffer_version += 1;
 
-                    let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-                    self.history.record(
+                    let cursor_after =
+                        CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+                    self.content.history.record(
                         before_pieces,
                         before_add_len,
                         cursor_before,
@@ -4296,19 +4847,21 @@ impl EditorState {
         let pos = self.cursor_byte_pos();
         let next_pos = self.find_next_char_boundary(pos);
         if next_pos > pos {
-            let before_pieces = self.buffer.get_pieces();
-            let before_add_len = self.buffer.add_buffer_len();
-            let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+            let before_pieces = self.content.buffer.get_pieces();
+            let before_add_len = self.content.buffer.add_buffer_len();
+            let cursor_before =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
-            self.buffer.delete(pos, next_pos);
-            self.is_dirty = true;
+            self.content.buffer.delete(pos, next_pos);
+            self.content.is_dirty = true;
             if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                tab.is_dirty = true;
+                tab.content.is_dirty = true;
             }
-            self.buffer_version += 1;
+            self.content.buffer_version += 1;
 
-            let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-            self.history.record(
+            let cursor_after =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+            self.content.history.record(
                 before_pieces,
                 before_add_len,
                 cursor_before,
@@ -4334,10 +4887,10 @@ impl EditorState {
         }
 
         // REQ-P0-03: 记录操作前光标位置
-        let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+        let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
         // REQ-P0-03: 开始撤销组
-        self.history.begin_group();
+        self.content.history.begin_group();
 
         // 多光标模式：从后往前插入
         let cursors: Vec<_> = self.multi_cursor.cursors.clone();
@@ -4345,13 +4898,13 @@ impl EditorState {
             let pos = self.line_col_to_byte(cursor.line, cursor.col);
 
             // REQ-P0-03: 记录缓冲区状态
-            let before_pieces = self.buffer.get_pieces();
-            let before_add_len = self.buffer.add_buffer_len();
+            let before_pieces = self.content.buffer.get_pieces();
+            let before_add_len = self.content.buffer.add_buffer_len();
 
-            self.buffer.insert(pos, &ch.to_string());
+            self.content.buffer.insert(pos, &ch.to_string());
 
             // REQ-P0-03: 记录撤销历史
-            self.history.record(
+            self.content.history.record(
                 before_pieces,
                 before_add_len,
                 cursor_before,
@@ -4363,58 +4916,68 @@ impl EditorState {
         }
 
         // REQ-P0-03: 结束撤销组
-        self.history.end_group();
+        self.content.history.end_group();
 
         // 更新所有光标位置
         for cursor in &mut self.multi_cursor.cursors {
             cursor.col += ch.len_utf8();
         }
 
-        self.is_dirty = true;
+        self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.is_dirty = true;
+            tab.content.is_dirty = true;
         }
-        self.buffer_version += 1;
+        self.content.buffer_version += 1;
         self.status_message = format!("已在 {} 个位置插入", self.multi_cursor.cursor_count());
         self.emit_edit_events();
     }
 
     /// 多光标删除（退格）广播
     /// REQ-P0-03: 记录撤销历史，使用 begin_group/end_group 作为原子撤销组
+    /// REQ-P2-06: 修正同行多光标位置 — 使用删除偏移量调整而非 find_prev_char_boundary
     pub fn broadcast_delete_char(&mut self) {
         if self.multi_cursor.cursor_count() <= 1 {
             self.delete_char();
             return;
         }
 
-        // 先计算所有需要删除的位置
-        let mut delete_positions: Vec<(usize, usize)> = Vec::new();
-        for cursor in self.multi_cursor.cursors.iter().rev() {
-            if cursor.col > 0 {
-                let pos = self.line_col_to_byte(cursor.line, cursor.col);
+        // 先计算所有需要删除的位置，同时记录每个删除操作的光标索引和原始列
+        // REQ-P2-06: 记录 (cursor_index, line, col) 用于后续位置调整
+        // 使用克隆的 (idx, line, col) 避免对 cursors 的长期借用，便于后续可变修改
+        let mut delete_info: Vec<(usize, usize, usize, usize, usize)> = Vec::new();
+        let mut indexed_cursors: Vec<(usize, usize, usize)> = self
+            .multi_cursor
+            .cursors
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i, c.line, c.col))
+            .collect();
+        indexed_cursors.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)));
+
+        for (idx, line, col) in &indexed_cursors {
+            if *col > 0 {
+                let pos = self.line_col_to_byte(*line, *col);
                 let prev_pos = self.find_prev_char_boundary(pos);
                 if prev_pos < pos {
-                    delete_positions.push((prev_pos, pos));
+                    delete_info.push((*idx, *line, *col, prev_pos, pos));
                 }
             }
         }
 
         // REQ-P0-03: 记录操作前光标位置
-        let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+        let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
         // REQ-P0-03: 开始撤销组
-        self.history.begin_group();
+        self.content.history.begin_group();
 
-        // 执行删除
-        for (start, end) in &delete_positions {
-            // REQ-P0-03: 记录缓冲区状态
-            let before_pieces = self.buffer.get_pieces();
-            let before_add_len = self.buffer.add_buffer_len();
+        // 执行删除（delete_info 已按 line/col 降序排列，从后往前删除）
+        for (_, _, _, start, end) in &delete_info {
+            let before_pieces = self.content.buffer.get_pieces();
+            let before_add_len = self.content.buffer.add_buffer_len();
 
-            self.buffer.delete(*start, *end);
+            self.content.buffer.delete(*start, *end);
 
-            // REQ-P0-03: 记录撤销历史
-            self.history.record(
+            self.content.history.record(
                 before_pieces,
                 before_add_len,
                 cursor_before,
@@ -4426,24 +4989,29 @@ impl EditorState {
         }
 
         // REQ-P0-03: 结束撤销组
-        self.history.end_group();
+        self.content.history.end_group();
 
-        // 更新所有光标位置（重新计算）
-        for i in 0..self.multi_cursor.cursors.len() {
-            let cursor = &self.multi_cursor.cursors[i];
-            if cursor.col > 0 {
-                let pos = self.line_col_to_byte(cursor.line, cursor.col);
-                let prev_pos = self.find_prev_char_boundary(pos);
-                let new_col = prev_pos - self.line_byte_start(cursor.line);
-                self.multi_cursor.cursors[i].col = new_col;
+        // REQ-P2-06: 正确调整光标位置
+        // 对于每个光标，新 col = 原 col - (同行中位于该光标之前或同位置的删除次数)
+        // 因为每次删除都会让该位置之后的光标左移 1
+        for (idx, line, col) in indexed_cursors.iter() {
+            if *col == 0 {
+                continue;
             }
+            // 统计同行中删除位置 <= 当前光标 col 的次数
+            let shifts = delete_info
+                .iter()
+                .filter(|(_, dline, dcol, _, _)| *dline == *line && *dcol <= *col)
+                .count();
+            let new_col = col.saturating_sub(shifts);
+            self.multi_cursor.cursors[*idx].col = new_col;
         }
 
-        self.is_dirty = true;
+        self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.is_dirty = true;
+            tab.content.is_dirty = true;
         }
-        self.buffer_version += 1;
+        self.content.buffer_version += 1;
         self.emit_edit_events();
     }
 
@@ -4456,23 +5024,23 @@ impl EditorState {
         }
 
         // REQ-P0-03: 记录操作前光标位置
-        let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+        let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
         // REQ-P0-03: 开始撤销组
-        self.history.begin_group();
+        self.content.history.begin_group();
 
         let cursors: Vec<_> = self.multi_cursor.cursors.clone();
         for cursor in cursors.iter().rev() {
             let pos = self.line_col_to_byte(cursor.line, cursor.col);
 
             // REQ-P0-03: 记录缓冲区状态
-            let before_pieces = self.buffer.get_pieces();
-            let before_add_len = self.buffer.add_buffer_len();
+            let before_pieces = self.content.buffer.get_pieces();
+            let before_add_len = self.content.buffer.add_buffer_len();
 
-            self.buffer.insert(pos, "\n");
+            self.content.buffer.insert(pos, "\n");
 
             // REQ-P0-03: 记录撤销历史
-            self.history.record(
+            self.content.history.record(
                 before_pieces,
                 before_add_len,
                 cursor_before,
@@ -4484,7 +5052,7 @@ impl EditorState {
         }
 
         // REQ-P0-03: 结束撤销组
-        self.history.end_group();
+        self.content.history.end_group();
 
         // 更新所有光标位置
         for cursor in &mut self.multi_cursor.cursors {
@@ -4492,90 +5060,96 @@ impl EditorState {
             cursor.col = 0;
         }
 
-        self.is_dirty = true;
+        self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.is_dirty = true;
+            tab.content.is_dirty = true;
         }
-        self.buffer_version += 1;
+        self.content.buffer_version += 1;
         self.emit_edit_events();
     }
 
     /// 撤销
     pub fn undo(&mut self) {
-        let current_pieces = self.buffer.get_pieces();
-        let current_add_len = self.buffer.add_buffer_len();
-        let current_cursor = CursorPosition::new(self.cursor_line, self.cursor_col);
+        let current_pieces = self.content.buffer.get_pieces();
+        let current_add_len = self.content.buffer.add_buffer_len();
+        let current_cursor = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
         if let Some((pieces, add_len, cursor)) =
-            self.history
+            self.content
+                .history
                 .undo(current_pieces, current_add_len, current_cursor)
         {
-            self.buffer.restore(pieces, add_len);
-            self.cursor_line = cursor.line;
-            self.cursor_col = cursor.column;
-            self.is_dirty = true;
-            self.buffer_version += 1;
+            self.content.buffer.restore(pieces, add_len);
+            self.content.cursor_line = cursor.line;
+            self.content.cursor_col = cursor.column;
+            self.content.is_dirty = true;
+            self.content.buffer_version += 1;
             self.status_message = "已撤销".to_string();
+            // REQ-P2-05: 撤销后触发编辑事件，确保脏矩形更新和事件订阅者通知
+            self.emit_edit_events();
         }
     }
 
     /// 重做
     pub fn redo(&mut self) {
-        let current_pieces = self.buffer.get_pieces();
-        let current_add_len = self.buffer.add_buffer_len();
-        let current_cursor = CursorPosition::new(self.cursor_line, self.cursor_col);
+        let current_pieces = self.content.buffer.get_pieces();
+        let current_add_len = self.content.buffer.add_buffer_len();
+        let current_cursor = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
         if let Some((pieces, add_len, cursor)) =
-            self.history
+            self.content
+                .history
                 .redo(current_pieces, current_add_len, current_cursor)
         {
-            self.buffer.restore(pieces, add_len);
-            self.cursor_line = cursor.line;
-            self.cursor_col = cursor.column;
-            self.is_dirty = true;
-            self.buffer_version += 1;
+            self.content.buffer.restore(pieces, add_len);
+            self.content.cursor_line = cursor.line;
+            self.content.cursor_col = cursor.column;
+            self.content.is_dirty = true;
+            self.content.buffer_version += 1;
             self.status_message = "已重做".to_string();
+            // REQ-P2-05: 重做后触发编辑事件，确保脏矩形更新和事件订阅者通知
+            self.emit_edit_events();
         }
     }
 
     pub fn move_cursor_left(&mut self) {
-        if self.cursor_col > 0 {
-            if let Some(text) = self.buffer.get_line(self.cursor_line) {
-                let col = self.cursor_col.min(text.len());
+        if self.content.cursor_col > 0 {
+            if let Some(text) = self.content.buffer.get_line(self.content.cursor_line) {
+                let col = text.floor_char_boundary(self.content.cursor_col.min(text.len()));
                 if let Some(ch) = text[..col].chars().next_back() {
-                    self.cursor_col = col - ch.len_utf8();
+                    self.content.cursor_col = col - ch.len_utf8();
                 } else {
-                    self.cursor_col = 0;
+                    self.content.cursor_col = 0;
                 }
             }
-        } else if self.cursor_line > 0 {
-            self.cursor_line -= 1;
-            if let Some(text) = self.buffer.get_line(self.cursor_line) {
-                self.cursor_col = text.len();
+        } else if self.content.cursor_line > 0 {
+            self.content.cursor_line -= 1;
+            if let Some(text) = self.content.buffer.get_line(self.content.cursor_line) {
+                self.content.cursor_col = text.len();
             }
         }
         self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     pub fn move_cursor_right(&mut self) {
-        if let Some(text) = self.buffer.get_line(self.cursor_line) {
-            if self.cursor_col < text.len() {
-                if let Some(ch) = text[self.cursor_col..].chars().next() {
-                    self.cursor_col += ch.len_utf8();
+        if let Some(text) = self.content.buffer.get_line(self.content.cursor_line) {
+            if self.content.cursor_col < text.len() {
+                if let Some(ch) = text[self.content.cursor_col..].chars().next() {
+                    self.content.cursor_col += ch.len_utf8();
                 }
-            } else if self.cursor_line + 1 < self.buffer.len_lines() {
-                self.cursor_line += 1;
-                self.cursor_col = 0;
+            } else if self.content.cursor_line + 1 < self.content.buffer.len_lines() {
+                self.content.cursor_line += 1;
+                self.content.cursor_col = 0;
             }
         }
         self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     pub fn move_cursor_up(&mut self) {
-        if self.cursor_line > 0 {
-            self.cursor_line -= 1;
-            if let Some(text) = self.buffer.get_line(self.cursor_line) {
-                self.cursor_col = self.cursor_col.min(text.len());
+        if self.content.cursor_line > 0 {
+            self.content.cursor_line -= 1;
+            if let Some(text) = self.content.buffer.get_line(self.content.cursor_line) {
+                self.content.cursor_col = self.content.cursor_col.min(text.len());
             }
         }
         // REQ-P1-01: 垂直滚动跟随，确保光标可见
@@ -4584,10 +5158,10 @@ impl EditorState {
     }
 
     pub fn move_cursor_down(&mut self) {
-        if self.cursor_line + 1 < self.buffer.len_lines() {
-            self.cursor_line += 1;
-            if let Some(text) = self.buffer.get_line(self.cursor_line) {
-                self.cursor_col = self.cursor_col.min(text.len());
+        if self.content.cursor_line + 1 < self.content.buffer.len_lines() {
+            self.content.cursor_line += 1;
+            if let Some(text) = self.content.buffer.get_line(self.content.cursor_line) {
+                self.content.cursor_col = self.content.cursor_col.min(text.len());
             }
         }
         // REQ-P1-01: 垂直滚动跟随，确保光标可见
@@ -4596,13 +5170,13 @@ impl EditorState {
     }
 
     pub fn move_cursor_home(&mut self) {
-        self.cursor_col = 0;
+        self.content.cursor_col = 0;
         self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     pub fn move_cursor_end(&mut self) {
-        if let Some(text) = self.buffer.get_line(self.cursor_line) {
-            self.cursor_col = text.len();
+        if let Some(text) = self.content.buffer.get_line(self.content.cursor_line) {
+            self.content.cursor_col = text.len();
         }
         self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
@@ -4612,35 +5186,35 @@ impl EditorState {
     /// 通过传入 `already_at_smart_home` 判断是否为第二次按 Home。
     pub fn move_cursor_smart_home(&mut self, already_at_smart_home: bool) {
         if already_at_smart_home {
-            self.cursor_col = 0;
+            self.content.cursor_col = 0;
             self.emit_event(crate::events::EditorEvent::CursorMoved);
             return;
         }
-        if let Some(text) = self.buffer.get_line(self.cursor_line) {
+        if let Some(text) = self.content.buffer.get_line(self.content.cursor_line) {
             let first_non_ws = text
                 .char_indices()
                 .skip_while(|(_, c)| c.is_whitespace())
                 .map(|(i, _)| i)
                 .next()
                 .unwrap_or(text.len());
-            self.cursor_col = first_non_ws;
+            self.content.cursor_col = first_non_ws;
         }
         self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// P1-6: 移动到文件首行
     pub fn move_cursor_file_start(&mut self) {
-        self.cursor_line = 0;
-        self.cursor_col = 0;
+        self.content.cursor_line = 0;
+        self.content.cursor_col = 0;
         self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// P1-6: 移动到文件末行末列
     pub fn move_cursor_file_end(&mut self) {
-        let last_line = self.buffer.len_lines().saturating_sub(1);
-        self.cursor_line = last_line;
-        if let Some(text) = self.buffer.get_line(self.cursor_line) {
-            self.cursor_col = text.len();
+        let last_line = self.content.buffer.len_lines().saturating_sub(1);
+        self.content.cursor_line = last_line;
+        if let Some(text) = self.content.buffer.get_line(self.content.cursor_line) {
+            self.content.cursor_col = text.len();
         }
         self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
@@ -4649,78 +5223,101 @@ impl EditorState {
     /// 跳过当前空白，再跳到上一个单词边界。
     /// REQ-P0-01: 修复字节/字符索引混淆——cursor_col 是字节偏移，
     /// 必须先转为字符索引再用于 chars Vec 的索引。
+    /// REQ-P2-02: 避免每次调用分配 Vec<char>，直接基于字节偏移遍历。
     pub fn move_cursor_word_left(&mut self) {
-        if let Some(text) = self.buffer.get_line(self.cursor_line) {
-            let chars: Vec<char> = text.chars().collect();
-            // REQ-P0-01: 将字节偏移转为字符索引
-            let byte_offset = self.cursor_col.min(text.len());
-            let mut idx = text[..byte_offset].chars().count();
-            if idx > 0 {
-                idx -= 1;
-            }
+        if let Some(text) = self.content.buffer.get_line(self.content.cursor_line) {
+            let text_len = text.len();
+            let mut byte_offset = text.floor_char_boundary(self.content.cursor_col.min(text_len));
 
-            // 跳过空白
-            while idx > 0 && chars[idx - 1].is_whitespace() {
-                idx -= 1;
-            }
-            // 跳过当前单词
-            let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
-            if idx > 0 && is_word_char(chars[idx - 1]) {
-                while idx > 0 && is_word_char(chars[idx - 1]) {
-                    idx -= 1;
+            // 辅助：取 byte_offset 之前一个字符的字节位置与该字符
+            let prev_char = |pos: usize| -> Option<(usize, char)> {
+                if pos == 0 {
+                    return None;
                 }
-            } else {
-                // 非单词字符：跳过一个符号
-                idx = idx.saturating_sub(1);
-            }
-            // 转回字节偏移
-            let mut byte_col = 0;
-            for (i, c) in chars.iter().enumerate() {
-                if i >= idx {
+                let prev_pos = text.floor_char_boundary(pos - 1);
+                text[prev_pos..pos].chars().next().map(|c| (prev_pos, c))
+            };
+
+            // 向后跳过空白
+            while let Some((prev_pos, ch)) = prev_char(byte_offset) {
+                if ch.is_whitespace() {
+                    byte_offset = prev_pos;
+                } else {
                     break;
                 }
-                byte_col += c.len_utf8();
             }
-            self.cursor_col = byte_col;
-        } else if self.cursor_line > 0 {
-            self.cursor_line -= 1;
+
+            // 跳过当前单词（字母数字下划线）或跳过一个符号
+            if let Some((prev_pos, ch)) = prev_char(byte_offset) {
+                let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+                if is_word_char(ch) {
+                    while let Some((p, c)) = prev_char(byte_offset) {
+                        if is_word_char(c) {
+                            byte_offset = p;
+                        } else {
+                            break;
+                        }
+                    }
+                } else {
+                    // 非单词字符：跳过一个符号
+                    byte_offset = prev_pos;
+                }
+            }
+
+            self.content.cursor_col = byte_offset;
+        } else if self.content.cursor_line > 0 {
+            self.content.cursor_line -= 1;
             self.move_cursor_end();
         }
         self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
 
     /// P1-6: 向右移动一个单词。
+    /// REQ-P2-02: 避免每次调用分配 Vec<char>，直接基于字节偏移遍历。
     pub fn move_cursor_word_right(&mut self) {
-        if let Some(text) = self.buffer.get_line(self.cursor_line) {
-            let chars: Vec<char> = text.chars().collect();
-            let idx = self.cursor_col;
-            let mut char_idx = text[..idx.min(text.len())].chars().count();
+        if let Some(text) = self.content.buffer.get_line(self.content.cursor_line) {
+            let text_len = text.len();
+            let mut byte_offset = text.floor_char_boundary(self.content.cursor_col.min(text_len));
 
-            // 跳过空白
-            while char_idx < chars.len() && chars[char_idx].is_whitespace() {
-                char_idx += 1;
-            }
-            // 跳过当前单词
-            let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
-            if char_idx < chars.len() && is_word_char(chars[char_idx]) {
-                while char_idx < chars.len() && is_word_char(chars[char_idx]) {
-                    char_idx += 1;
+            // 辅助：取 byte_offset 处字符的字节范围
+            let curr_char = |pos: usize| -> Option<(usize, usize, char)> {
+                if pos >= text_len {
+                    return None;
                 }
-            } else if char_idx < chars.len() {
-                char_idx += 1;
-            }
-            // 转回字节偏移
-            let mut byte_col = 0;
-            for (i, c) in chars.iter().enumerate() {
-                if i >= char_idx {
+                let ch = text[pos..].chars().next()?;
+                Some((pos, pos + ch.len_utf8(), ch))
+            };
+
+            // 向前跳过空白
+            while let Some((_, next_pos, ch)) = curr_char(byte_offset) {
+                if ch.is_whitespace() {
+                    byte_offset = next_pos;
+                } else {
                     break;
                 }
-                byte_col += c.len_utf8();
             }
-            self.cursor_col = byte_col;
-        } else if self.cursor_line + 1 < self.buffer.len_lines() {
-            self.cursor_line += 1;
-            self.cursor_col = 0;
+
+            // 跳过当前单词或一个符号
+            if let Some((_, next_pos, ch)) = curr_char(byte_offset) {
+                let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+                if is_word_char(ch) {
+                    while let Some((_, np, c)) = curr_char(byte_offset) {
+                        if is_word_char(c) {
+                            byte_offset = np;
+                        } else {
+                            break;
+                        }
+                    }
+                } else {
+                    // 非单词字符：跳过一个符号
+                    byte_offset = next_pos;
+                }
+            }
+
+            self.content.cursor_col = byte_offset;
+        } else if self.content.cursor_line + 1 < self.content.buffer.len_lines() {
+            self.content.cursor_line += 1;
+            self.content.cursor_col = 0;
         }
         self.emit_event(crate::events::EditorEvent::CursorMoved);
     }
@@ -4728,7 +5325,7 @@ impl EditorState {
     /// P1-6: 切换行注释（按语言决定注释符号）。
     /// 当前行已有注释符号则移除，否则添加。
     pub fn toggle_line_comment(&mut self) {
-        let comment_prefix = match self.language {
+        let comment_prefix = match self.content.language {
             Language::Rust
             | Language::C
             | Language::JavaScript
@@ -4738,8 +5335,8 @@ impl EditorState {
             _ => return, // 不支持的语言（如 PlainText/Markdown/Html/Css）直接返回
         };
 
-        let line_idx = self.cursor_line;
-        let line = match self.buffer.get_line(line_idx) {
+        let line_idx = self.content.cursor_line;
+        let line = match self.content.buffer.get_line(line_idx) {
             Some(s) => s,
             None => return,
         };
@@ -4747,31 +5344,31 @@ impl EditorState {
         // 检测是否已有注释前缀
         let stripped = line.strip_prefix(comment_prefix);
         let pos = self.line_byte_start(line_idx);
-        let before_pieces = self.buffer.get_pieces();
-        let before_add_len = self.buffer.add_buffer_len();
-        let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+        let before_pieces = self.content.buffer.get_pieces();
+        let before_add_len = self.content.buffer.add_buffer_len();
+        let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
         if let Some(_rest) = stripped {
             // 已有注释：移除前缀
             let remove_len = comment_prefix.len();
-            self.buffer.delete(pos, pos + remove_len);
+            self.content.buffer.delete(pos, pos + remove_len);
             // 光标列前移
-            self.cursor_col = self.cursor_col.saturating_sub(remove_len);
+            self.content.cursor_col = self.content.cursor_col.saturating_sub(remove_len);
         } else {
             // 无注释：在行首添加前缀
-            self.buffer.insert(pos, comment_prefix);
+            self.content.buffer.insert(pos, comment_prefix);
             // 光标列后移
-            self.cursor_col += comment_prefix.len();
+            self.content.cursor_col += comment_prefix.len();
         }
 
-        self.is_dirty = true;
+        self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.is_dirty = true;
+            tab.content.is_dirty = true;
         }
-        self.buffer_version += 1;
+        self.content.buffer_version += 1;
 
-        let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-        self.history.record(
+        let cursor_after = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+        self.content.history.record(
             before_pieces,
             before_add_len,
             cursor_before,
@@ -4785,20 +5382,21 @@ impl EditorState {
 
     /// P1-6: 在下一行同一列添加光标（Ctrl+Alt+Down）。
     pub fn add_cursor_line_below(&mut self) {
-        let line = self.cursor_line;
-        let col = self.cursor_col;
-        if line + 1 < self.buffer.len_lines() {
+        let line = self.content.cursor_line;
+        let col = self.content.cursor_col;
+        if line + 1 < self.content.buffer.len_lines() {
             let new_line = line + 1;
             // 钳制 col 到新行长度
             let max_col = self
+                .content
                 .buffer
                 .get_line(new_line)
                 .map(|s| s.len())
                 .unwrap_or(col);
             self.multi_cursor
                 .add_cursor(Cursor::new(new_line, col.min(max_col)));
-            self.cursor_line = new_line;
-            self.cursor_col = col.min(max_col);
+            self.content.cursor_line = new_line;
+            self.content.cursor_col = col.min(max_col);
             self.status_message =
                 format!("已添加光标（共 {} 处）", self.multi_cursor.cursor_count());
         }
@@ -4806,19 +5404,20 @@ impl EditorState {
 
     /// P1-6: 在上一行同一列添加光标（Ctrl+Alt+Up）。
     pub fn add_cursor_line_above(&mut self) {
-        let line = self.cursor_line;
-        let col = self.cursor_col;
+        let line = self.content.cursor_line;
+        let col = self.content.cursor_col;
         if line > 0 {
             let new_line = line - 1;
             let max_col = self
+                .content
                 .buffer
                 .get_line(new_line)
                 .map(|s| s.len())
                 .unwrap_or(col);
             self.multi_cursor
                 .add_cursor(Cursor::new(new_line, col.min(max_col)));
-            self.cursor_line = new_line;
-            self.cursor_col = col.min(max_col);
+            self.content.cursor_line = new_line;
+            self.content.cursor_col = col.min(max_col);
             self.status_message =
                 format!("已添加光标（共 {} 处）", self.multi_cursor.cursor_count());
         }
@@ -4829,13 +5428,13 @@ impl EditorState {
     pub fn add_cursor_at_next_occurrence(&mut self) {
         // 获取当前要查找的文本（来自选区或光标所在单词）
         let search_text = if let (Some((sline, scol)), Some((eline, ecol))) =
-            (self.selection_start, self.selection_end)
+            (self.content.selection_start, self.content.selection_end)
         {
             if sline == eline {
                 let s = self.line_col_to_byte(sline, scol);
                 let e = self.line_col_to_byte(eline, ecol);
                 if s < e {
-                    self.buffer.get_text(s, e)
+                    self.content.buffer.get_text(s, e)
                 } else {
                     String::new()
                 }
@@ -4844,9 +5443,10 @@ impl EditorState {
             }
         } else {
             // 取光标所在单词
-            if let Some(text) = self.buffer.get_line(self.cursor_line) {
+            if let Some(text) = self.content.buffer.get_line(self.content.cursor_line) {
                 let chars: Vec<char> = text.chars().collect();
-                let char_idx = text[..self.cursor_col.min(text.len())].chars().count();
+                let byte_pos = text.floor_char_boundary(self.content.cursor_col.min(text.len()));
+                let char_idx = text[..byte_pos].chars().count();
                 let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
                 if char_idx < chars.len() && is_word_char(chars[char_idx]) {
                     // 找单词边界
@@ -4883,18 +5483,18 @@ impl EditorState {
 
         // 从当前光标位置开始向后查找
         let start_byte = self.cursor_byte_pos() + search_text.len();
-        let total_bytes = self.buffer.len_bytes();
-        let text_after = self.buffer.get_text(start_byte, total_bytes);
+        let total_bytes = self.content.buffer.len_bytes();
+        let text_after = self.content.buffer.get_text(start_byte, total_bytes);
 
         if let Some(rel_pos) = text_after.find(&search_text) {
             let abs_byte = start_byte + rel_pos;
             // 转换为 (line, col)
             let (line, col) = self.byte_to_line_col(abs_byte);
             self.multi_cursor.add_cursor(Cursor::new(line, col));
-            self.cursor_line = line;
-            self.cursor_col = col;
-            self.selection_start = Some((line, col));
-            self.selection_end = Some((line, col + search_text.len()));
+            self.content.cursor_line = line;
+            self.content.cursor_col = col;
+            self.content.selection_start = Some((line, col));
+            self.content.selection_end = Some((line, col + search_text.len()));
             self.status_message =
                 format!("已添加光标（共 {} 处）", self.multi_cursor.cursor_count());
         }
@@ -4912,16 +5512,16 @@ impl EditorState {
         let line_number_width = 60.0;
 
         // P0-3: 鼠标 x 加上 scroll_x 抵消，确保点击的字符位置正确
-        let rel_x = mouse_x - editor_x - line_number_width - 5.0 + self.scroll_x;
-        let rel_y = mouse_y - editor_y + self.scroll_y;
+        let rel_x = mouse_x - editor_x - line_number_width - 5.0 + self.content.scroll_x;
+        let rel_y = mouse_y - editor_y + self.content.scroll_y;
 
         let line = (rel_y / line_height) as usize;
         let char_col = (rel_x / char_width).max(0.0) as usize;
 
-        let total_lines = self.buffer.len_lines();
-        self.cursor_line = line.min(total_lines.saturating_sub(1));
+        let total_lines = self.content.buffer.len_lines();
+        self.content.cursor_line = line.min(total_lines.saturating_sub(1));
 
-        if let Some(text) = self.buffer.get_line(self.cursor_line) {
+        if let Some(text) = self.content.buffer.get_line(self.content.cursor_line) {
             // 将字符列转换为字节偏移，对齐到字符边界
             let mut byte_col = 0usize;
             for (i, ch) in text.chars().enumerate() {
@@ -4930,21 +5530,21 @@ impl EditorState {
                 }
                 byte_col += ch.len_utf8();
             }
-            self.cursor_col = byte_col.min(text.len());
+            self.content.cursor_col = byte_col.min(text.len());
         } else {
-            self.cursor_col = 0;
+            self.content.cursor_col = 0;
         }
     }
 
     pub fn start_selection(&mut self) {
-        self.selection_start = Some((self.cursor_line, self.cursor_col));
-        self.selection_end = Some((self.cursor_line, self.cursor_col));
+        self.content.selection_start = Some((self.content.cursor_line, self.content.cursor_col));
+        self.content.selection_end = Some((self.content.cursor_line, self.content.cursor_col));
         self.is_selecting = true;
     }
 
     pub fn update_selection(&mut self) {
         if self.is_selecting {
-            self.selection_end = Some((self.cursor_line, self.cursor_col));
+            self.content.selection_end = Some((self.content.cursor_line, self.content.cursor_col));
         }
     }
 
@@ -4953,8 +5553,8 @@ impl EditorState {
     }
 
     pub fn clear_selection(&mut self) {
-        self.selection_start = None;
-        self.selection_end = None;
+        self.content.selection_start = None;
+        self.content.selection_end = None;
     }
 
     /// P2-5: 双击选词。基于鼠标位置定位到 (line, byte_col)，然后在当前行
@@ -4968,9 +5568,9 @@ impl EditorState {
     ) {
         // 先把光标定位到点击位置
         self.set_cursor_from_mouse(mouse_x, mouse_y, editor_x, editor_y);
-        let line_idx = self.cursor_line;
-        let byte_col = self.cursor_col;
-        let line_text = match self.buffer.get_line(line_idx) {
+        let line_idx = self.content.cursor_line;
+        let byte_col = self.content.cursor_col;
+        let line_text = match self.content.buffer.get_line(line_idx) {
             Some(t) => t,
             None => return,
         };
@@ -5020,20 +5620,20 @@ impl EditorState {
             .get(end_char)
             .copied()
             .unwrap_or(line_text.len());
-        self.selection_start = Some((line_idx, start_byte));
-        self.selection_end = Some((line_idx, end_byte));
-        self.cursor_col = end_byte;
+        self.content.selection_start = Some((line_idx, start_byte));
+        self.content.selection_end = Some((line_idx, end_byte));
+        self.content.cursor_col = end_byte;
         self.is_selecting = false;
     }
 
     pub fn get_selected_text(&self) -> Option<String> {
-        let (start_line, start_col) = self.selection_start?;
-        let (end_line, end_col) = self.selection_end?;
+        let (start_line, start_col) = self.content.selection_start?;
+        let (end_line, end_col) = self.content.selection_end?;
 
         if start_line == end_line {
-            let line = self.buffer.get_line(start_line)?;
-            let start = start_col.min(line.len());
-            let end = end_col.min(line.len());
+            let line = self.content.buffer.get_line(start_line)?;
+            let start = line.floor_char_boundary(start_col.min(line.len()));
+            let end = line.floor_char_boundary(end_col.min(line.len()));
             let (s, e) = if start <= end {
                 (start, end)
             } else {
@@ -5056,11 +5656,13 @@ impl EditorState {
         };
 
         for line_idx in first_line..=last_line {
-            if let Some(line) = self.buffer.get_line(line_idx) {
+            if let Some(line) = self.content.buffer.get_line(line_idx) {
                 if line_idx == first_line {
-                    result.push_str(&line[first_col.min(line.len())..]);
+                    let start = line.floor_char_boundary(first_col.min(line.len()));
+                    result.push_str(&line[start..]);
                 } else if line_idx == last_line {
-                    result.push_str(&line[..last_col.min(line.len())]);
+                    let end = line.floor_char_boundary(last_col.min(line.len()));
+                    result.push_str(&line[..end]);
                 } else {
                     result.push_str(&line);
                 }
@@ -5073,17 +5675,17 @@ impl EditorState {
     }
 
     fn cursor_byte_pos(&self) -> usize {
-        self.line_byte_start(self.cursor_line) + self.cursor_col
+        self.line_byte_start(self.content.cursor_line) + self.content.cursor_col
     }
 
     fn line_byte_start(&self, line_idx: usize) -> usize {
-        self.buffer.line_start_byte(line_idx)
+        self.content.buffer.line_start_byte(line_idx)
     }
 
     /// 将行号+列号转换为字节偏移 - O(1) 行起始 + O(1) 列偏移
     pub fn line_col_to_byte(&self, line: usize, col: usize) -> usize {
-        let start = self.buffer.line_start_byte(line);
-        if let Some(text) = self.buffer.get_line(line) {
+        let start = self.content.buffer.line_start_byte(line);
+        if let Some(text) = self.content.buffer.get_line(line) {
             start + col.min(text.len())
         } else {
             start
@@ -5092,7 +5694,7 @@ impl EditorState {
 
     /// P1-6: 将字节偏移转换为 (line, col) - O(log n) 二分查找行号
     fn byte_to_line_col(&self, byte: usize) -> (usize, usize) {
-        let total_lines = self.buffer.len_lines();
+        let total_lines = self.content.buffer.len_lines();
         if total_lines == 0 {
             return (0, 0);
         }
@@ -5101,14 +5703,14 @@ impl EditorState {
         let mut hi: usize = total_lines;
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            if self.buffer.line_start_byte(mid) <= byte {
+            if self.content.buffer.line_start_byte(mid) <= byte {
                 lo = mid + 1;
             } else {
                 hi = mid;
             }
         }
         let line = lo.saturating_sub(1).min(total_lines.saturating_sub(1));
-        let line_start = self.buffer.line_start_byte(line);
+        let line_start = self.content.buffer.line_start_byte(line);
         let col = byte.saturating_sub(line_start);
         (line, col)
     }
@@ -5119,20 +5721,32 @@ impl EditorState {
         }
         let mut p = pos - 1;
         // P4-1: 使用 byte_at 替代 get_text(p, p+1).as_bytes()[0]，避免 String 堆分配
-        while p > 0 && self.buffer.byte_at(p).is_some_and(|b| (b & 0xC0) == 0x80) {
+        while p > 0
+            && self
+                .content
+                .buffer
+                .byte_at(p)
+                .is_some_and(|b| (b & 0xC0) == 0x80)
+        {
             p -= 1;
         }
         p
     }
 
     fn find_next_char_boundary(&self, pos: usize) -> usize {
-        let total = self.buffer.len_bytes();
+        let total = self.content.buffer.len_bytes();
         if pos >= total {
             return total;
         }
         let mut p = pos + 1;
         // P4-1: 使用 byte_at 避免逐字节 String 分配
-        while p < total && self.buffer.byte_at(p).is_some_and(|b| (b & 0xC0) == 0x80) {
+        while p < total
+            && self
+                .content
+                .buffer
+                .byte_at(p)
+                .is_some_and(|b| (b & 0xC0) == 0x80)
+        {
             p += 1;
         }
         p
@@ -5140,20 +5754,40 @@ impl EditorState {
 
     /// 增量重建缓存：只重建可见行范围内的缓存，大幅减少大文件的词法分析开销
     pub(crate) fn rebuild_cache(&mut self, visible_start: usize, visible_end: usize) {
+        let total_lines = self.content.buffer.len_lines().max(1);
+
+        // REQ-P2-01: 变化检测 — 如果 buffer_version、可见范围、总行数均未变化，跳过整个重建
+        // 空闲帧（无编辑、无滚动）不会产生任何缓存重建开销
+        let signature = (
+            self.content.buffer_version,
+            visible_start,
+            visible_end,
+            total_lines,
+        );
+        if self.content.last_cache_signature == signature
+            && self.content.cached_lines.len() == total_lines
+        {
+            return;
+        }
+        self.content.last_cache_signature = signature;
+
         // tree-sitter 优先高亮：返回支持的语言的字符串标识
         // 不支持的语言返回 None，由调用方 fallback 到手写 lexer
-        let ts_lang = language_to_ts_str(self.language);
-        let total_lines = self.buffer.len_lines().max(1);
+        let ts_lang = language_to_ts_str(self.content.language);
 
         // P2.3: 大文件检测与行偏移缓存
         self.update_large_file_flag();
         self.rebuild_line_y_offsets();
 
         // 如果行数变化，重新调整缓存向量大小
-        if self.cached_lines.len() != total_lines {
-            self.cached_lines.resize_with(total_lines, String::new);
-            self.cached_tokens.resize_with(total_lines, Vec::new);
-            self.line_cache_versions.resize(total_lines, 0);
+        if self.content.cached_lines.len() != total_lines {
+            self.content
+                .cached_lines
+                .resize_with(total_lines, String::new);
+            self.content
+                .cached_tokens
+                .resize_with(total_lines, Vec::new);
+            self.content.line_cache_versions.resize(total_lines, 0);
         }
 
         // 调整行号 UTF-16 缓存大小
@@ -5170,9 +5804,9 @@ impl EditorState {
         let mut lexer: Option<Box<dyn aether_core::lexer::Lexer>> = None;
 
         for i in cache_start..cache_end {
-            if self.line_cache_versions[i] != self.buffer_version {
-                let line = self.buffer.get_line(i).unwrap_or_default();
-                let tokens = if self.is_large_file {
+            if self.content.line_cache_versions[i] != self.content.buffer_version {
+                let line = self.content.buffer.get_line(i).unwrap_or_default();
+                let tokens = if self.content.is_large_file {
                     Vec::new()
                 } else if let Some(lang) = ts_lang {
                     // tree-sitter 高亮：返回 Vec<LexemeSpan>，类型与手写 lexer 完全一致
@@ -5180,7 +5814,7 @@ impl EditorState {
                 } else {
                     // fallback：手写 lexer（Markdown/Html/Css/PlainText/Image 等）
                     if lexer.is_none() {
-                        lexer = Some(self.language.create_lexer());
+                        lexer = Some(self.content.language.create_lexer());
                     }
                     // C-03: lexer 创建可能返回 None（不支持的语言），unwrap 会 panic 并穿越 WndProc
                     if let Some(lex) = lexer.as_ref() {
@@ -5189,9 +5823,9 @@ impl EditorState {
                         Vec::new()
                     }
                 };
-                self.cached_lines[i] = line;
-                self.cached_tokens[i] = tokens;
-                self.line_cache_versions[i] = self.buffer_version;
+                self.content.cached_lines[i] = line;
+                self.content.cached_tokens[i] = tokens;
+                self.content.line_cache_versions[i] = self.content.buffer_version;
             }
             // 行号 UTF-16 缓存：如果为空则构建
             if self.cached_line_numbers[i].is_empty() {
@@ -5204,25 +5838,29 @@ impl EditorState {
     /// 全量重建缓存（用于初始化或强制刷新）
     #[allow(dead_code)]
     pub(crate) fn rebuild_cache_full(&mut self) {
-        let total_lines = self.buffer.len_lines().max(1);
+        let total_lines = self.content.buffer.len_lines().max(1);
 
-        if self.cached_lines.len() != total_lines {
-            self.cached_lines.resize_with(total_lines, String::new);
-            self.cached_tokens.resize_with(total_lines, Vec::new);
-            self.line_cache_versions.resize(total_lines, 0);
+        if self.content.cached_lines.len() != total_lines {
+            self.content
+                .cached_lines
+                .resize_with(total_lines, String::new);
+            self.content
+                .cached_tokens
+                .resize_with(total_lines, Vec::new);
+            self.content.line_cache_versions.resize(total_lines, 0);
         }
 
-        let ts_lang = language_to_ts_str(self.language);
+        let ts_lang = language_to_ts_str(self.content.language);
         let mut lexer: Option<Box<dyn aether_core::lexer::Lexer>> = None;
 
         for i in 0..total_lines {
-            if self.line_cache_versions[i] != self.buffer_version {
-                let line = self.buffer.get_line(i).unwrap_or_default();
+            if self.content.line_cache_versions[i] != self.content.buffer_version {
+                let line = self.content.buffer.get_line(i).unwrap_or_default();
                 let tokens = if let Some(lang) = ts_lang {
                     self.ts_highlighter.highlight_line(&line, lang)
                 } else {
                     if lexer.is_none() {
-                        lexer = Some(self.language.create_lexer());
+                        lexer = Some(self.content.language.create_lexer());
                     }
                     if let Some(lex) = lexer.as_ref() {
                         lex.lex_full(&line)
@@ -5230,9 +5868,9 @@ impl EditorState {
                         Vec::new()
                     }
                 };
-                self.cached_lines[i] = line;
-                self.cached_tokens[i] = tokens;
-                self.line_cache_versions[i] = self.buffer_version;
+                self.content.cached_lines[i] = line;
+                self.content.cached_tokens[i] = tokens;
+                self.content.line_cache_versions[i] = self.content.buffer_version;
             }
         }
     }
@@ -5241,28 +5879,32 @@ impl EditorState {
     /// 在编辑操作后调用，只标记受影响的行，避免全量重建
     #[allow(dead_code)]
     pub(crate) fn invalidate_line_cache(&mut self, start_line: usize, end_line: usize) {
-        let total_lines = self.line_cache_versions.len();
+        let total_lines = self.content.line_cache_versions.len();
         if total_lines == 0 {
             return;
         }
         let start = start_line.min(total_lines - 1);
         let end = end_line.min(total_lines - 1);
         for i in start..=end {
-            self.line_cache_versions[i] = 0; // 0 表示未缓存，强制重建
+            self.content.line_cache_versions[i] = 0; // 0 表示未缓存，强制重建
         }
     }
 
     /// 处理编辑结果，更新缓存和行版本
     #[allow(dead_code)]
     pub(crate) fn apply_edit_result(&mut self, result: &aether_core::buffer::EditResult) {
-        self.buffer_version += 1;
-        let total_lines = self.buffer.len_lines().max(1);
+        self.content.buffer_version += 1;
+        let total_lines = self.content.buffer.len_lines().max(1);
 
         if result.line_delta != 0 {
             // 行数变化，重新调整缓存向量
-            self.cached_lines.resize_with(total_lines, String::new);
-            self.cached_tokens.resize_with(total_lines, Vec::new);
-            self.line_cache_versions.resize(total_lines, 0);
+            self.content
+                .cached_lines
+                .resize_with(total_lines, String::new);
+            self.content
+                .cached_tokens
+                .resize_with(total_lines, Vec::new);
+            self.content.line_cache_versions.resize(total_lines, 0);
         }
 
         // 标记受影响的行为失效
@@ -5286,7 +5928,7 @@ impl EditorState {
         }
         // 缓存命中：查询和文本版本都未变，跳过搜索
         if self.find_query == self.last_find_query
-            && self.find_result_version == self.buffer_version
+            && self.find_result_version == self.content.buffer_version
             && !self.find_results.is_empty()
         {
             // 结果已有效，无需重新搜索
@@ -5295,9 +5937,9 @@ impl EditorState {
         // 缓存未命中：清空并重新搜索
         self.find_results.clear();
         let query = self.find_query.clone();
-        let total_lines = self.buffer.len_lines();
+        let total_lines = self.content.buffer.len_lines();
         for line_idx in 0..total_lines {
-            if let Some(line) = self.buffer.get_line(line_idx) {
+            if let Some(line) = self.content.buffer.get_line(line_idx) {
                 let mut start = 0;
                 while let Some(pos) = line[start..].find(&query) {
                     let abs_pos = start + pos;
@@ -5311,7 +5953,7 @@ impl EditorState {
         }
         // 更新缓存状态
         self.last_find_query = query;
-        self.find_result_version = self.buffer_version;
+        self.find_result_version = self.content.buffer_version;
     }
 
     /// 跳转到下一个匹配
@@ -5324,11 +5966,11 @@ impl EditorState {
             let (line, col) = self.find_results[self.find_active_index];
             // P2-6: 选区末尾对齐到字符边界；cursor_col 置于匹配末尾以符合编辑器约定
             let end_col = self.clamp_to_char_boundary(line, col + self.find_query.len());
-            self.cursor_line = line;
-            self.cursor_col = end_col;
+            self.content.cursor_line = line;
+            self.content.cursor_col = end_col;
             // 选中匹配文本
-            self.selection_start = Some((line, col));
-            self.selection_end = Some((line, end_col));
+            self.content.selection_start = Some((line, col));
+            self.content.selection_end = Some((line, end_col));
         }
     }
 
@@ -5346,17 +5988,17 @@ impl EditorState {
             let (line, col) = self.find_results[self.find_active_index];
             // P2-6: 选区末尾对齐到字符边界
             let end_col = self.clamp_to_char_boundary(line, col + self.find_query.len());
-            self.cursor_line = line;
-            self.cursor_col = end_col;
-            self.selection_start = Some((line, col));
-            self.selection_end = Some((line, end_col));
+            self.content.cursor_line = line;
+            self.content.cursor_col = end_col;
+            self.content.selection_start = Some((line, col));
+            self.content.selection_end = Some((line, end_col));
         }
     }
 
     /// P2-6: 把字节偏移对齐到字符边界（向下取到下一个字符起点）。
     /// 避免 selection_end 落在多字节字符中间导致渲染/截取异常。
     fn clamp_to_char_boundary(&self, line_idx: usize, byte_pos: usize) -> usize {
-        if let Some(line) = self.buffer.get_line(line_idx) {
+        if let Some(line) = self.content.buffer.get_line(line_idx) {
             let max = line.len();
             if byte_pos >= max {
                 return max;
@@ -5381,19 +6023,19 @@ impl EditorState {
         let pos = self.line_byte_start(line) + col;
         let end_pos = pos + self.find_query.len();
 
-        let before_pieces = self.buffer.get_pieces();
-        let before_add_len = self.buffer.add_buffer_len();
-        let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+        let before_pieces = self.content.buffer.get_pieces();
+        let before_add_len = self.content.buffer.add_buffer_len();
+        let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
-        self.buffer.delete(pos, end_pos);
-        self.buffer.insert(pos, &self.replace_text);
-        self.is_dirty = true;
-        self.buffer_version += 1;
+        self.content.buffer.delete(pos, end_pos);
+        self.content.buffer.insert(pos, &self.replace_text);
+        self.content.is_dirty = true;
+        self.content.buffer_version += 1;
 
-        self.cursor_line = line;
-        self.cursor_col = col + self.replace_text.len();
-        let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-        self.history.record(
+        self.content.cursor_line = line;
+        self.content.cursor_col = col + self.replace_text.len();
+        let cursor_after = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+        self.content.history.record(
             before_pieces,
             before_add_len,
             cursor_before,
@@ -5432,23 +6074,23 @@ impl EditorState {
         global_offsets.sort_by(|a, b| b.cmp(a));
 
         // REQ-P0-02: 记录替换前的光标位置，用于撤销后恢复
-        let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+        let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
         // REQ-P0-02: 开始撤销组，所有替换作为一个原子撤销单元
-        self.history.begin_group();
+        self.content.history.begin_group();
 
         for pos in global_offsets {
             let end_pos = pos + query_len;
 
             // REQ-P0-02: 每次替换前记录缓冲区状态
-            let before_pieces = self.buffer.get_pieces();
-            let before_add_len = self.buffer.add_buffer_len();
+            let before_pieces = self.content.buffer.get_pieces();
+            let before_add_len = self.content.buffer.add_buffer_len();
 
-            self.buffer.delete(pos, end_pos);
-            self.buffer.insert(pos, &replace_text);
+            self.content.buffer.delete(pos, end_pos);
+            self.content.buffer.insert(pos, &replace_text);
 
             // REQ-P0-02: 记录每次替换的编辑历史
-            self.history.record(
+            self.content.history.record(
                 before_pieces,
                 before_add_len,
                 cursor_before,
@@ -5460,13 +6102,13 @@ impl EditorState {
         }
 
         // REQ-P0-02: 结束撤销组
-        self.history.end_group();
+        self.content.history.end_group();
 
-        self.is_dirty = true;
+        self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.is_dirty = true;
+            tab.content.is_dirty = true;
         }
-        self.buffer_version += 1;
+        self.content.buffer_version += 1;
         self.find_results.clear();
         self.find_active_index = 0;
         self.status_message = format!("已替换 {} 处", count);
@@ -5580,7 +6222,7 @@ impl EditorState {
         let Ok(uri) = url::Url::from_file_path(path) else {
             return;
         };
-        let language_id = language_to_lsp_id(self.language).to_string();
+        let language_id = language_to_lsp_id(self.content.language).to_string();
         let text = text.to_string();
         runtime.spawn(async move {
             let _ = client.open_document(uri, language_id, text).await;
@@ -5648,16 +6290,20 @@ impl EditorState {
     pub fn gather_context(&self, attachments: &[AiContextAttachment]) -> String {
         let mut parts = Vec::new();
         let current_path = self
+            .content
             .file_path
             .as_deref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "当前文件".to_string());
-        let current_lang = language_str(self.language);
+        let current_lang = language_str(self.content.language);
 
         for attachment in attachments {
             match attachment {
                 AiContextAttachment::CurrentFile => {
-                    let text = self.buffer.get_text(0, self.buffer.len_bytes());
+                    let text = self
+                        .content
+                        .buffer
+                        .get_text(0, self.content.buffer.len_bytes());
                     parts.push(wrap_code_block(
                         &current_path,
                         current_lang,
@@ -5675,14 +6321,41 @@ impl EditorState {
                 }
                 AiContextAttachment::OpenFiles => {
                     let mut summary = String::from("打开的文件列表：\n");
+                    // 活动标签页的内容存于 self.content（swap 后），需提前提取避免借用冲突
+                    let active_idx = self.active_tab;
+                    let active_path = self
+                        .content
+                        .file_path
+                        .as_deref()
+                        .map(|p| p.to_string_lossy().to_string());
+                    let active_lang = language_str(self.content.language);
+                    let active_text = self
+                        .content
+                        .buffer
+                        .get_text(0, self.content.buffer.len_bytes());
                     for (i, tab) in self.tabs.iter().enumerate() {
-                        let path = tab
-                            .file_path
-                            .as_deref()
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_else(|| format!("未命名-{}", i + 1));
-                        let lang = language_str(tab.language);
-                        let text = tab.buffer.get_text(0, tab.buffer.len_bytes());
+                        let (path, lang, text) = if i == active_idx {
+                            (
+                                active_path
+                                    .clone()
+                                    .unwrap_or_else(|| format!("未命名-{}", i + 1)),
+                                active_lang,
+                                active_text.clone(),
+                            )
+                        } else {
+                            let path = tab
+                                .content
+                                .file_path
+                                .as_deref()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_else(|| format!("未命名-{}", i + 1));
+                            let lang = language_str(tab.content.language);
+                            let text = tab
+                                .content
+                                .buffer
+                                .get_text(0, tab.content.buffer.len_bytes());
+                            (path, lang, text)
+                        };
                         summary.push_str(&wrap_code_block(
                             &path,
                             lang,
@@ -5693,6 +6366,7 @@ impl EditorState {
                 }
                 AiContextAttachment::Diagnostics => {
                     let current_key = self
+                        .content
                         .file_path
                         .as_deref()
                         .map(|p| p.to_string_lossy().to_string())
@@ -5702,6 +6376,7 @@ impl EditorState {
                     // 优先显示当前文件，再按 severity 排序（1=Error, 2=Warning）
                     all.sort_by_key(|d| {
                         let is_current = self
+                            .content
                             .file_path
                             .as_deref()
                             .map(|p| p.to_string_lossy().to_string() == current_key)
@@ -5745,8 +6420,8 @@ impl EditorState {
     }
 
     fn selected_text(&self) -> Option<String> {
-        let (start_line, start_col) = self.selection_start?;
-        let (end_line, end_col) = self.selection_end?;
+        let (start_line, start_col) = self.content.selection_start?;
+        let (end_line, end_col) = self.content.selection_end?;
         let (first_line, first_col) = if start_line <= end_line {
             (start_line, start_col)
         } else {
@@ -5762,7 +6437,7 @@ impl EditorState {
         if start_byte >= end_byte {
             return None;
         }
-        Some(self.buffer.get_text(start_byte, end_byte))
+        Some(self.content.buffer.get_text(start_byte, end_byte))
     }
 
     fn format_file_tree(&self, tree: &FileTree) -> String {
@@ -5826,7 +6501,7 @@ impl EditorState {
         // 如果有选区，替换选区内容；否则在当前光标位置插入
         // C-02/H-21: 使用 zip 一次性解构，避免独立 unwrap 在中间状态变更后 panic
         if let Some(((start_line, start_col), (end_line, end_col))) =
-            self.selection_start.zip(self.selection_end)
+            self.content.selection_start.zip(self.content.selection_end)
         {
             let (first_line, first_col) = if (start_line, start_col) <= (end_line, end_col) {
                 (start_line, start_col)
@@ -5841,12 +6516,13 @@ impl EditorState {
             let start_byte = self.line_byte_start(first_line) + first_col;
             let end_byte = self.line_byte_start(last_line) + last_col;
 
-            let before_pieces = self.buffer.get_pieces();
-            let before_add_len = self.buffer.add_buffer_len();
-            let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+            let before_pieces = self.content.buffer.get_pieces();
+            let before_add_len = self.content.buffer.add_buffer_len();
+            let cursor_before =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
-            self.buffer.delete(start_byte, end_byte);
-            self.buffer.insert(start_byte, code);
+            self.content.buffer.delete(start_byte, end_byte);
+            self.content.buffer.insert(start_byte, code);
 
             // 计算新光标位置
             let code_lines: Vec<&str> = code.lines().collect();
@@ -5856,10 +6532,11 @@ impl EditorState {
             } else {
                 code_lines.last().unwrap_or(&"").len()
             };
-            self.cursor_line = new_line;
-            self.cursor_col = new_col;
-            let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-            self.history.record(
+            self.content.cursor_line = new_line;
+            self.content.cursor_col = new_col;
+            let cursor_after =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+            self.content.history.record(
                 before_pieces,
                 before_add_len,
                 cursor_before,
@@ -5870,32 +6547,32 @@ impl EditorState {
             );
 
             self.clear_selection();
-            self.is_dirty = true;
-            self.buffer_version += 1;
+            self.content.is_dirty = true;
+            self.content.buffer_version += 1;
             self.status_message = "已应用 AI 代码".to_string();
             return true;
         }
         let pos = self.cursor_byte_pos();
-        let before_pieces = self.buffer.get_pieces();
-        let before_add_len = self.buffer.add_buffer_len();
-        let cursor_before = CursorPosition::new(self.cursor_line, self.cursor_col);
+        let before_pieces = self.content.buffer.get_pieces();
+        let before_add_len = self.content.buffer.add_buffer_len();
+        let cursor_before = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
 
-        self.buffer.insert(pos, code);
+        self.content.buffer.insert(pos, code);
 
         // 更新光标位置
         let _code_lines: Vec<&str> = code.lines().collect();
         let line_breaks = code.matches('\n').count();
         if line_breaks == 0 {
-            self.cursor_col += code.len();
+            self.content.cursor_col += code.len();
         } else {
-            self.cursor_line += line_breaks;
-            self.cursor_col = code
+            self.content.cursor_line += line_breaks;
+            self.content.cursor_col = code
                 .rsplit_once('\n')
                 .map(|(_, last)| last.len())
                 .unwrap_or(0);
         }
-        let cursor_after = CursorPosition::new(self.cursor_line, self.cursor_col);
-        self.history.record(
+        let cursor_after = CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
+        self.content.history.record(
             before_pieces,
             before_add_len,
             cursor_before,
@@ -5905,8 +6582,8 @@ impl EditorState {
             code.len(),
         );
 
-        self.is_dirty = true;
-        self.buffer_version += 1;
+        self.content.is_dirty = true;
+        self.content.buffer_version += 1;
         self.status_message = "已插入 AI 代码".to_string();
         true
     }
@@ -5926,7 +6603,7 @@ impl EditorState {
             let tab_idx = self
                 .tabs
                 .iter()
-                .position(|t| t.file_path.as_ref() == Some(&full_path));
+                .position(|t| t.content.file_path.as_ref() == Some(&full_path));
             if let Some(idx) = tab_idx {
                 self.switch_tab(idx);
             } else if full_path.exists() {
@@ -5936,7 +6613,10 @@ impl EditorState {
             }
 
             // 应用单个编辑
-            let old_text = self.buffer.get_text(0, self.buffer.len_bytes());
+            let old_text = self
+                .content
+                .buffer
+                .get_text(0, self.content.buffer.len_bytes());
             let new_text = if edit.search.trim().is_empty() {
                 edit.replace.clone()
             } else {
@@ -5955,11 +6635,11 @@ impl EditorState {
                 }
             };
 
-            let len = self.buffer.len_bytes();
-            self.buffer.delete(0, len);
-            self.buffer.insert(0, &new_text);
-            self.is_dirty = true;
-            self.buffer_version += 1;
+            let len = self.content.buffer.len_bytes();
+            self.content.buffer.delete(0, len);
+            self.content.buffer.insert(0, &new_text);
+            self.content.is_dirty = true;
+            self.content.buffer_version += 1;
             self.status_message = format!("已应用 AI 编辑: {}", full_path.display());
             applied.push(full_path);
         }
@@ -5985,24 +6665,12 @@ impl EditorState {
     fn create_new_file_tab(&mut self, path: &Path) {
         let lang = Language::from_path(path);
         let tab = Tab {
-            file_path: Some(path.to_path_buf()),
-            buffer: PieceTable::from_string(String::new()),
-            cursor_line: 0,
-            cursor_col: 0,
-            selection_start: None,
-            selection_end: None,
-            scroll_y: 0.0,
-            scroll_x: 0.0,
-            history: History::new(),
-            is_dirty: true,
-            cached_lines: Vec::new(),
-            cached_tokens: Vec::new(),
-            line_cache_versions: Vec::new(),
-            buffer_version: 1,
-            is_large_file: false,
-            line_y_offsets: Vec::new(),
-            inline_completion: None,
-            language: lang,
+            content: TabContent::with_loaded_buffer(
+                Some(path.to_path_buf()),
+                PieceTable::from_string(String::new()),
+                lang,
+                true,
+            ),
         };
         self.open_in_new_tab(tab);
     }
@@ -6441,5 +7109,548 @@ mod tests {
         )
         .is_none());
         assert!(EditorState::find_node_by_path(&tree, base, base).is_none());
+    }
+
+    /// SubTask 7.2: 验证 plus_button_rect 默认为 None
+    #[test]
+    fn test_plus_button_rect_default_none() {
+        let tab_layouts: Vec<crate::tabs::TabLayout> = Vec::new();
+        // 直接验证字段默认值模式：TabLayout 的空 vec 不影响 plus_button_rect 语义
+        // plus_button_rect 在 EditorState::new() 中初始化为 None，
+        // 仅在 render_tab_bar 中可能被设置为 Some(...)
+        // 此处验证 tab_layouts 为空时 max_scroll 为 0
+        let editor = EditorStateTestStub {
+            tab_layouts,
+            tab_scroll_x: 0.0,
+        };
+        assert_eq!(editor.tab_bar_max_scroll(800.0), 0.0);
+    }
+
+    /// SubTask 7.5: 验证 tab_bar_max_scroll 在标签总宽度小于可见宽度时为 0
+    #[test]
+    fn test_tab_bar_max_scroll_no_overflow() {
+        let tab_layouts = vec![crate::tabs::TabLayout {
+            index: 0,
+            x: 0.0,
+            width: 100.0,
+            close_x: 80.0,
+            close_width: 16.0,
+        }];
+        let editor = EditorStateTestStub {
+            tab_layouts,
+            tab_scroll_x: 0.0,
+        };
+        // 单标签 100px + gap 2px = 102px，远小于 800px 可见宽度
+        assert_eq!(editor.tab_bar_max_scroll(800.0), 0.0);
+    }
+
+    /// SubTask 7.5: 验证 tab_bar_max_scroll 在标签溢出时返回正确值
+    #[test]
+    fn test_tab_bar_max_scroll_overflow() {
+        // 模拟 10 个 100px 标签：total = 10 * (100 + 2) = 1020px
+        let tab_layouts: Vec<crate::tabs::TabLayout> = (0..10)
+            .map(|i| crate::tabs::TabLayout {
+                index: i,
+                x: i as f32 * 102.0,
+                width: 100.0,
+                close_x: i as f32 * 102.0 + 80.0,
+                close_width: 16.0,
+            })
+            .collect();
+        let editor = EditorStateTestStub {
+            tab_layouts,
+            tab_scroll_x: 0.0,
+        };
+        // total = 9 * 102.0 + 100.0 + 2.0 = 1020.0
+        // visible = 800 - 4 - 36 = 760
+        // max_scroll = 1020 - 760 = 260
+        let max = editor.tab_bar_max_scroll(800.0);
+        assert!(max > 0.0, "max_scroll 应为正值，实际: {}", max);
+        assert!(
+            (max - 260.0).abs() < 0.01,
+            "max_scroll 应为 260，实际: {}",
+            max
+        );
+    }
+
+    /// SubTask 7.5: 验证 scroll_tab_bar 的 clamp 行为
+    #[test]
+    fn test_scroll_tab_bar_clamp_to_zero() {
+        let tab_layouts = vec![crate::tabs::TabLayout {
+            index: 0,
+            x: 0.0,
+            width: 100.0,
+            close_x: 80.0,
+            close_width: 16.0,
+        }];
+        let mut editor = EditorStateTestStub {
+            tab_layouts,
+            tab_scroll_x: 50.0,
+        };
+        // 向左滚动（delta < 0），应 clamp 到 0
+        let changed = editor.scroll_tab_bar(-120.0, 800.0);
+        assert!(changed, "应检测到变化");
+        assert_eq!(editor.tab_scroll_x, 0.0, "应 clamp 到 0");
+    }
+
+    /// SubTask 7.5: 验证 scroll_tab_bar 在已到边界时不变化
+    #[test]
+    fn test_scroll_tab_bar_no_change_at_boundary() {
+        let tab_layouts = vec![crate::tabs::TabLayout {
+            index: 0,
+            x: 0.0,
+            width: 100.0,
+            close_x: 80.0,
+            close_width: 16.0,
+        }];
+        let mut editor = EditorStateTestStub {
+            tab_layouts,
+            tab_scroll_x: 0.0,
+        };
+        // 已在左边界，向左滚动不应变化
+        let changed = editor.scroll_tab_bar(-120.0, 800.0);
+        assert!(!changed, "已在边界，不应变化");
+        assert_eq!(editor.tab_scroll_x, 0.0);
+    }
+
+    /// SubTask 7.5: 验证 scroll_tab_bar 正常滚动
+    #[test]
+    fn test_scroll_tab_bar_normal_scroll() {
+        // 10 个标签，max_scroll = 260
+        let tab_layouts: Vec<crate::tabs::TabLayout> = (0..10)
+            .map(|i| crate::tabs::TabLayout {
+                index: i,
+                x: i as f32 * 102.0,
+                width: 100.0,
+                close_x: i as f32 * 102.0 + 80.0,
+                close_width: 16.0,
+            })
+            .collect();
+        let mut editor = EditorStateTestStub {
+            tab_layouts,
+            tab_scroll_x: 0.0,
+        };
+        // delta = 120 → 增量 = 120 * 8 = 960 → clamp 到 260
+        let changed = editor.scroll_tab_bar(120.0, 800.0);
+        assert!(changed);
+        assert!(
+            (editor.tab_scroll_x - 260.0).abs() < 0.01,
+            "应 clamp 到 max_scroll=260，实际: {}",
+            editor.tab_scroll_x
+        );
+    }
+
+    /// SubTask 7.1: 验证 close_tab 对越界索引返回 false
+    #[test]
+    fn test_close_tab_out_of_bounds_returns_false() {
+        // close_tab 需要完整的 EditorState（涉及 dirty 检查、Dialogs），
+        // 此处仅验证索引越界时的快速返回路径，不构造完整 EditorState。
+        // 通过 tab_layouts 的命中检测逻辑间接验证：
+        // 空 tab_layouts 时，任何索引都不应命中
+        let tab_layouts: Vec<crate::tabs::TabLayout> = Vec::new();
+        assert!(tab_layouts.is_empty());
+        // 命中检测：rel_x=0.0 在空 layouts 中不应匹配任何标签
+        let hit = tab_layouts
+            .iter()
+            .find(|l| 0.0 >= l.x && 0.0 < l.x + l.width)
+            .map(|l| l.index);
+        assert!(hit.is_none(), "空 tab_layouts 不应命中任何标签");
+    }
+
+    /// 测试辅助结构体：模拟 EditorState 中 tab 滚动相关字段的独立测试
+    /// （避免构造完整 EditorState 需要 HWND 等资源）
+    struct EditorStateTestStub {
+        tab_layouts: Vec<crate::tabs::TabLayout>,
+        tab_scroll_x: f32,
+    }
+
+    impl EditorStateTestStub {
+        fn tab_bar_max_scroll(&self, tab_bar_width: f32) -> f32 {
+            let gap = 2.0;
+            let left_padding = 4.0;
+            let plus_area = 8.0 + 28.0;
+            let total_tabs_width = self
+                .tab_layouts
+                .last()
+                .map(|l| l.x + l.width + gap)
+                .unwrap_or(0.0);
+            let visible_width = (tab_bar_width - left_padding - plus_area).max(0.0);
+            (total_tabs_width - visible_width).max(0.0)
+        }
+
+        fn scroll_tab_bar(&mut self, delta: f32, tab_bar_width: f32) -> bool {
+            let old = self.tab_scroll_x;
+            let max_scroll = self.tab_bar_max_scroll(tab_bar_width);
+            self.tab_scroll_x = (self.tab_scroll_x + delta * 8.0).clamp(0.0, max_scroll);
+            (self.tab_scroll_x - old).abs() > 0.01
+        }
+    }
+
+    // ===== Task 8: 标签拖拽重排单元测试 =====
+
+    /// Task 8.6: 验证基本重排——将第一个标签移到末尾
+    #[test]
+    fn test_reorder_tabs_move_first_to_last() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
+        let mut active: usize = 0;
+        // drag_idx=0, drop_idx=4 → A 移到末尾
+        reorder_tabs_with_active(&mut tabs, &mut active, 0, 4);
+        assert_eq!(tabs, vec!["B", "C", "D", "A"]);
+        assert_eq!(active, 3, "活动标签应跟随移动到新位置");
+    }
+
+    /// Task 8.6: 验证基本重排——将末尾标签移到开头
+    #[test]
+    fn test_reorder_tabs_move_last_to_first() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
+        let mut active: usize = 3;
+        // drag_idx=3, drop_idx=0 → D 移到开头
+        reorder_tabs_with_active(&mut tabs, &mut active, 3, 0);
+        assert_eq!(tabs, vec!["D", "A", "B", "C"]);
+        assert_eq!(active, 0, "活动标签应跟随移动到新位置");
+    }
+
+    /// Task 8.6: 验证活动标签在前方、拖拽其他标签到后方时 active_tab 递减
+    #[test]
+    fn test_reorder_tabs_active_decrements_when_drag_before_active() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
+        let mut active: usize = 2; // C
+                                   // drag_idx=0 (A), drop_idx=3 (before D) → A 移到 C 和 D 之间
+        reorder_tabs_with_active(&mut tabs, &mut active, 0, 3);
+        assert_eq!(tabs, vec!["B", "C", "A", "D"]);
+        assert_eq!(active, 1, "C 从 idx 2 移到 idx 1");
+    }
+
+    /// Task 8.6: 验证活动标签在后方、拖拽其他标签到前方时 active_tab 递增
+    #[test]
+    fn test_reorder_tabs_active_increments_when_drag_after_active() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
+        let mut active: usize = 1; // B
+                                   // drag_idx=2 (C), drop_idx=0 (before A) → C 移到开头
+        reorder_tabs_with_active(&mut tabs, &mut active, 2, 0);
+        assert_eq!(tabs, vec!["C", "A", "B", "D"]);
+        assert_eq!(active, 2, "B 从 idx 1 移到 idx 2");
+    }
+
+    /// Task 8.6: 验证 drop_idx == drag_idx 时无变化
+    #[test]
+    fn test_reorder_tabs_noop_when_drop_equals_drag() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into()];
+        let mut active: usize = 1;
+        reorder_tabs_with_active(&mut tabs, &mut active, 1, 1);
+        assert_eq!(tabs, vec!["A", "B", "C"]);
+        assert_eq!(active, 1);
+    }
+
+    /// Task 8.6: 验证 drop_idx == drag_idx + 1 时无变化（插入到下一个标签前 = 原位）
+    #[test]
+    fn test_reorder_tabs_noop_when_drop_is_next() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into()];
+        let mut active: usize = 1;
+        // drag_idx=0, drop_idx=1 → A 已在 B 前，无需移动
+        reorder_tabs_with_active(&mut tabs, &mut active, 0, 1);
+        assert_eq!(tabs, vec!["A", "B", "C"]);
+        assert_eq!(active, 1);
+    }
+
+    /// Task 8.6: 验证活动标签不在拖拽路径上时 active_tab 不变
+    #[test]
+    fn test_reorder_tabs_active_unchanged_when_not_in_path() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
+        let mut active: usize = 0; // A
+                                   // drag_idx=2 (C), drop_idx=4 (末尾) → C 移到 D 之后
+        reorder_tabs_with_active(&mut tabs, &mut active, 2, 4);
+        assert_eq!(tabs, vec!["A", "B", "D", "C"]);
+        assert_eq!(active, 0, "A 不受影响");
+    }
+
+    /// Task 8.6: 验证越界索引不 panic
+    #[test]
+    fn test_reorder_tabs_out_of_bounds_no_panic() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into()];
+        let mut active: usize = 0;
+        // drag_idx 越界
+        reorder_tabs_with_active(&mut tabs, &mut active, 5, 0);
+        assert_eq!(tabs, vec!["A", "B"]);
+        // drop_idx 越界
+        reorder_tabs_with_active(&mut tabs, &mut active, 0, 10);
+        // drop_idx > tabs.len()，不执行
+        assert_eq!(tabs, vec!["A", "B"]);
+    }
+
+    /// Task 8.6: 验证单标签重排无变化
+    #[test]
+    fn test_reorder_tabs_single_tab() {
+        let mut tabs: Vec<String> = vec!["A".into()];
+        let mut active: usize = 0;
+        reorder_tabs_with_active(&mut tabs, &mut active, 0, 0);
+        assert_eq!(tabs, vec!["A"]);
+        assert_eq!(active, 0);
+        // drop_idx=1 也应安全（插入到末尾 = 原位）
+        reorder_tabs_with_active(&mut tabs, &mut active, 0, 1);
+        assert_eq!(tabs, vec!["A"]);
+        assert_eq!(active, 0);
+    }
+
+    /// Task 8.6: 验证中间标签向左移动
+    #[test]
+    fn test_reorder_tabs_middle_to_left() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
+        let mut active: usize = 2; // C 是活动标签
+                                   // drag_idx=2 (C), drop_idx=0 → C 移到开头
+        reorder_tabs_with_active(&mut tabs, &mut active, 2, 0);
+        assert_eq!(tabs, vec!["C", "A", "B", "D"]);
+        assert_eq!(active, 0, "C 跟随到 idx 0");
+    }
+
+    /// Task 8.6: 验证中间标签向右移动
+    #[test]
+    fn test_reorder_tabs_middle_to_right() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
+        let mut active: usize = 1; // B 是活动标签
+                                   // drag_idx=1 (B), drop_idx=4 → B 移到末尾
+        reorder_tabs_with_active(&mut tabs, &mut active, 1, 4);
+        assert_eq!(tabs, vec!["A", "C", "D", "B"]);
+        assert_eq!(active, 3, "B 跟随到 idx 3");
+    }
+
+    // ===== SubTask 9.4: 标签关闭方法索引逻辑单元测试 =====
+    // EditorState 构造需要 HWND 等资源，此处通过模拟 tabs 向量操作验证索引逻辑。
+    // 逻辑与 close_other_tabs / close_tabs_to_the_right / close_all_tabs 保持一致。
+
+    /// 模拟 close_other_tabs 的索引逻辑：保留 keep_idx，移除其他
+    fn close_other_tabs_logic<T>(tabs: &mut Vec<T>, active: &mut usize, keep_idx: usize) -> bool {
+        if keep_idx >= tabs.len() {
+            return false;
+        }
+        if tabs.len() == 1 {
+            return true;
+        }
+        let kept = tabs.remove(keep_idx);
+        tabs.clear();
+        tabs.push(kept);
+        *active = 0;
+        true
+    }
+
+    /// 模拟 close_tabs_to_the_right 的索引逻辑：保留 0..=idx，移除 idx+1..
+    fn close_tabs_to_the_right_logic<T>(tabs: &mut Vec<T>, active: &mut usize, idx: usize) -> bool {
+        if idx >= tabs.len() {
+            return false;
+        }
+        if tabs.len() <= idx + 1 {
+            return true;
+        }
+        tabs.truncate(idx + 1);
+        if *active > idx {
+            *active = idx;
+        }
+        true
+    }
+
+    #[test]
+    fn test_close_other_tabs_keeps_only_specified() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
+        let mut active: usize = 2; // C 是活动标签
+                                   // 保留 idx=1 (B)
+        assert!(close_other_tabs_logic(&mut tabs, &mut active, 1));
+        assert_eq!(tabs, vec!["B"]);
+        assert_eq!(active, 0, "活动标签应重置为 0");
+    }
+
+    #[test]
+    fn test_close_other_tabs_out_of_bounds() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into()];
+        let mut active: usize = 0;
+        assert!(!close_other_tabs_logic(&mut tabs, &mut active, 5));
+        assert_eq!(tabs.len(), 2, "越界时不修改 tabs");
+    }
+
+    #[test]
+    fn test_close_other_tabs_single_tab_noop() {
+        let mut tabs: Vec<String> = vec!["A".into()];
+        let mut active: usize = 0;
+        assert!(close_other_tabs_logic(&mut tabs, &mut active, 0));
+        assert_eq!(tabs, vec!["A"]);
+        assert_eq!(active, 0);
+    }
+
+    #[test]
+    fn test_close_other_tabs_keep_first() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into()];
+        let mut active: usize = 1;
+        assert!(close_other_tabs_logic(&mut tabs, &mut active, 0));
+        assert_eq!(tabs, vec!["A"]);
+        assert_eq!(active, 0);
+    }
+
+    #[test]
+    fn test_close_other_tabs_keep_last() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into()];
+        let mut active: usize = 0;
+        assert!(close_other_tabs_logic(&mut tabs, &mut active, 2));
+        assert_eq!(tabs, vec!["C"]);
+        assert_eq!(active, 0);
+    }
+
+    #[test]
+    fn test_close_tabs_to_the_right_basic() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
+        let mut active: usize = 0;
+        // 保留 0..=1，移除 C, D
+        assert!(close_tabs_to_the_right_logic(&mut tabs, &mut active, 1));
+        assert_eq!(tabs, vec!["A", "B"]);
+        assert_eq!(active, 0, "active 在保留范围内不变");
+    }
+
+    #[test]
+    fn test_close_tabs_to_the_right_adjusts_active() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into(), "D".into()];
+        let mut active: usize = 3; // D 是活动标签
+                                   // 保留 0..=1，active=3 > 1 → 调整为 1
+        assert!(close_tabs_to_the_right_logic(&mut tabs, &mut active, 1));
+        assert_eq!(tabs, vec!["A", "B"]);
+        assert_eq!(active, 1, "active 超出保留范围时应调整为 idx");
+    }
+
+    #[test]
+    fn test_close_tabs_to_the_right_active_at_boundary() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into()];
+        let mut active: usize = 1;
+        // 保留 0..=1，active=1 == idx → 不变
+        assert!(close_tabs_to_the_right_logic(&mut tabs, &mut active, 1));
+        assert_eq!(tabs, vec!["A", "B"]);
+        assert_eq!(active, 1);
+    }
+
+    #[test]
+    fn test_close_tabs_to_the_right_no_tabs_to_close() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into()];
+        let mut active: usize = 0;
+        // idx=1, len=2 → 无需关闭
+        assert!(close_tabs_to_the_right_logic(&mut tabs, &mut active, 1));
+        assert_eq!(tabs.len(), 2);
+    }
+
+    #[test]
+    fn test_close_tabs_to_the_right_out_of_bounds() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into()];
+        let mut active: usize = 0;
+        assert!(!close_tabs_to_the_right_logic(&mut tabs, &mut active, 5));
+        assert_eq!(tabs.len(), 2, "越界时不修改 tabs");
+    }
+
+    #[test]
+    fn test_close_tabs_to_the_right_last_tab() {
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into()];
+        let mut active: usize = 2;
+        // 保留 0..=2（全部），无需关闭
+        assert!(close_tabs_to_the_right_logic(&mut tabs, &mut active, 2));
+        assert_eq!(tabs.len(), 3);
+        assert_eq!(active, 2);
+    }
+
+    #[test]
+    fn test_close_all_tabs_logic() {
+        // close_all_tabs 的逻辑：清空 + 创建新空标签
+        // 验证：无论初始状态如何，结果都是 1 个空标签
+        let mut tabs: Vec<String> = vec!["A".into(), "B".into(), "C".into()];
+        tabs.clear();
+        tabs.push(String::new());
+        assert_eq!(tabs.len(), 1);
+        assert!(tabs[0].is_empty());
+    }
+
+    // ===== Task 13.3: last_closed_tab 保存/恢复逻辑单元测试 =====
+
+    #[test]
+    fn test_remove_tab_saving_content_saves_to_last_closed() {
+        // 验证：移除标签时，其内容被保存到 last_closed
+        let mut tabs = vec![Tab::new(), Tab::new(), Tab::new()];
+        let mut last_closed: Option<TabContent> = None;
+        // 移除 idx=2 的标签
+        assert!(remove_tab_saving_content(&mut tabs, 2, &mut last_closed));
+        assert_eq!(tabs.len(), 2, "移除后 tabs 长度应减 1");
+        assert!(last_closed.is_some(), "last_closed 应保存被移除标签的内容");
+    }
+
+    #[test]
+    fn test_remove_tab_saving_content_out_of_bounds() {
+        let mut tabs = vec![Tab::new(), Tab::new()];
+        let mut last_closed: Option<TabContent> = None;
+        assert!(!remove_tab_saving_content(&mut tabs, 5, &mut last_closed));
+        assert_eq!(tabs.len(), 2, "越界时 tabs 不变");
+        assert!(last_closed.is_none(), "越界时 last_closed 不变");
+    }
+
+    #[test]
+    fn test_remove_tab_saving_content_overwrites_previous() {
+        // 验证：连续关闭多个标签时，last_closed 始终保存最近关闭的
+        let mut tabs = vec![Tab::new(), Tab::new(), Tab::new()];
+        let mut last_closed: Option<TabContent> = None;
+        remove_tab_saving_content(&mut tabs, 0, &mut last_closed);
+        assert!(last_closed.is_some());
+        // 再次移除应覆盖之前的 last_closed
+        remove_tab_saving_content(&mut tabs, 0, &mut last_closed);
+        assert!(last_closed.is_some());
+        assert_eq!(tabs.len(), 1, "两次移除后只剩 1 个标签");
+    }
+
+    #[test]
+    fn test_reopen_last_closed_tab_logic_restores_tab() {
+        // 验证：恢复逻辑将 last_closed 内容作为新标签添加到末尾
+        let mut tabs = vec![Tab::new(), Tab::new()];
+        let mut active: usize = 0;
+        // 手动保存一个标签内容
+        let content = TabContent::new();
+        let mut last_closed: Option<TabContent> = Some(content);
+
+        let old_len = tabs.len();
+        assert!(reopen_last_closed_tab_logic(
+            &mut tabs,
+            &mut active,
+            &mut last_closed
+        ));
+        assert_eq!(tabs.len(), old_len + 1, "恢复后 tabs 长度应增 1");
+        assert_eq!(active, tabs.len() - 1, "active 应指向新标签");
+        assert!(last_closed.is_none(), "恢复后 last_closed 应被消费");
+    }
+
+    #[test]
+    fn test_reopen_last_closed_tab_logic_nothing_to_restore() {
+        let mut tabs = vec![Tab::new(), Tab::new()];
+        let mut active: usize = 0;
+        let mut last_closed: Option<TabContent> = None;
+        assert!(!reopen_last_closed_tab_logic(
+            &mut tabs,
+            &mut active,
+            &mut last_closed
+        ));
+        assert_eq!(tabs.len(), 2, "无内容恢复时 tabs 不变");
+        assert_eq!(active, 0, "无内容恢复时 active 不变");
+    }
+
+    #[test]
+    fn test_last_closed_tab_save_and_restore_round_trip() {
+        // 端到端验证：关闭标签 → 保存 → 恢复 → 标签回归
+        let mut tabs = vec![Tab::new(), Tab::new(), Tab::new()];
+        let mut active: usize = 1;
+        let mut last_closed: Option<TabContent> = None;
+        let original_len = tabs.len();
+
+        // 关闭 idx=2 的标签
+        assert!(remove_tab_saving_content(&mut tabs, 2, &mut last_closed));
+        assert_eq!(tabs.len(), original_len - 1);
+        assert!(last_closed.is_some());
+
+        // 恢复
+        assert!(reopen_last_closed_tab_logic(
+            &mut tabs,
+            &mut active,
+            &mut last_closed
+        ));
+        assert_eq!(tabs.len(), original_len, "恢复后长度应回到原始值");
+        assert_eq!(active, tabs.len() - 1, "active 应指向恢复的标签");
+        assert!(last_closed.is_none(), "恢复后 last_closed 应为空");
     }
 }

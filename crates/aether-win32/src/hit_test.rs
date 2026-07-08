@@ -2,8 +2,11 @@
 ///
 /// 记录当前帧所有可点击区域的名称与矩形，输出到文件供外部测试框架读取。
 /// 这些数据只在调试/测试构建中启用，避免 release 性能开销。
+///
+/// REQ-P2-10: release 构建中所有 Mutex 锁和文件 I/O 均被 cfg 门控移除，
+/// register_hit_region / clear_hit_regions / flush_hit_regions_to_file 在
+/// release 构建中编译为空实现，零运行时开销。
 use std::io::Write;
-use std::sync::Mutex;
 
 /// 单个可点击区域
 #[derive(Clone, Debug, serde::Serialize)]
@@ -50,85 +53,130 @@ impl HitTestFrame {
     }
 }
 
-/// 全局帧记录（简化：每帧覆盖）
-static HIT_TEST_FRAME: Mutex<Option<HitTestFrame>> = Mutex::new(None);
+// ============================================================================
+// REQ-P2-10: debug 构建保留全局 Mutex + 文件 I/O，release 构建完全移除
+// ============================================================================
+#[cfg(debug_assertions)]
+mod debug_impl {
+    use super::*;
+    use std::sync::Mutex;
 
-/// 注册一个可点击区域（线程安全）
-pub fn register_hit_region(action: impl Into<String>, x: f32, y: f32, width: f32, height: f32) {
-    if let Ok(mut guard) = HIT_TEST_FRAME.lock() {
-        let frame = guard.get_or_insert_with(HitTestFrame::new);
-        frame.add(action, x, y, width, height);
-    }
-}
+    /// 全局帧记录（简化：每帧覆盖）
+    static HIT_TEST_FRAME: Mutex<Option<HitTestFrame>> = Mutex::new(None);
 
-/// 清除本帧记录（通常在 render 开始时调用）
-pub fn clear_hit_regions() {
-    if let Ok(mut guard) = HIT_TEST_FRAME.lock() {
-        if let Some(frame) = guard.as_mut() {
-            frame.clear();
+    /// 注册一个可点击区域（线程安全）
+    pub fn register_hit_region(action: impl Into<String>, x: f32, y: f32, width: f32, height: f32) {
+        if let Ok(mut guard) = HIT_TEST_FRAME.lock() {
+            let frame = guard.get_or_insert_with(HitTestFrame::new);
+            frame.add(action, x, y, width, height);
         }
     }
-}
 
-/// 将当前帧区域写入 JSONL 文件
-///
-/// 路径：项目根目录 `tests/gui_hit_regions.jsonl`
-/// 每行一个 JSON 对象：`{"action":"...","x":...,"y":...,"width":...,"height":...}`
-pub fn flush_hit_regions_to_file() {
-    let regions = {
-        let Ok(mut guard) = HIT_TEST_FRAME.lock() else {
-            return;
+    /// 清除本帧记录（通常在 render 开始时调用）
+    pub fn clear_hit_regions() {
+        if let Ok(mut guard) = HIT_TEST_FRAME.lock() {
+            if let Some(frame) = guard.as_mut() {
+                frame.clear();
+            }
+        }
+    }
+
+    /// 将当前帧区域写入 JSONL 文件
+    ///
+    /// 路径：项目根目录 `tests/gui_hit_regions.jsonl`
+    /// 每行一个 JSON 对象：`{"action":"...","x":...,"y":...,"width":...,"height":...}`
+    pub fn flush_hit_regions_to_file() {
+        let regions = {
+            let Ok(mut guard) = HIT_TEST_FRAME.lock() else {
+                return;
+            };
+            guard.take().map(|f| f.regions).unwrap_or_default()
         };
-        guard.take().map(|f| f.regions).unwrap_or_default()
-    };
 
-    if regions.is_empty() {
-        return;
-    }
-
-    let path = hit_regions_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    let mut file = match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        Ok(f) => f,
-        Err(_) => return,
-    };
-
-    for region in regions {
-        if let Ok(json) = serde_json::to_string(&region) {
-            let _ = writeln!(file, "{}", json);
+        if regions.is_empty() {
+            return;
         }
+
+        let path = hit_regions_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        let mut file = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+
+        for region in regions {
+            if let Ok(json) = serde_json::to_string(&region) {
+                let _ = writeln!(file, "{}", json);
+            }
+        }
+    }
+
+    fn hit_regions_path() -> std::path::PathBuf {
+        // 项目根目录：从 executable 往上找 Cargo.toml
+        let mut dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+        // 向上查找 Cargo.toml
+        loop {
+            if dir.join("Cargo.toml").exists() {
+                return dir.join("tests").join("gui_hit_regions.jsonl");
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
+
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join("tests")
+            .join("gui_hit_regions.jsonl")
     }
 }
 
-fn hit_regions_path() -> std::path::PathBuf {
-    // 项目根目录：从 executable 往上找 Cargo.toml
-    let mut dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+// ============================================================================
+// REQ-P2-10: release 构建使用空实现，零 Mutex 锁竞争和文件 I/O 开销
+// ============================================================================
+#[cfg(not(debug_assertions))]
+mod release_impl {
+    use super::*;
 
-    // 向上查找 Cargo.toml
-    loop {
-        if dir.join("Cargo.toml").exists() {
-            return dir.join("tests").join("gui_hit_regions.jsonl");
-        }
-        if !dir.pop() {
-            break;
-        }
+    #[inline]
+    pub fn register_hit_region(
+        _action: impl Into<String>,
+        _x: f32,
+        _y: f32,
+        _width: f32,
+        _height: f32,
+    ) {
+        // release 构建：空操作，零开销
     }
 
-    std::env::current_dir()
-        .unwrap_or_default()
-        .join("tests")
-        .join("gui_hit_regions.jsonl")
+    #[inline]
+    pub fn clear_hit_regions() {
+        // release 构建：空操作，零开销
+    }
+
+    #[inline]
+    pub fn flush_hit_regions_to_file() {
+        // release 构建：空操作，零开销
+    }
 }
+
+// 公共 API：根据构建模式路由到对应实现
+#[cfg(debug_assertions)]
+pub use debug_impl::{clear_hit_regions, flush_hit_regions_to_file, register_hit_region};
+
+#[cfg(not(debug_assertions))]
+pub use release_impl::{clear_hit_regions, flush_hit_regions_to_file, register_hit_region};
 
 #[cfg(test)]
 mod tests {

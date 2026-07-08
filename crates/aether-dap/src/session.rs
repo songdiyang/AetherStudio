@@ -52,12 +52,10 @@ impl DebugSession {
             .take()
             .ok_or_else(|| std::io::Error::other("Failed to capture adapter stdout"))?;
         // H-04: 单独取出 stderr，保留 Child 句柄以便后续 kill
-        let stderr = process.stderr.take().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to capture adapter stderr",
-            )
-        })?;
+        let stderr = process
+            .stderr
+            .take()
+            .ok_or_else(|| std::io::Error::other("Failed to capture adapter stderr"))?;
         let transport = DapTransport::new(stdin, stdout);
 
         // 启动后台 stderr 读取任务，避免适配器 stderr 缓冲区满后阻塞
@@ -143,8 +141,7 @@ impl DebugSession {
     ) -> std::io::Result<()> {
         // H-11: 状态机校验 — 已终止的会话不能重新 launch
         if self.state == DebugSessionState::Terminated {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "Cannot launch: session already terminated",
             ));
         }

@@ -16,9 +16,10 @@ pub enum FindReplaceFocus {
 }
 
 /// 焦点目标枚举 —— 标识当前接收键盘输入的面板
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FocusTarget {
     /// 编辑器（默认焦点）
+    #[default]
     Editor,
     /// 底部终端面板
     Terminal,
@@ -34,12 +35,6 @@ pub enum FocusTarget {
     Dialog,
     /// 无焦点（窗口失焦时）
     None,
-}
-
-impl Default for FocusTarget {
-    fn default() -> Self {
-        FocusTarget::Editor
-    }
 }
 
 /// 统一焦点管理器

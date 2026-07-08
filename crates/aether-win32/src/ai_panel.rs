@@ -49,7 +49,7 @@ pub fn sanitize_error(err: &str) -> String {
             .unwrap_or(value_start);
         value_start = trimmed_start;
         let end = result[value_start..]
-            .find(|c: char| c == '\n' || c == '\r')
+            .find(|c: char| ['\n', '\r'].contains(&c))
             .map(|p| value_start + p)
             .unwrap_or(result.len());
         if end > value_start {
@@ -69,12 +69,12 @@ pub fn sanitize_error(err: &str) -> String {
         let mut value_start = pos + 13; // "authorization" = 13 字符
         let rest = &result[value_start..];
         let trimmed_start = rest
-            .find(|c: char| c != ':' && c != '=' && c != ' ' && c != '\t')
+            .find(|c: char| ![':', '=', ' ', '\t'].contains(&c))
             .map(|p| value_start + p)
             .unwrap_or(value_start);
         value_start = trimmed_start;
         let end = result[value_start..]
-            .find(|c: char| c == '\n' || c == '\r')
+            .find(|c: char| ['\n', '\r'].contains(&c))
             .map(|p| value_start + p)
             .unwrap_or(result.len());
         if end > value_start {
