@@ -151,7 +151,7 @@ impl EditorState {
             None => return,
         };
         // 远程文件走远程保存路径，不参与本地自动保存
-        if path.to_str().map_or(false, |s| s.starts_with("remote:")) {
+        if path.to_str().is_some_and(|s| s.starts_with("remote:")) {
             return;
         }
         // 未修改：跳过
@@ -188,7 +188,7 @@ impl EditorState {
         self.content.auto_save_conflict = false;
         self.content.last_known_mtime = self.content.file_path.as_ref().and_then(|p| {
             // 仅本地文件有 mtime；远程文件（remote: 前缀）跳过
-            if p.to_str().map_or(false, |s| s.starts_with("remote:")) {
+            if p.to_str().is_some_and(|s| s.starts_with("remote:")) {
                 None
             } else {
                 std::fs::metadata(p).and_then(|m| m.modified()).ok()

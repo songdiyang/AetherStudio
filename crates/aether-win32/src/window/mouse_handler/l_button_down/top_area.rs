@@ -276,12 +276,9 @@ unsafe fn lbd_titlebar_menu(
     titlebar_region: &crate::layout::Region,
 ) -> Option<LRESULT> {
     let mut st = state.borrow_mut();
-    let Some(idx) =
-        st.menu_bar
-            .hit_test(mouse_x, mouse_y - titlebar_region.y, titlebar_region.height)
-    else {
-        return None;
-    };
+    let idx = st
+        .menu_bar
+        .hit_test(mouse_x, mouse_y - titlebar_region.y, titlebar_region.height)?;
     // 长按检测：记录按下信息并启动定时器
     st.lpress_start = Some(std::time::Instant::now());
     st.lpress_x = mouse_x;
@@ -592,20 +589,13 @@ pub(super) unsafe fn lbd_submenu(
     layout: &crate::layout::LayoutManager,
 ) -> Option<LRESULT> {
     let mut st = state.borrow_mut();
-    let Some(active_idx) = st.menu_bar.active_index else {
-        return None;
-    };
-    let Some(&submenu_x) = st.menu_bar.item_x_positions.get(active_idx) else {
-        return None;
-    };
+    let active_idx = st.menu_bar.active_index?;
+    let &submenu_x = st.menu_bar.item_x_positions.get(active_idx)?;
     let titlebar_region = layout.title_bar_region();
     let submenu_y = titlebar_region.y + titlebar_region.height;
-    let Some(sub_idx) = st
+    let sub_idx = st
         .menu_bar
-        .hit_test_submenu(active_idx, mouse_x, mouse_y, submenu_x, submenu_y)
-    else {
-        return None;
-    };
+        .hit_test_submenu(active_idx, mouse_x, mouse_y, submenu_x, submenu_y)?;
     if let Some(item) = st.menu_bar.items.get(active_idx) {
         if let Some(menu_item) = item.items.get(sub_idx) {
             if menu_item.enabled && menu_item.command_id != crate::menu_bar::CommandId::None {

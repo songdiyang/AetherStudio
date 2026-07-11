@@ -8,16 +8,29 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
+/// 获取日志目录路径，优先使用临时目录以避免 GUI 子系统下无 %APPDATA%
+fn get_log_dir() -> PathBuf {
+    std::env::temp_dir().join("Aether").join("logs")
+}
+
+/// 确保日志目录存在
+fn ensure_log_dir() -> PathBuf {
+    let log_dir = get_log_dir();
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        eprintln!("无法创建日志目录 {:?}: {}，日志可能无法写入", log_dir, e);
+    }
+    log_dir
+}
+
 /// 初始化全局日志系统
 ///
-/// - 日志文件按天轮转，写入 `%APPDATA%/Aether/logs/aether-YYYY-MM-DD.log`
+/// - 日志文件按天轮转，写入 `%TEMP%/Aether/logs/aether-YYYY-MM-DD.log`
 /// - 控制台输出（debug 及以上）
 /// - panic 时自动 flush 日志
 /// - 支持 `RUST_LOG` 环境变量覆盖日志级别
 pub fn init_logging() -> io::Result<()> {
-    // 1. 确定日志目录：%APPDATA%/Aether/logs
-    let log_dir = get_log_dir();
-    std::fs::create_dir_all(&log_dir)?;
+    // 1. 确定日志目录
+    let log_dir = ensure_log_dir();
 
     // 2. 创建按日轮转的文件 appender
     let file_appender = RollingFileAppender::new(Rotation::DAILY, &log_dir, "aether");
@@ -57,26 +70,19 @@ pub fn init_logging() -> io::Result<()> {
     // 6. 日志级别过滤（默认 info，可通过 RUST_LOG 覆盖）
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
-    // 7. 注册订阅者
+    // 7. 注册订阅者（使用 try_init 避免 panic，若全局订阅者已设置则返回 Err）
     tracing_subscriber::registry()
         .with(env_filter)
         .with(file_layer)
         .with(console_layer)
-        .init();
+        .try_init()
+        .map_err(|e| io::Error::other(format!("try_init 失败: {}", e)))?;
 
     // 8. 安装 panic hook，确保崩溃前 flush 日志
     install_panic_hook();
 
     tracing::info!(log_dir = %log_dir.display(), "日志系统初始化完成");
     Ok(())
-}
-
-/// 获取日志目录路径
-fn get_log_dir() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Aether")
-        .join("logs")
 }
 
 /// 安装 panic hook，在崩溃前尝试 flush 日志并记录 panic 信息

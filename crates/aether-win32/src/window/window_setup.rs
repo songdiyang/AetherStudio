@@ -273,6 +273,8 @@ pub(crate) unsafe fn on_destroy(
     _wparam: WPARAM,
     _lparam: LPARAM,
 ) -> LRESULT {
+    // 卸载低层键盘钩子（仅当主窗口销毁时，引用计数为 0 时真正卸载）
+    crate::keyboard_hook::uninstall();
     // 释放窗口关联的编辑器状态
     let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RefCell<EditorState>;
     if !ptr.is_null() {

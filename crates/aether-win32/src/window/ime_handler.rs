@@ -46,6 +46,9 @@ pub(crate) unsafe fn on_ime_composition(
                 }
             });
         }
+        // 结果串提交后合成期已结束（虽然 WM_IME_ENDCOMPOSITION 可能稍后才到），
+        // 提前重置标志让 Backspace 立即可达终端，避免"提交汉字后无法立即删除"的问题
+        crate::keyboard_hook::set_ime_composing(false);
         // 结果串已包含完整提交，不再处理合成串
         return LRESULT(0);
     }
@@ -64,6 +67,8 @@ pub(crate) unsafe fn on_ime_composition(
                     invalidate_window(hwnd);
                 }
             });
+            // 通知低层钩子：进入合成期，Backspace/Delete 等交给 IME 处理
+            crate::keyboard_hook::set_ime_composing(true);
         } else {
             // 合成串为空：IME 已清除合成状态
             EDITOR_STATE.with(|s| {
@@ -72,6 +77,7 @@ pub(crate) unsafe fn on_ime_composition(
                     invalidate_window(hwnd);
                 }
             });
+            crate::keyboard_hook::set_ime_composing(false);
         }
         return LRESULT(0);
     }
@@ -97,9 +103,17 @@ pub(crate) unsafe fn on_ime_endcomposition(
     EDITOR_STATE.with(|s| {
         if let Some(state) = s.borrow().as_ref() {
             state.borrow_mut().clear_composition();
+            // 终端聚焦时结束合成后立即关闭 IME，
+            // 让用户能立即用 Backspace 删除终端内容
+            let terminal_focused = state.borrow().terminal_panel.focused;
+            if terminal_focused {
+                state.borrow_mut().ime.set_ime_open(false);
+            }
             invalidate_window(hwnd);
         }
     });
+    // 通知低层钩子：合成期已结束，后续 Backspace 等可由钩子拦截到终端
+    crate::keyboard_hook::set_ime_composing(false);
     LRESULT(0)
 }
 

@@ -53,6 +53,27 @@ pub enum FindReplaceFocus {
     ReplaceText,
 }
 
+/// 底部面板当前显示的子面板。
+///
+/// 当前仅用于在终端面板和"问题"面板之间切换，UI 实现先做，
+/// 问题数据/采集引擎后续再设计（`diagnostics: HashMap<...>` 是预留数据源）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum BottomPanelTab {
+    #[default]
+    Terminal,
+    Problems,
+}
+
+impl BottomPanelTab {
+    /// 标签栏上显示的标题（与 render.rs 标签顺序保持一致）。
+    pub fn label(self) -> &'static str {
+        match self {
+            BottomPanelTab::Terminal => "终端",
+            BottomPanelTab::Problems => "问题",
+        }
+    }
+}
+
 /// 文件树内联输入类型
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileTreeInputKind {
@@ -227,8 +248,6 @@ pub struct EditorState {
     pub is_selecting: bool,
     /// 行号 UTF-16 预缓存（避免每帧 format! + encode_utf16 分配）
     pub(crate) cached_line_numbers: Vec<Vec<u16>>,
-    /// 可复用的 UTF-16 文本缓冲区（避免 render_editor 中每 token 分配 Vec<u16>）
-    pub(crate) text_utf16_buf: Vec<u16>,
     /// 文件树渲染用的可复用 UTF-16 缓冲区（避免 render_tree_nodes 中每次分配 Vec<u16>）
     pub(crate) tree_text_utf16_buf: Vec<u16>,
     /// 标签页系统（后台存储，切换时同步）
@@ -293,10 +312,16 @@ pub struct EditorState {
     pub git: GitIntegration,
     /// 终端面板
     pub terminal_panel: TerminalPanel,
+    /// 终端聚焦时缓存的原 IME 上下文句柄（HIMC）。
+    /// 终端聚焦时 disassociate，离开时 restore，从而彻底旁路 IME 系统级拦截
+    /// （修复：中文 IME 在"开启未合成"状态下会拦截 Backspace，导致终端里的汉字无法删除）
+    pub saved_ime_himc: Option<windows::Win32::UI::Input::Ime::HIMC>,
     /// AI 助手面板
     pub ai_panel: AiPanel,
     /// 全局搜索面板
     pub search_panel: crate::search_panel::SearchPanel,
+    /// 底部面板当前选中的子面板（终端 / 问题）
+    pub bottom_panel_tab: BottomPanelTab,
     /// 当前工作区中各文件的 LSP 诊断（路径字符串 -> 诊断列表）
     pub diagnostics: HashMap<String, Vec<DiagnosticItem>>,
     /// LSP 客户端（工作区打开时初始化，旧版 LSP 集成）
@@ -424,6 +449,10 @@ pub struct EditorState {
     pub composition: Option<String>,
     /// tree-sitter 高亮器（主线程持有，非 Send，不能进 rayon 并行）
     pub(crate) ts_highlighter: TreeSitterHighlighter,
+    /// 后台语法高亮器（独立线程，避免阻塞 UI 输入）
+    pub(crate) bg_highlighter: aether_tree_sitter::BackgroundHighlighter,
+    /// 已发送后台高亮请求对应的 buffer_version（变化时触发新请求）
+    pub(crate) hl_request_version: u64,
     /// tokio runtime（驱动 LSP 异步操作）
     pub(crate) tokio_runtime: tokio::runtime::Runtime,
     /// LSP 客户端（Arc 共享给 tokio task）
@@ -606,21 +635,27 @@ impl EditorState {
     pub fn close_current_tab(&mut self) -> bool {
         if self.tabs.len() <= 1 {
             // 最后一个标签页，重置为空文件
-            // Task 13.3: 保存关闭的标签内容以支持 Ctrl+Shift+T 恢复
-            let old = std::mem::replace(&mut self.tabs[0], Tab::new());
-            self.last_closed_tab = Some(old.content);
+            // 保存 self.content 中的最新内容（而非 tabs[0].content 中的旧内容）
+            self.last_closed_tab =
+                Some(std::mem::replace(&mut self.content, TabContent::new()));
+            self.tabs[0] = Tab::new();
             self.active_tab = 0;
+            // 将新空标签页内容交换到 self.content
             self.swap_tab_content(self.active_tab);
             self.is_selecting = false;
             self.status_message = "已关闭".to_string();
             return true;
         }
-        // Task 13.3: 保存关闭的标签内容以支持 Ctrl+Shift+T 恢复
-        let removed = self.tabs.remove(self.active_tab);
-        self.last_closed_tab = Some(removed.content);
+        // 保存 self.content 中的最新内容到 last_closed_tab（而非 removed.content 旧内容）
+        self.last_closed_tab =
+            Some(std::mem::replace(&mut self.content, TabContent::new()));
+        // 从 tabs 中移除活动标签页（其 content 是旧内容，直接丢弃）
+        let _removed = self.tabs.remove(self.active_tab);
         if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len() - 1;
         }
+        // 将新活动标签页的内容交换到 self.content
+        // swap 后 tabs[active_tab].content 持有空 TabContent（安全，不会被误匹配路径）
         self.swap_tab_content(self.active_tab);
         self.is_selecting = false;
         self.status_message = format!("已关闭，剩余 {} 个文件", self.tabs.len());
@@ -705,19 +740,27 @@ impl EditorState {
         if self.tabs.len() == 1 {
             return true;
         }
-        // 记录被保留的标签，重建 tabs 向量
-        let kept = self.tabs.remove(keep_idx);
         // 关闭其他标签前：若活动标签页是 dirty 的非保留标签，语义上直接丢弃
         // （与右键菜单"关闭其他"在 VS Code 中的行为一致：不逐个弹保存对话框）
+        let was_active = self.active_tab == keep_idx;
+        // 取出保留标签的最新内容：活动标签在 self.content，非活动在 tabs[keep_idx].content
+        let kept_content = if was_active {
+            std::mem::replace(&mut self.content, TabContent::new())
+        } else {
+            std::mem::replace(&mut self.tabs[keep_idx].content, TabContent::new())
+        };
+        // 移除保留标签（content 已被替换为空）
+        let _kept_tab = self.tabs.remove(keep_idx);
         // Task 13.3: 保存最后一个被关闭的标签内容以支持 Ctrl+Shift+T 恢复
         let last_closed = self.tabs.pop();
         self.tabs.clear();
-        self.tabs.push(kept);
+        self.tabs.push(Tab::new());
+        self.active_tab = 0;
+        // 将保留标签内容加载到 self.content（tabs[0].content 保持空作为活动标签占位）
+        self.content = kept_content;
         if let Some(t) = last_closed {
             self.last_closed_tab = Some(t.content);
         }
-        self.active_tab = 0;
-        self.swap_tab_content(self.active_tab);
         self.is_selecting = false;
         self.status_message = "已关闭其他标签页".to_string();
         true
@@ -734,14 +777,22 @@ impl EditorState {
         if self.tabs.len() <= idx + 1 {
             return true;
         }
-        // Task 13.3: 保存最后一个被关闭的标签内容以支持 Ctrl+Shift+T 恢复
-        let last_closed = self.tabs.pop();
-        if let Some(t) = last_closed {
-            self.last_closed_tab = Some(t.content);
+        let active_in_closed = self.active_tab > idx;
+        if active_in_closed {
+            // 活动标签页在被关闭的右侧：保存 self.content 中的最新内容
+            // （而非 tabs.pop().content 旧内容）以支持 Ctrl+Shift+T 恢复
+            self.last_closed_tab = Some(std::mem::replace(&mut self.content, TabContent::new()));
+        } else {
+            // 活动标签页不在右侧：保存最后一个被关闭标签的内容
+            let last_closed = self.tabs.pop();
+            if let Some(t) = last_closed {
+                self.last_closed_tab = Some(t.content);
+            }
         }
         self.tabs.truncate(idx + 1);
-        if self.active_tab > idx {
+        if active_in_closed {
             self.active_tab = idx;
+            // 将保留标签内容加载到 self.content
             self.swap_tab_content(self.active_tab);
             self.is_selecting = false;
         }
@@ -751,15 +802,13 @@ impl EditorState {
 
     /// SubTask 9.4: 关闭所有标签页，并创建一个新的空标签页。
     pub fn close_all_tabs(&mut self) {
-        // Task 13.3: 保存活动标签页内容以支持 Ctrl+Shift+T 恢复
-        if !self.tabs.is_empty() {
-            let active_idx = self.active_tab.min(self.tabs.len() - 1);
-            let last_closed = self.tabs.swap_remove(active_idx);
-            self.last_closed_tab = Some(last_closed.content);
-        }
+        // 保存 self.content 中的最新内容（而非 tabs[active].content 旧内容）
+        // 以支持 Ctrl+Shift+T 恢复
+        self.last_closed_tab = Some(std::mem::replace(&mut self.content, TabContent::new()));
         self.tabs.clear();
         self.tabs.push(Tab::new());
         self.active_tab = 0;
+        // self.content 已空，tabs[0] 也是空，swap 保持架构一致
         self.swap_tab_content(self.active_tab);
         self.is_selecting = false;
         self.status_message = "已关闭所有标签页".to_string();
@@ -871,36 +920,9 @@ impl EditorState {
             if rel_x >= layout.x && rel_x < layout.x + layout.width {
                 // 检测关闭按钮点击
                 if rel_x >= layout.close_x && rel_x < layout.close_x + layout.close_width {
-                    if layout.index == self.active_tab {
-                        // P2-8: 活动标签页走 dirty 检查（可能触发保存对话框）
-                        self.close_current_tab_checked();
-                    } else {
-                        // P2-8: 非活动标签页，检查其 is_dirty
-                        let tab_dirty = self
-                            .tabs
-                            .get(layout.index)
-                            .map(|t| t.content.is_dirty)
-                            .unwrap_or(false);
-                        if tab_dirty {
-                            let tab_name = self
-                                .tabs
-                                .get(layout.index)
-                                .and_then(|t| t.content.file_path.as_ref())
-                                .and_then(|p| p.file_name())
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or_else(|| "未命名".to_string());
-                            let msg = format!("{} 有未保存的修改，是否丢弃修改并关闭？", tab_name);
-                            if !Dialogs::confirm_yes_no(self.hwnd, "关闭标签页", &msg) {
-                                self.status_message = "已取消关闭".to_string();
-                                return true;
-                            }
-                        }
-                        self.tabs.remove(layout.index);
-                        if layout.index < self.active_tab {
-                            self.active_tab -= 1;
-                        }
-                        self.status_message = format!("已关闭，剩余 {} 个文件", self.tabs.len());
-                    }
+                    // 复用 close_tab：统一活动/非活动标签页的 dirty 检查与
+                    // last_closed_tab 保存逻辑，确保 Ctrl+Shift+T 可恢复。
+                    self.close_tab(layout.index);
                     return true;
                 }
                 // 切换标签页
@@ -1085,7 +1107,6 @@ impl EditorState {
             content: TabContent::new(),
             is_selecting: false,
             cached_line_numbers: Vec::new(),
-            text_utf16_buf: Vec::with_capacity(256),
             tree_text_utf16_buf: Vec::with_capacity(64),
             tabs: Vec::new(),
             active_tab: 0,
@@ -1127,8 +1148,10 @@ impl EditorState {
             multi_cursor: MultiCursorState::new(),
             git: GitIntegration::new(),
             terminal_panel: TerminalPanel::new(),
+            saved_ime_himc: None,
             ai_panel: AiPanel::new(),
             search_panel: crate::search_panel::SearchPanel::new(),
+            bottom_panel_tab: BottomPanelTab::default(),
             diagnostics: HashMap::new(),
             legacy_lsp_client: None,
             lsp_rx: None,
@@ -1195,6 +1218,8 @@ impl EditorState {
             lbutton_down: false,
             composition: None,
             ts_highlighter,
+            bg_highlighter: aether_tree_sitter::BackgroundHighlighter::new(),
+            hl_request_version: 0,
             tokio_runtime,
             lsp_client,
             lsp_diagnostics,
@@ -2488,7 +2513,7 @@ impl EditorState {
         let mut max_line_chars: usize = 0;
         for line_idx in start_line..end_line {
             if let Some(text) = self.content.cached_lines.get(line_idx) {
-                let chars = text.chars().map(|ch| unicode_char_width(ch)).sum::<usize>();
+                let chars = text.chars().map(unicode_char_width).sum::<usize>();
                 if chars > max_line_chars {
                     max_line_chars = chars;
                 }
@@ -2522,7 +2547,7 @@ impl EditorState {
                 let byte_pos = text.floor_char_boundary(self.content.cursor_col.min(text.len()));
                 text[..byte_pos]
                     .chars()
-                    .map(|ch| unicode_char_width(ch))
+                    .map(unicode_char_width)
                     .sum::<usize>()
             } else {
                 0
@@ -2860,6 +2885,7 @@ impl EditorState {
                 self.layout.toggle_terminal_panel();
                 if self.layout.bottom_panel_visible {
                     self.terminal_panel.focused = true;
+                    self.set_terminal_ime_bypass(true);
                     if !self.terminal_panel.running {
                         let _ = self.terminal_panel.start();
                     }
@@ -2871,6 +2897,7 @@ impl EditorState {
                     }
                 } else {
                     self.terminal_panel.focused = false;
+                    self.set_terminal_ime_bypass(false);
                     unsafe {
                         let _ =
                             windows::Win32::UI::WindowsAndMessaging::KillTimer(self.hwnd, 0xA002);
@@ -2920,6 +2947,8 @@ impl EditorState {
         self.folder_generation = self.folder_generation.wrapping_add(1);
         let generation = self.folder_generation;
         self.current_folder = Some(path.clone());
+        // 同步终端工作目录到新工作区
+        self.terminal_panel.cwd = path.to_string_lossy().to_string();
         // 立即持久化 last_workspace，避免仅在窗口关闭时保存导致下次启动恢复的是旧工作区
         self.app_settings.ui.last_workspace = self.current_folder.clone();
         if let Err(e) = self.app_settings.save() {
@@ -3404,6 +3433,26 @@ impl EditorState {
         let name = input.value.trim();
         if name.is_empty() {
             self.status_message = "名称不能为空".to_string();
+            self.dirty_tracker.mark_region(
+                self.layout.sidebar_region().x,
+                self.layout.sidebar_region().y,
+                self.layout.sidebar_region().width,
+                self.layout.sidebar_region().height,
+                crate::dirty_rect::DirtyRegionType::Sidebar,
+            );
+            return;
+        }
+
+        // 验证文件名不含 Windows 非法字符
+        const INVALID_CHARS: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+        if name.contains(INVALID_CHARS) {
+            let bad: String = name
+                .chars()
+                .filter(|c| INVALID_CHARS.contains(c))
+                .collect();
+            self.status_message = format!("文件名不能包含: {}", bad);
+            // 验证失败时保留输入框，让用户修改后重试
+            self.file_tree_input = Some(input);
             self.dirty_tracker.mark_region(
                 self.layout.sidebar_region().x,
                 self.layout.sidebar_region().y,
@@ -4621,13 +4670,51 @@ impl EditorState {
         self.composition = Some(text);
     }
 
+    /// 终端聚焦时关闭 IME（保留关联），让 Backspace 直达终端。
+    /// 失去焦点时根据用户偏好决定是否恢复 IME —— 通常让用户切回编辑器时仍能输入中文。
+    /// 同时同步更新低层键盘钩子的 `TERMINAL_FOCUSED_FLAG` 标志，
+    /// 让低层钩子在终端聚焦时主动拦截 Backspace/Delete/方向键。
+    ///
+    /// 多语言 IME 适配说明：
+    /// - 终端聚焦时 set_ime_open(false) 关闭"已开启未合成"状态对 Backspace 的拦截
+    /// - 低层键盘钩子 (WH_KEYBOARD_LL) 在所有 IME 之上拦截 Backspace/Delete/方向键
+    /// - 字符输入仍走 WM_IME_COMPOSITION + GCS_RESULTSTR → commit_composition → ConPTY
+    /// - 因此这个方案对中文/日文/韩文/印地/泰文/阿拉伯等所有标准 IME 通用
+    pub fn set_terminal_ime_bypass(&mut self, terminal_focused: bool) {
+        // 终端聚焦时关闭 IME，编辑器聚焦时恢复 IME 开启状态
+        // （之前总是传 false，会导致用户切回编辑器时中文无法输入）
+        let ime_open = !terminal_focused;
+        let ok = self.ime.set_ime_open(ime_open);
+        crate::keyboard_hook::set_terminal_focused(terminal_focused);
+        tracing::info!(
+            terminal_focused,
+            ime_open,
+            ok,
+            "终端 IME 状态切换完成，低层钩子标志已同步"
+        );
+    }
+
     /// P0-2: 提交合成串为正式文本。
     /// 在 WM_IME_COMPOSITION 收到 GCS_RESULTSTR 或 WM_IME_ENDCOMPOSITION 时调用。
     /// 先清除合成串，再将提交文本逐字符插入到光标处。
+    ///
+    /// 修复：终端聚焦时，IME 提交文本路由到 ConPTY 而非编辑器。
+    /// 中文/日文 IME 在终端聚焦时仍会拦截 ASCII 字母做合成（因为窗口级 IME 关联未变），
+    /// 提交结果必须进入终端，否则用户输入的字母会被"偷"到编辑器。
     pub fn commit_composition(&mut self, text: String) {
         // 清除合成状态显示
         self.composition = None;
         if text.is_empty() {
+            return;
+        }
+        // 终端聚焦且运行时：把 IME 提交文本送入 ConPTY
+        if self.terminal_panel.focused && self.terminal_panel.running {
+            for ch in text.chars() {
+                self.terminal_panel.send_char(ch);
+            }
+            // 提交后立即关闭 IME，让用户能立刻用 Backspace 删除刚提交的汉字
+            // （否则 IME 处于"开启未合成"状态会系统级拦截 Backspace）
+            self.ime.set_ime_open(false);
             return;
         }
         if self.new_project_dialog.visible {
@@ -5756,6 +5843,25 @@ impl EditorState {
     pub(crate) fn rebuild_cache(&mut self, visible_start: usize, visible_end: usize) {
         let total_lines = self.content.buffer.len_lines().max(1);
 
+        // tree-sitter 优先高亮：返回支持的语言的字符串标识
+        // 不支持的语言返回 None，由调用方 fallback 到手写 lexer
+        let ts_lang = language_to_ts_str(self.content.language);
+
+        // === P0-3: 后台语法高亮 — 始终 poll，即使在空闲帧 ===
+        // 必须在签名检查之前 poll，否则空闲帧（签名匹配）会 early return，
+        // 导致后台高亮结果永远无法被消费，tokens 停留在空/旧状态。
+        if ts_lang.is_some() && !self.content.is_large_file {
+            if let Some(result) = self.bg_highlighter.poll_result() {
+                let min_len = result
+                    .token_lines
+                    .len()
+                    .min(self.content.cached_tokens.len());
+                for i in 0..min_len {
+                    self.content.cached_tokens[i] = result.token_lines[i].clone();
+                }
+            }
+        }
+
         // REQ-P2-01: 变化检测 — 如果 buffer_version、可见范围、总行数均未变化，跳过整个重建
         // 空闲帧（无编辑、无滚动）不会产生任何缓存重建开销
         let signature = (
@@ -5770,10 +5876,6 @@ impl EditorState {
             return;
         }
         self.content.last_cache_signature = signature;
-
-        // tree-sitter 优先高亮：返回支持的语言的字符串标识
-        // 不支持的语言返回 None，由调用方 fallback 到手写 lexer
-        let ts_lang = language_to_ts_str(self.content.language);
 
         // P2.3: 大文件检测与行偏移缓存
         self.update_large_file_flag();
@@ -5803,29 +5905,55 @@ impl EditorState {
         // 延迟创建 fallback lexer：仅在 tree-sitter 不支持且至少一行需要重建时才创建
         let mut lexer: Option<Box<dyn aether_core::lexer::Lexer>> = None;
 
+        // === P0-3: 后台语法高亮 — 发送请求 ===
+        // poll 逻辑已移至签名检查之前，确保空闲帧也能消费后台结果。
+        // 此处仅在 buffer_version 变化时发送新请求。
+        if let Some(lang) = ts_lang {
+            if !self.content.is_large_file
+                && self.content.buffer_version != self.hl_request_version
+                && !self.bg_highlighter.has_pending()
+            {
+                let full_text = self.content.buffer.get_all_text();
+                let doc_id = self
+                    .content
+                    .file_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "untitled".to_string());
+                self.bg_highlighter.request(&doc_id, lang, &full_text);
+                self.hl_request_version = self.content.buffer_version;
+            }
+        }
+
         for i in cache_start..cache_end {
             if self.content.line_cache_versions[i] != self.content.buffer_version {
                 let line = self.content.buffer.get_line(i).unwrap_or_default();
-                let tokens = if self.content.is_large_file {
-                    Vec::new()
-                } else if let Some(lang) = ts_lang {
-                    // tree-sitter 高亮：返回 Vec<LexemeSpan>，类型与手写 lexer 完全一致
-                    self.ts_highlighter.highlight_line(&line, lang)
+
+                if self.content.is_large_file {
+                    // 大文件：跳过语法高亮
+                    self.content.cached_lines[i] = line;
+                    self.content.cached_tokens[i] = Vec::new();
+                    self.content.line_cache_versions[i] = self.content.buffer_version;
+                } else if ts_lang.is_some() {
+                    // tree-sitter 语言：只更新文本，tokens 由后台线程异步更新
+                    // 保留上一版本的 tokens（stale but usable），实现零输入延迟
+                    self.content.cached_lines[i] = line;
+                    self.content.line_cache_versions[i] = self.content.buffer_version;
                 } else {
                     // fallback：手写 lexer（Markdown/Html/Css/PlainText/Image 等）
                     if lexer.is_none() {
                         lexer = Some(self.content.language.create_lexer());
                     }
                     // C-03: lexer 创建可能返回 None（不支持的语言），unwrap 会 panic 并穿越 WndProc
-                    if let Some(lex) = lexer.as_ref() {
+                    let tokens = if let Some(lex) = lexer.as_ref() {
                         lex.lex_full(&line)
                     } else {
                         Vec::new()
-                    }
-                };
-                self.content.cached_lines[i] = line;
-                self.content.cached_tokens[i] = tokens;
-                self.content.line_cache_versions[i] = self.content.buffer_version;
+                    };
+                    self.content.cached_lines[i] = line;
+                    self.content.cached_tokens[i] = tokens;
+                    self.content.line_cache_versions[i] = self.content.buffer_version;
+                }
             }
             // 行号 UTF-16 缓存：如果为空则构建
             if self.cached_line_numbers[i].is_empty() {

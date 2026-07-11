@@ -110,6 +110,25 @@ pub(crate) fn get_and_set_state(hwnd: HWND) -> Option<Rc<RefCell<EditorState>>> 
 // ===== 入口函数 =====
 
 pub fn run(args: LaunchArgs) {
+    // 初始化日志系统（失败不阻塞启动）
+    match crate::logging::init_logging() {
+        Ok(_) => {
+            tracing::info!("Aether Studio 启动（run 函数入口）");
+        }
+        Err(e) => {
+            eprintln!("警告: 日志初始化失败: {}", e);
+            // 即使日志初始化失败，也尝试写入一个临时文件以便调试
+            let temp = std::env::temp_dir().join(format!(
+                "aether_init_logging_error_{}.txt",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+            ));
+            let _ = std::fs::write(&temp, format!("{}", e));
+        }
+    }
+
     unsafe {
         // 设置 DPI 感知模式（Per-Monitor V2）
         set_dpi_awareness();
@@ -253,8 +272,14 @@ unsafe fn init_editor_state(hwnd: HWND, is_main_window: bool) {
     {
         let _ = state_rc.borrow_mut().init_render_target();
         state_rc.borrow_mut().render();
-        // 设为当前活跃状态
-        set_active_state(state_rc.clone());
+    }
+
+    // 设为当前活跃状态
+    set_active_state(state_rc.clone());
+
+    // P0-3: 安装低层键盘钩子，确保 Backspace/Delete/方向键不被任意 IME 系统级拦截
+    if !crate::keyboard_hook::install(hwnd) {
+        tracing::error!("[P0-3] 键盘钩子安装失败！终端里的汉字将无法用 Backspace 删除");
     }
 
     // 将状态存储到窗口的用户数据区，以便窗口过程可以访问
@@ -290,6 +315,16 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             msg if msg == WM_APP + 5 => on_wm_app_5(hwnd, msg, wparam, lparam),
             msg if msg == WM_APP + 6 => on_wm_app_6(hwnd, msg, wparam, lparam),
             msg if msg == WM_APP + 7 => on_wm_app_7(hwnd, msg, wparam, lparam),
+            // P0-3: 低层键盘钩子投递给主窗口的自定义消息 - 终端直接接收编辑键
+            msg if msg == crate::keyboard_hook::WM_TERMINAL_BACKSPACE => {
+                crate::keyboard_hook::handle_backspace_msg(hwnd)
+            }
+            msg if msg == crate::keyboard_hook::WM_TERMINAL_DELETE => {
+                crate::keyboard_hook::handle_delete_msg(hwnd)
+            }
+            msg if msg == crate::keyboard_hook::WM_TERMINAL_ARROW => {
+                crate::keyboard_hook::handle_arrow_msg(hwnd, wparam.0 as u32)
+            }
             WM_DROPFILES => on_dropfiles(hwnd, msg, wparam, lparam),
             WM_COPYDATA => on_copydata(hwnd, msg, wparam, lparam),
             WM_SIZE => on_size(hwnd, msg, wparam, lparam),

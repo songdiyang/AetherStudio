@@ -1,8 +1,8 @@
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::Input::Ime::{
-    ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow,
-    ImmSetCompositionWindow, CANDIDATEFORM, CFS_CANDIDATEPOS, CFS_POINT, COMPOSITIONFORM,
-    IME_COMPOSITION_STRING,
+    ImmAssociateContext, ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext,
+    ImmSetCandidateWindow, ImmSetCompositionWindow, ImmSetOpenStatus, CANDIDATEFORM,
+    CFS_CANDIDATEPOS, CFS_POINT, COMPOSITIONFORM, HIMC, IME_COMPOSITION_STRING,
 };
 
 /// GCS_COMPSTR：合成串（pre-edit text）查询标志
@@ -203,6 +203,42 @@ impl ImeIntegration {
     /// 启用/禁用 IME 集成
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
+    }
+
+    /// 解除窗口与 IME 的关联（仅本次调用生效；之后用 `restore_ime_context` 恢复）。
+    /// 用于终端聚焦时彻底旁路 IME：避免 IME 在"已开启未合成"状态下系统级拦截
+    /// Backspace 等按键（导致终端里的汉字无法删除）。
+    ///
+    /// 返回原 HIMC，调用方负责在合适时机通过 `restore_ime_context` 恢复。
+    pub fn detach_ime_context(&self) -> HIMC {
+        unsafe { ImmAssociateContext(self.hwnd, HIMC(std::ptr::null_mut())) }
+    }
+
+    /// 恢复窗口与 IME 的关联（与 `detach_ime_context` 配对使用）。
+    pub fn restore_ime_context(&self, himc: HIMC) -> bool {
+        if himc.0.is_null() {
+            return false;
+        }
+        unsafe {
+            let result = ImmAssociateContext(self.hwnd, himc);
+            !result.0.is_null()
+        }
+    }
+
+    /// 设置 IME 的开启/关闭状态（不影响 IME 关联，只是切换 IME 是否拦截按键）。
+    /// 用于：终端聚焦时关闭 IME 让 Backspace 直达终端；中文提交后关闭 IME
+    /// 让用户能立即用 Backspace 删除汉字。用户需要输入中文时按 Ctrl+Shift
+    /// 或输入法自身的切换键重新打开 IME。
+    pub fn set_ime_open(&self, open: bool) -> bool {
+        unsafe {
+            let himc = ImmGetContext(self.hwnd);
+            if himc.0.is_null() {
+                return false;
+            }
+            let ok = ImmSetOpenStatus(himc, open);
+            let _ = ImmReleaseContext(self.hwnd, himc);
+            ok.as_bool()
+        }
     }
 }
 

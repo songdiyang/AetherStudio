@@ -475,7 +475,7 @@ unsafe fn omm_status_bar_hover(
                     .status_bar
                     .sections
                     .get(idx)
-                    .map_or(false, |sec| sec.clickable)
+                    .is_some_and(|sec| sec.clickable)
                 {
                     Some(idx)
                 } else {
@@ -559,10 +559,8 @@ unsafe fn omm_hover_tooltip(
     let dx = mouse_x - st.hover_last_mouse_x;
     let dy = mouse_y - st.hover_last_mouse_y;
     let moved_beyond_tolerance = dx.abs() > HOVER_MOVE_TOLERANCE || dy.abs() > HOVER_MOVE_TOLERANCE;
-    if moved_beyond_tolerance || !in_sidebar || !has_hover_node {
-        if st.hover_tooltip.is_some() {
-            st.hover_tooltip = None;
-        }
+    if (moved_beyond_tolerance || !in_sidebar || !has_hover_node) && st.hover_tooltip.is_some() {
+        st.hover_tooltip = None;
     }
     if in_sidebar && has_hover_node {
         let _ = SetTimer(hwnd, HOVER_TIMER_ID, HOVER_DELAY_MS, None);
@@ -774,7 +772,7 @@ pub(crate) unsafe fn compute_cursor_for_pos(_hwnd: HWND, x: i32, y: i32) -> Curs
                     .status_bar
                     .sections
                     .get(idx)
-                    .map_or(false, |sec| sec.clickable)
+                    .is_some_and(|sec| sec.clickable)
                 {
                     return CursorType::Hand;
                 }

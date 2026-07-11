@@ -1,4 +1,4 @@
-use aether_render::d2d::brush_cache::{BrushCache, TextFormatCache};
+use aether_render::d2d::brush_cache::{BrushCache, TextFormatCache, TextLayoutCache};
 use aether_render::d2d::factory::{D2DFactory, RenderTarget};
 use windows::core::Result;
 use windows::Win32::Foundation::HWND;
@@ -14,16 +14,19 @@ pub struct RenderContext {
     pub brush_cache: BrushCache,
     /// DirectWrite 文本格式缓存
     pub text_format_cache: TextFormatCache,
+    /// DirectWrite TextLayout 缓存（避免每帧重复创建 COM 对象）
+    pub text_layout_cache: TextLayoutCache,
 }
 
 impl RenderContext {
     pub fn new() -> Self {
+        let text_format_cache = TextFormatCache::new()
+            .expect("无法初始化 DirectWrite 文本格式缓存，请确认 DirectX 已安装");
         Self {
             target: None,
             brush_cache: BrushCache::new(),
-            // UI-H03: 移除双重 unwrap 重试（第一次失败第二次必然失败），使用 expect 提供清晰错误信息
-            text_format_cache: TextFormatCache::new()
-                .expect("无法初始化 DirectWrite 文本格式缓存，请确认 DirectX 已安装"),
+            text_layout_cache: TextLayoutCache::new(text_format_cache.dwrite_factory()),
+            text_format_cache,
         }
     }
 
