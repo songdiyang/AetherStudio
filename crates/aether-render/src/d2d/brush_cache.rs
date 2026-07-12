@@ -4,6 +4,7 @@ use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget;
 use windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush;
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
+use windows::Win32::Graphics::DirectWrite::IDWriteTextLayout;
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL,
     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
@@ -306,6 +307,11 @@ impl TextFormatCache {
         self.formats.clear();
     }
 
+    /// 获取内部 IDWriteFactory 引用（供其他缓存复用）
+    pub fn dwrite_factory(&self) -> IDWriteFactory {
+        self.dwrite_factory.clone()
+    }
+
     /// REQ-P3-02: 测量文本宽度（逻辑像素）
     ///
     /// 使用 DirectWrite TextLayout 精确测量文本宽度，用于子菜单尺寸自适应。
@@ -321,7 +327,7 @@ impl TextFormatCache {
                 )
                 .ok()?;
 
-            let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+            let wide: Vec<u16> = text.encode_utf16().collect();
             // 使用一个足够大的 maxWidth，让文本自然布局
             let layout = self
                 .dwrite_factory
@@ -332,6 +338,80 @@ impl TextFormatCache {
             layout.GetMetrics(&mut metrics).ok()?;
             Some(metrics.widthIncludingTrailingWhitespace)
         }
+    }
+}
+
+/// TextLayout 缓存最大条目数
+const MAX_TEXT_LAYOUT_CACHE_ENTRIES: usize = 512;
+
+/// TextLayout 缓存 — 避免每帧重复创建 IDWriteTextLayout COM 对象
+///
+/// `DrawText` 内部每次调用都会创建临时 TextLayout，
+/// 改用 `DrawTextLayout` + 缓存可显著减少 COM 对象分配开销。
+/// 代码编辑器中相同 token 文本（关键字、标识符等）高频重复，缓存命中率极高。
+pub struct TextLayoutCache {
+    dwrite_factory: IDWriteFactory,
+    /// 缓存：文本内容 → TextLayout
+    layouts: HashMap<String, IDWriteTextLayout>,
+    /// 当前缓存对应的字体大小（变化时清空）
+    font_size: f32,
+}
+
+impl TextLayoutCache {
+    pub fn new(dwrite_factory: IDWriteFactory) -> Self {
+        Self {
+            dwrite_factory,
+            layouts: HashMap::new(),
+            font_size: 0.0,
+        }
+    }
+
+    /// 获取或创建文本布局
+    ///
+    /// 使用 `f32::MAX` 作为最大宽度，避免自动换行（代码编辑器不需要换行）。
+    /// 字体大小变化时自动清空缓存。
+    pub fn get_or_create(
+        &mut self,
+        text: &str,
+        format: &IDWriteTextFormat,
+        max_height: f32,
+        font_size: f32,
+    ) -> Result<IDWriteTextLayout> {
+        // 字体大小变化时清空缓存
+        if (self.font_size - font_size).abs() > 0.01 {
+            self.layouts.clear();
+            self.font_size = font_size;
+        }
+
+        // 查缓存
+        if let Some(layout) = self.layouts.get(text) {
+            return Ok(layout.clone());
+        }
+
+        // 超出上限时清空（简单淘汰策略）
+        if self.layouts.len() >= MAX_TEXT_LAYOUT_CACHE_ENTRIES {
+            self.layouts.clear();
+        }
+
+        // 创建新 layout
+        // 注意：不能带 null 终止符。windows crate 的 CreateTextLayout 接受 &[u16]
+        // 是基于长度的切片，并非 null 终止字符串。若附加 U+0000，某些字体下
+        // 该字符可能贡献非零 advance 宽度，导致文本段实际渲染宽度 >
+        // char_count * char_width，进而与基于 char_width 计算的光标 / 点击位置
+        // 产生偏差。必须与 measure_monospace_width (text.rs) 保持一致：均不含 null。
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let layout = unsafe {
+            self.dwrite_factory
+                .CreateTextLayout(&wide, format, f32::MAX, max_height)?
+        };
+        let result = layout.clone();
+        self.layouts.insert(text.to_string(), layout);
+        Ok(result)
+    }
+
+    /// 清空缓存（设备丢失或字体变化时调用）
+    pub fn clear(&mut self) {
+        self.layouts.clear();
     }
 }
 

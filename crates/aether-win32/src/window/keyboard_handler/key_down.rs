@@ -15,12 +15,25 @@ use crate::dialogs::Dialogs;
 use super::super::{get_and_set_state, invalidate_window, EDITOR_STATE};
 
 /// WM_KEYDOWN
-pub(crate) unsafe fn on_key_down(hwnd: HWND, msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+pub(crate) unsafe fn on_key_down(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // C-12: 键盘消息进入时先同步 thread_local 到当前窗口状态
     get_and_set_state(hwnd);
     let vk = VIRTUAL_KEY(wparam.0 as u16);
     let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
     let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
+
+    // IME 合成期间：直接交给默认窗口过程，让 IMM32 处理按键
+    // （中文/日文 IME 会在合成期拦截 Backspace/字母/方向键来更新或取消合成串）
+    // 修复：之前我们 return LRESULT(0) 消费了消息，导致 Backspace 等无法更新合成
+    let ime_composing = EDITOR_STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|state| state.borrow().composition.is_some())
+            .unwrap_or(false)
+    });
+    if ime_composing {
+        return DefWindowProcW(hwnd, msg, wparam, lparam);
+    }
 
     if let Some(r) = okd_file_tree_input(hwnd, vk) {
         return r;
@@ -66,6 +79,16 @@ pub(crate) unsafe fn on_key_down(hwnd: HWND, msg: u32, wparam: WPARAM, _lparam: 
     }
 
     if ctrl {
+        // 文件树输入框激活时，吞掉所有 Ctrl 快捷键防止编辑器误响应
+        let ft_active = EDITOR_STATE.with(|s| {
+            s.borrow()
+                .as_ref()
+                .map(|state| state.borrow().file_tree_input.is_some())
+                .unwrap_or(false)
+        });
+        if ft_active {
+            return LRESULT(0);
+        }
         super::key_down_ctrl::okd_ctrl_dispatch(hwnd, vk, shift);
         return LRESULT(0);
     }
@@ -75,6 +98,18 @@ pub(crate) unsafe fn on_key_down(hwnd: HWND, msg: u32, wparam: WPARAM, _lparam: 
         if let Some(r) = okd_alt_nav(hwnd, vk) {
             return r;
         }
+    }
+
+    // 文件树输入框激活时，吞掉所有非 Ctrl 编辑器按键（方向键等），
+    // 防止编辑器光标移动 / 删除等操作。字符输入由 WM_CHAR 处理。
+    let ft_active = EDITOR_STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|state| state.borrow().file_tree_input.is_some())
+            .unwrap_or(false)
+    });
+    if ft_active {
+        return LRESULT(0);
     }
 
     super::key_down_edit::okd_edit_dispatch(hwnd, vk, shift);
@@ -107,7 +142,11 @@ unsafe fn okd_alt_nav(hwnd: HWND, vk: VIRTUAL_KEY) -> Option<LRESULT> {
     }
 }
 
-/// 文件树内联输入框的 Enter / Escape / Backspace 处理
+/// 文件树内联输入框的 Enter / Escape / Backspace / Delete 处理
+///
+/// 仅消费已明确处理的按键（VK_RETURN / VK_ESCAPE / VK_BACK / VK_DELETE）。
+/// 其他键返回 None 让消息继续分发，但 `on_key_down` 会在编辑器按键分发前
+/// 检查 file_tree_input 是否激活并吞掉，防止编辑器误响应。
 unsafe fn okd_file_tree_input(hwnd: HWND, vk: VIRTUAL_KEY) -> Option<LRESULT> {
     let active = EDITOR_STATE.with(|s| {
         s.borrow()
@@ -137,13 +176,19 @@ unsafe fn okd_file_tree_input(hwnd: HWND, vk: VIRTUAL_KEY) -> Option<LRESULT> {
         });
         return Some(LRESULT(0));
     }
-    if vk == VK_BACK {
+    if vk == VK_BACK || vk == VK_DELETE {
         EDITOR_STATE.with(|s| {
             if let Some(state) = s.borrow().as_ref() {
                 let mut st = state.borrow_mut();
                 let region = st.layout.sidebar_region().clone();
                 if let Some(input) = st.file_tree_input.as_mut() {
-                    input.value.pop();
+                    // 优先清除 IME 合成串（如果在合成中按退格/删除，
+                    // IME 通常自行处理，但作为安全兜底也清除本地合成状态）
+                    if input.composition.is_some() {
+                        input.composition = None;
+                    } else {
+                        input.value.pop();
+                    }
                     input.caret_visible = true;
                 }
                 st.dirty_tracker.mark_region(
@@ -160,7 +205,8 @@ unsafe fn okd_file_tree_input(hwnd: HWND, vk: VIRTUAL_KEY) -> Option<LRESULT> {
         return Some(LRESULT(0));
     }
 
-    Some(LRESULT(0))
+    // 其他键不在此处消费，由 on_key_down 统一拦截防止编辑器响应
+    None
 }
 
 /// 资源管理器空白区域上下文菜单打开时，按 Escape 关闭

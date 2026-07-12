@@ -1,6 +1,7 @@
 // new_without_default: 多数 UI 组件的 new() 包含主题初始化数据，不适合 Default
 #![allow(clippy::new_without_default)]
 
+pub mod conpty;
 pub mod diff_view;
 pub mod dirty_rect;
 pub mod events;
@@ -26,6 +27,7 @@ pub mod icons;
 pub mod ime;
 pub mod inline_completion;
 pub mod input;
+pub mod keyboard_hook;
 pub mod layout;
 pub mod logging;
 pub mod menu_bar;

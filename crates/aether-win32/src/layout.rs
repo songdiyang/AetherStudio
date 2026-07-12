@@ -349,7 +349,7 @@ impl LayoutManager {
         offset
     }
 
-    /// 内容区域高度（排除标题栏、菜单栏和状态栏）
+    /// 内容区域高度（排除标题栏、菜单栏、状态栏和底部面板）
     fn content_height(&self) -> f32 {
         let mut height = self.window_height;
         if self.title_bar_visible {
@@ -361,9 +361,8 @@ impl LayoutManager {
         if self.status_bar_visible {
             height -= self.status_bar_height;
         }
-        if self.bottom_panel_visible {
-            height -= self.bottom_panel_height;
-        }
+        // 无论底部面板是否可见，都预留空间以防止侧边栏/活动栏区域延伸到底部面板
+        height -= self.bottom_panel_height;
         // 确保内容区域至少有 0 像素的高度
         height.max(0.0)
     }

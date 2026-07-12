@@ -15,7 +15,7 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 
 use crate::ai_prompt::AiMode;
-use crate::editor::EditorState;
+use crate::editor::{BottomPanelTab, EditorState};
 use crate::layout::Region;
 
 /// 绘制输入框的四条边框
@@ -398,7 +398,7 @@ impl EditorState {
                     .collect();
                 use_layer = self
                     .render_ctx
-                    .push_multi_clip(&self.d2d_factory.factory(), &rect_tuples);
+                    .push_multi_clip(self.d2d_factory.factory(), &rect_tuples);
             }
         }
 
@@ -1244,7 +1244,7 @@ impl EditorState {
                 target.FillRectangle(&input_rect, &input_bg_brush);
                 target.DrawRectangle(&input_rect, &sep_brush, 1.0, None);
 
-                let value_text: Vec<u16> = input.value.encode_utf16().chain(Some(0)).collect();
+                let value_text: Vec<u16> = input.value.encode_utf16().collect();
                 let value_rect = D2D_RECT_F {
                     left: input_rect.left + 6.0,
                     top: input_rect.top + 2.0,
@@ -1260,14 +1260,24 @@ impl EditorState {
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
 
+                // 精确测量 value 文本宽度（支持 CJK 双宽字符）
+                let ui_font_size = 13.0f32;
+                let value_width = self
+                    .render_ctx
+                    .text_format_cache
+                    .measure_text_width(
+                        &input.value,
+                        ui_font_size,
+                        DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+                    )
+                    .unwrap_or(0.0);
+
                 // IME 合成串（pre-edit text）显示在 value 之后
-                let mut comp_char_count = 0usize;
+                let mut comp_width = 0.0f32;
                 if let Some(comp) = &input.composition {
                     if !comp.is_empty() {
-                        let comp_text: Vec<u16> = comp.encode_utf16().chain(Some(0)).collect();
-                        // 估算 value 宽度以定位合成串
-                        let value_chars = input.value.chars().count();
-                        let comp_x = value_rect.left + value_chars as f32 * 7.0;
+                        let comp_text: Vec<u16> = comp.encode_utf16().collect();
+                        let comp_x = value_rect.left + value_width;
                         let comp_rect = D2D_RECT_F {
                             left: comp_x,
                             top: value_rect.top,
@@ -1288,15 +1298,21 @@ impl EditorState {
                             D2D1_DRAW_TEXT_OPTIONS_NONE,
                             DWRITE_MEASURING_MODE_NATURAL,
                         );
-                        comp_char_count = comp.chars().count();
+                        comp_width = self
+                            .render_ctx
+                            .text_format_cache
+                            .measure_text_width(
+                                comp,
+                                ui_font_size,
+                                DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+                            )
+                            .unwrap_or(0.0);
                     }
                 }
 
-                // 光标
+                // 光标：使用精确测量的文本宽度定位
                 if input.caret_visible {
-                    // 简单估算光标位置：value + composition 的字符数 * 7px
-                    let total_chars = input.value.chars().count() + comp_char_count;
-                    let caret_x = value_rect.left + total_chars as f32 * 7.0;
+                    let caret_x = value_rect.left + value_width + comp_width;
                     let caret_rect = D2D_RECT_F {
                         left: caret_x,
                         top: value_rect.top + 2.0,
@@ -3532,50 +3548,7 @@ impl EditorState {
                 }
             }
 
-            // 输入提示符
-            let prompt_color = color_f(0.0, 0.8, 0.0, 1.0);
-            let prompt_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &prompt_color)
-                .unwrap();
-            let prompt: Vec<u16> = "> ".encode_utf16().chain(Some(0)).collect();
-            let prompt_rect = D2D_RECT_F {
-                left: x + 10.0,
-                top: line_y,
-                right: x + 30.0,
-                bottom: line_y + 18.0,
-            };
-            target.DrawText(
-                &prompt,
-                &mono_format,
-                &prompt_rect,
-                &prompt_brush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-
-            // 输入行
-            let input: Vec<u16> = self
-                .terminal_panel
-                .input_line
-                .encode_utf16()
-                .chain(Some(0))
-                .collect();
-            let input_rect = D2D_RECT_F {
-                left: x + 25.0,
-                top: line_y,
-                right: x + width - 10.0,
-                bottom: line_y + 18.0,
-            };
-            target.DrawText(
-                &input,
-                &mono_format,
-                &input_rect,
-                &output_brush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
+            // ConPTY 模式：输入回显由 shell 处理，无需本地渲染输入行
         }
     }
 
@@ -3633,24 +3606,14 @@ impl EditorState {
                 .brush_cache
                 .get_brush(target, &output_color)
                 .unwrap();
-            let prompt_color = color_f(0.0, 0.8, 0.4, 1.0);
-            let prompt_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &prompt_color)
-                .unwrap();
+            let _prompt_color = color_f(0.0, 0.8, 0.4, 1.0);
             let accent_color = color_f(0.25, 0.65, 0.95, 1.0);
             let accent_brush = self
                 .render_ctx
                 .brush_cache
                 .get_brush(target, &accent_color)
                 .unwrap();
-            let cursor_color = color_f(0.9, 0.9, 0.9, 1.0);
-            let cursor_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &cursor_color)
-                .unwrap();
+            let _cursor_color = color_f(0.9, 0.9, 0.9, 1.0);
 
             let ui_format = self
                 .render_ctx
@@ -3775,11 +3738,15 @@ impl EditorState {
                 DWRITE_MEASURING_MODE_NATURAL,
             );
 
-            // 4. 输出区域
+            // 4. 输出区域（ConPTY 模式下输出已包含提示符和输入回显，无需单独渲染输入行）
             let line_h = 18.0;
             let content_y = y + title_bar_h + 6.0;
-            let content_bottom = y + height - 28.0; // 底部预留输入行
+            let content_bottom = y + height - 6.0; // 不再预留输入行空间
             let visible_lines = ((content_bottom - content_y) / line_h).floor() as usize;
+            // 同步 ConPTY 尺寸到面板实际可用区域（字符宽约 7px，11pt 等宽字体）
+            let term_cols = ((width - 20.0) / 7.0).max(20.0) as i16;
+            let term_rows = visible_lines.max(5) as i16;
+            self.terminal_panel.set_size(term_cols, term_rows);
             let lines = self.terminal_panel.visible_window(visible_lines);
 
             // 滚动提示：当用户向上滚动浏览历史时显示提示
@@ -3827,59 +3794,7 @@ impl EditorState {
                 line_y += line_h;
             }
 
-            // 5. 输入行：提示符 + 输入内容 + 光标
-            let input_y = content_bottom + 4.0;
-            let prompt_wide: Vec<u16> = "> ".encode_utf16().chain(Some(0)).collect();
-            let prompt_rect = D2D_RECT_F {
-                left: x + 12.0,
-                top: input_y,
-                right: x + 32.0,
-                bottom: input_y + line_h,
-            };
-            target.DrawText(
-                &prompt_wide,
-                &mono_format,
-                &prompt_rect,
-                &prompt_brush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-
-            let input: Vec<u16> = self
-                .terminal_panel
-                .input_line
-                .encode_utf16()
-                .chain(Some(0))
-                .collect();
-            let input_rect = D2D_RECT_F {
-                left: x + 30.0,
-                top: input_y,
-                right: x + width - 12.0,
-                bottom: input_y + line_h,
-            };
-            target.DrawText(
-                &input,
-                &mono_format,
-                &input_rect,
-                &title_brush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-
-            // 光标块（仅聚焦时显示）
-            if self.terminal_panel.focused {
-                let char_width = 7.5_f32; // 等宽字体近似字符宽度
-                let cursor_x = x + 30.0 + self.terminal_panel.cursor_pos as f32 * char_width;
-                let cursor_rect = D2D_RECT_F {
-                    left: cursor_x,
-                    top: input_y + 2.0,
-                    right: cursor_x + char_width,
-                    bottom: input_y + line_h - 2.0,
-                };
-                target.FillRectangle(&cursor_rect, &cursor_brush);
-            }
-
-            // 6. 底部分隔线
+            // 5. 底部分隔线
             let bottom_sep = D2D_RECT_F {
                 left: x,
                 top: y + height - 1.0,
@@ -3914,7 +3829,7 @@ impl EditorState {
             } else {
                 color_f(0.2, 0.2, 0.2, 1.0)
             };
-            let border_brush = self
+            let _border_brush = self
                 .render_ctx
                 .brush_cache
                 .get_brush(target, &border_color)
@@ -3943,12 +3858,7 @@ impl EditorState {
                 .brush_cache
                 .get_brush(target, &output_color)
                 .unwrap();
-            let prompt_color = color_f(0.0, 0.8, 0.0, 1.0);
-            let prompt_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &prompt_color)
-                .unwrap();
+            let _prompt_color = color_f(0.0, 0.8, 0.0, 1.0);
 
             let ui_format = self
                 .render_ctx
@@ -3980,14 +3890,24 @@ impl EditorState {
             };
             target.FillRectangle(&bg_rect, &bg_brush);
 
-            // 顶部边框
+            // 顶部边框（聚焦时高亮为强调色，提供视觉反馈）
+            let top_border_color = if self.terminal_panel.focused {
+                color_f(0.3, 0.55, 0.85, 1.0)
+            } else {
+                border_color
+            };
+            let top_border_brush = self
+                .render_ctx
+                .brush_cache
+                .get_brush(target, &top_border_color)
+                .unwrap();
             let top_border = D2D_RECT_F {
                 left: x,
                 top: y,
                 right: x + width,
-                bottom: y + 1.0,
+                bottom: y + 2.0,
             };
-            target.FillRectangle(&top_border, &border_brush);
+            target.FillRectangle(&top_border, &top_border_brush);
 
             // ===== 全局搜索面板（覆盖默认终端内容） =====
             if self.search_panel.visible {
@@ -4262,12 +4182,15 @@ impl EditorState {
             }
 
             // 底部面板标签栏（类似 VS Code 底部面板标签）
+            // 注意：标签顺序必须与 BottomPanelTab 枚举的 discriminant 一致。
+            // 当前只保留"终端"和"问题"两个标签；"输出"标签已移除，
+            // 问题面板的引擎/数据采集待后续设计。
             let tab_height = 28.0;
-            let tabs = ["终端", "输出", "问题"];
+            let tabs: [BottomPanelTab; 2] = [BottomPanelTab::Terminal, BottomPanelTab::Problems];
             let mut tab_x = x + 10.0;
             let tab_w = 60.0;
-            for (i, tab) in tabs.iter().enumerate() {
-                let is_active = i == 0; // 终端默认激活
+            for tab_kind in tabs.iter() {
+                let is_active = *tab_kind == self.bottom_panel_tab;
                 let tab_rect = D2D_RECT_F {
                     left: tab_x,
                     top: y + 2.0,
@@ -4290,7 +4213,7 @@ impl EditorState {
                     };
                     target.FillRectangle(&top_line, &active_brush);
                 }
-                let tab_wide: Vec<u16> = tab.encode_utf16().chain(Some(0)).collect();
+                let tab_wide: Vec<u16> = tab_kind.label().encode_utf16().chain(Some(0)).collect();
                 let tab_text_rect = D2D_RECT_F {
                     left: tab_x + 8.0,
                     top: y + 4.0,
@@ -4308,12 +4231,14 @@ impl EditorState {
                 tab_x += tab_w + 4.0;
             }
 
-            // 终端输出内容
+            // 标签下方的内容：根据当前 tab 分支渲染
+            // 0 = 终端（已有逻辑）；1 = 问题面板（暂未实现）
             let content_y = y + tab_height + 4.0;
             let content_h = height - tab_height - 8.0;
 
-            // 终端未启动时显示居中提示文案，引导用户按 Ctrl+` 启动
-            if !self.terminal_panel.running {
+            // P-问题: 问题面板占位。问题数据/采集引擎后续从 diagnostics 字段设计。
+            // 当前仅渲染居中提示，让用户能验证"终端/问题"切换能力已生效。
+            if self.bottom_panel_tab == BottomPanelTab::Problems {
                 let hint_color = color_f(150.0 / 255.0, 150.0 / 255.0, 150.0 / 255.0, 1.0);
                 let hint_brush = self
                     .render_ctx
@@ -4331,7 +4256,7 @@ impl EditorState {
                     )
                     .unwrap();
                 let hint_text: Vec<u16> =
-                    "按 Ctrl+` 启动终端".encode_utf16().chain(Some(0)).collect();
+                    "问题面板（待实现）".encode_utf16().chain(Some(0)).collect();
                 let hint_rect = D2D_RECT_F {
                     left: x,
                     top: content_y,
@@ -4346,10 +4271,138 @@ impl EditorState {
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
+                return;
+            }
+
+            // 终端未启动时：若有历史输出（进程已退出）则显示输出+重启提示；
+            // 否则显示居中引导文案
+            if !self.terminal_panel.running {
+                if self.terminal_panel.output_lines.is_empty() {
+                    // 从未启动：居中提示
+                    let hint_color = color_f(150.0 / 255.0, 150.0 / 255.0, 150.0 / 255.0, 1.0);
+                    let hint_brush = self
+                        .render_ctx
+                        .brush_cache
+                        .get_brush(target, &hint_color)
+                        .unwrap();
+                    let hint_format = self
+                        .render_ctx
+                        .text_format_cache
+                        .get_format(
+                            14.0,
+                            DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+                            DWRITE_TEXT_ALIGNMENT_CENTER.0 as u32,
+                            DWRITE_PARAGRAPH_ALIGNMENT_CENTER.0 as u32,
+                        )
+                        .unwrap();
+                    let hint_text: Vec<u16> =
+                        "按 Ctrl+` 启动终端".encode_utf16().chain(Some(0)).collect();
+                    let hint_rect = D2D_RECT_F {
+                        left: x,
+                        top: content_y,
+                        right: x + width,
+                        bottom: content_y + content_h,
+                    };
+                    target.DrawText(
+                        &hint_text,
+                        &hint_format,
+                        &hint_rect,
+                        &hint_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                } else {
+                    // 进程已退出：显示历史输出 + 底部重启提示
+                    let line_h = 14.0;
+                    let content_bottom = y + height - 24.0; // 底部留空给重启提示
+                    let visible_lines =
+                        ((content_bottom - content_y) / line_h).floor().max(1.0) as usize;
+                    let lines = self.terminal_panel.visible_window(visible_lines);
+                    let mut line_y = content_y;
+                    for line in &lines {
+                        if line_y + line_h > content_bottom {
+                            break;
+                        }
+                        let text: Vec<u16> = line.encode_utf16().chain(Some(0)).collect();
+                        let text_rect = D2D_RECT_F {
+                            left: x + 10.0,
+                            top: line_y,
+                            right: x + width - 10.0,
+                            bottom: line_y + line_h,
+                        };
+                        target.DrawText(
+                            &text,
+                            &mono_format,
+                            &text_rect,
+                            &output_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        line_y += line_h;
+                    }
+                    // 底部重启提示
+                    let restart_color = color_f(0.3, 0.55, 0.85, 1.0);
+                    let restart_brush = self
+                        .render_ctx
+                        .brush_cache
+                        .get_brush(target, &restart_color)
+                        .unwrap();
+                    let restart_text: Vec<u16> = "点击此处重新启动终端"
+                        .encode_utf16()
+                        .chain(Some(0))
+                        .collect();
+                    let restart_rect = D2D_RECT_F {
+                        left: x + 10.0,
+                        top: y + height - 22.0,
+                        right: x + width - 10.0,
+                        bottom: y + height - 6.0,
+                    };
+                    target.DrawText(
+                        &restart_text,
+                        &ui_format,
+                        &restart_rect,
+                        &restart_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
             } else {
+                // 计算可见行数并同步 ConPTY 尺寸（与 render_central_terminal 保持一致）
+                // 字符宽约 7px（11pt 等宽字体），行高 14px
+                let line_h = 14.0;
+                let content_bottom = y + height - 6.0;
+                let visible_lines =
+                    ((content_bottom - content_y) / line_h).floor().max(1.0) as usize;
+                let term_cols = ((width - 20.0) / 7.0).max(20.0) as i16;
+                let term_rows = visible_lines.max(5) as i16;
+                self.terminal_panel.set_size(term_cols, term_rows);
+                let lines = self.terminal_panel.visible_window(visible_lines);
+
+                // 滚动提示：用户向上浏览历史时显示提示
+                if self.terminal_panel.scroll_offset > 0 {
+                    let hint_wide: Vec<u16> = "↑ 历史输出（回车回到最新）"
+                        .encode_utf16()
+                        .chain(Some(0))
+                        .collect();
+                    let hint_rect = D2D_RECT_F {
+                        left: x + 12.0,
+                        top: content_y - 2.0,
+                        right: x + width - 12.0,
+                        bottom: content_y + 16.0,
+                    };
+                    target.DrawText(
+                        &hint_wide,
+                        &ui_format,
+                        &hint_rect,
+                        &active_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
+
                 let mut line_y = content_y;
-                for line in self.terminal_panel.visible_output() {
-                    if line_y > y + height - 30.0 {
+                for line in &lines {
+                    if line_y + line_h > content_bottom {
                         break;
                     }
                     let text: Vec<u16> = line.encode_utf16().chain(Some(0)).collect();
@@ -4357,7 +4410,7 @@ impl EditorState {
                         left: x + 10.0,
                         top: line_y,
                         right: x + width - 10.0,
-                        bottom: line_y + 16.0,
+                        bottom: line_y + line_h,
                     };
                     target.DrawText(
                         &text,
@@ -4367,46 +4420,38 @@ impl EditorState {
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
                         DWRITE_MEASURING_MODE_NATURAL,
                     );
-                    line_y += 14.0;
+                    line_y += line_h;
                 }
 
-                // 输入提示符和输入行
-                if line_y < y + height - 20.0 {
-                    let prompt: Vec<u16> = "> ".encode_utf16().chain(Some(0)).collect();
-                    let prompt_rect = D2D_RECT_F {
-                        left: x + 10.0,
-                        top: line_y,
-                        right: x + 30.0,
-                        bottom: line_y + 16.0,
-                    };
-                    target.DrawText(
-                        &prompt,
-                        &mono_format,
-                        &prompt_rect,
-                        &prompt_brush,
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        DWRITE_MEASURING_MODE_NATURAL,
-                    );
-                    let input: Vec<u16> = self
-                        .terminal_panel
-                        .input_line
-                        .encode_utf16()
-                        .chain(Some(0))
-                        .collect();
-                    let input_rect = D2D_RECT_F {
-                        left: x + 25.0,
-                        top: line_y,
-                        right: x + width - 10.0,
-                        bottom: line_y + 16.0,
-                    };
-                    target.DrawText(
-                        &input,
-                        &mono_format,
-                        &input_rect,
-                        &output_brush,
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        DWRITE_MEASURING_MODE_NATURAL,
-                    );
+                // 渲染光标：在光标位置绘制一个半透明方块
+                // ConPTY 模式下光标位置由 ANSI 解析器跟踪
+                let total_lines = self.terminal_panel.output_lines.len();
+                let scroll_off = self.terminal_panel.scroll_offset;
+                let end_line = total_lines.saturating_sub(scroll_off);
+                let start_line = end_line.saturating_sub(visible_lines);
+                let (cursor_row, cursor_col) = self.terminal_panel.cursor_position();
+                if cursor_row >= start_line && cursor_row < end_line {
+                    let display_row = cursor_row - start_line;
+                    let cursor_x = x + 10.0 + cursor_col as f32 * 7.0;
+                    let cursor_y = content_y + display_row as f32 * line_h;
+                    let cursor_w = 7.0;
+                    let cursor_h = line_h;
+                    // 只在光标可见区域内绘制
+                    if cursor_y + cursor_h <= content_bottom {
+                        let cursor_color = color_f(0.8, 0.8, 0.8, 0.6);
+                        let cursor_brush = self
+                            .render_ctx
+                            .brush_cache
+                            .get_brush(target, &cursor_color)
+                            .unwrap();
+                        let cursor_rect = D2D_RECT_F {
+                            left: cursor_x,
+                            top: cursor_y,
+                            right: cursor_x + cursor_w,
+                            bottom: cursor_y + cursor_h,
+                        };
+                        target.FillRectangle(&cursor_rect, &cursor_brush);
+                    }
                 }
             }
         }
@@ -7944,7 +7989,7 @@ impl EditorState {
                             let safe_col = text.floor_char_boundary(col.min(text.len()));
                             text[..safe_col]
                                 .chars()
-                                .map(|ch| unicode_char_width(ch))
+                                .map(unicode_char_width)
                                 .sum::<usize>()
                         } else {
                             0
@@ -7958,7 +8003,7 @@ impl EditorState {
                             let safe_col = text.floor_char_boundary(col.min(text.len()));
                             text[..safe_col]
                                 .chars()
-                                .map(|ch| unicode_char_width(ch))
+                                .map(unicode_char_width)
                                 .sum::<usize>()
                         } else {
                             0
@@ -8098,22 +8143,20 @@ impl EditorState {
                                     .brush_cache
                                     .get_brush(target, &seg_color)
                                     .unwrap();
-                                self.text_utf16_buf.clear();
-                                self.text_utf16_buf.extend(segment.encode_utf16());
-                                self.text_utf16_buf.push(0);
-                                let seg_rect = D2D_RECT_F {
-                                    left: text_x + seg_start_char as f32 * char_width,
-                                    top: line_y,
-                                    right: text_x + width,
-                                    bottom: line_y + line_height,
+                                let layout = self
+                                    .render_ctx
+                                    .text_layout_cache
+                                    .get_or_create(segment, &code_format, line_height, font_size)
+                                    .unwrap();
+                                let point = D2D_POINT_2F {
+                                    x: text_x + seg_start_char as f32 * char_width,
+                                    y: line_y,
                                 };
-                                target.DrawText(
-                                    &self.text_utf16_buf,
-                                    &code_format,
-                                    &seg_rect,
+                                target.DrawTextLayout(
+                                    point,
+                                    &layout,
                                     &brush,
                                     D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                    DWRITE_MEASURING_MODE_NATURAL,
                                 );
                             }
                             seg_start_byte = current_byte;
@@ -8124,7 +8167,7 @@ impl EditorState {
 
                         current_char += line_text[current_byte..current_byte + token_len]
                             .chars()
-                            .map(|ch| unicode_char_width(ch))
+                            .map(unicode_char_width)
                             .sum::<usize>();
                         current_byte += token_len;
                     }
@@ -8138,22 +8181,20 @@ impl EditorState {
                                 .brush_cache
                                 .get_brush(target, &seg_color)
                                 .unwrap();
-                            self.text_utf16_buf.clear();
-                            self.text_utf16_buf.extend(segment.encode_utf16());
-                            self.text_utf16_buf.push(0);
-                            let seg_rect = D2D_RECT_F {
-                                left: text_x + seg_start_char as f32 * char_width,
-                                top: line_y,
-                                right: text_x + width,
-                                bottom: line_y + line_height,
+                            let layout = self
+                                .render_ctx
+                                .text_layout_cache
+                                .get_or_create(segment, &code_format, line_height, font_size)
+                                .unwrap();
+                            let point = D2D_POINT_2F {
+                                x: text_x + seg_start_char as f32 * char_width,
+                                y: line_y,
                             };
-                            target.DrawText(
-                                &self.text_utf16_buf,
-                                &code_format,
-                                &seg_rect,
+                            target.DrawTextLayout(
+                                point,
+                                &layout,
                                 &brush,
                                 D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                DWRITE_MEASURING_MODE_NATURAL,
                             );
                         }
                     }
@@ -8255,7 +8296,7 @@ impl EditorState {
                 let byte_pos = text.floor_char_boundary(self.content.cursor_col.min(text.len()));
                 text[..byte_pos]
                     .chars()
-                    .map(|ch| unicode_char_width(ch))
+                    .map(unicode_char_width)
                     .sum::<usize>()
             } else {
                 0
@@ -8267,17 +8308,54 @@ impl EditorState {
                 + (self.content.cursor_line.saturating_sub(start_line)) as f32 * line_height
                 - (self.content.scroll_y % line_height);
             // UI-L02: 更新 IME 候选窗口位置到光标处
-            self.ime.set_candidate_window_position(
-                (cursor_x * self.dpi_scale) as i32,
-                ((cursor_y + line_height) * self.dpi_scale) as i32,
-            );
+            // 文件树输入框激活时，IME 候选窗口定位到输入框附近而非编辑器光标
+            // 终端聚焦时，定位到终端光标，否则用户看不到合成窗口会以为删除无效
+            if self.terminal_panel.focused {
+                let term_region = self.layout.bottom_panel_region();
+                let (t_row, t_col) = self.terminal_panel.cursor_position();
+                let char_w = 7.0 * self.dpi_scale;
+                let line_h = 14.0 * self.dpi_scale;
+                let term_x = term_region.x + 8.0 + t_col as f32 * char_w;
+                let term_y = term_region.y + 24.0 + t_row as f32 * line_h;
+                self.ime.set_composition_window_position(
+                    (term_x * self.dpi_scale) as i32,
+                    (term_y * self.dpi_scale) as i32,
+                );
+                self.ime.set_candidate_window_position(
+                    (term_x * self.dpi_scale) as i32,
+                    ((term_y + line_h) * self.dpi_scale) as i32,
+                );
+            } else if self.file_tree_input.is_some() {
+                let sidebar = self.layout.sidebar_region();
+                let ft_input_y = sidebar.y + 28.0 + 6.0; // header_h + margin
+                let ft_value_x = sidebar.x + 10.0 + 6.0; // input_rect.left + padding
+                                                         // 估算 value 宽度（近似，IME 候选窗口只需大致位置）
+                let value_chars = self
+                    .file_tree_input
+                    .as_ref()
+                    .map(|i| i.value.chars().count())
+                    .unwrap_or(0);
+                let ft_cursor_x = ft_value_x + value_chars as f32 * 7.0;
+                self.ime.set_candidate_window_position(
+                    (ft_cursor_x * self.dpi_scale) as i32,
+                    ((ft_input_y + 26.0) * self.dpi_scale) as i32, // input_h
+                );
+            } else {
+                self.ime.set_composition_window_position(
+                    (cursor_x * self.dpi_scale) as i32,
+                    (cursor_y * self.dpi_scale) as i32,
+                );
+                self.ime.set_candidate_window_position(
+                    (cursor_x * self.dpi_scale) as i32,
+                    ((cursor_y + line_height) * self.dpi_scale) as i32,
+                );
+            }
             if cursor_y >= y && cursor_y <= y + height {
                 // P0-2: 若存在 IME 合成串，渲染合成串文本 + 下划线，光标隐藏
                 if let Some(comp) = self.composition.as_ref() {
                     if !comp.is_empty() {
                         // 合成串宽度（按字符宽度累加，CJK 字符 2 倍宽）
-                        let comp_char_width: usize =
-                            comp.chars().map(|ch| unicode_char_width(ch)).sum();
+                        let comp_char_width: usize = comp.chars().map(unicode_char_width).sum();
                         let comp_pixel_width = comp_char_width as f32 * char_width;
 
                         // 渲染合成串文本（与代码格式一致）
@@ -8368,7 +8446,7 @@ impl EditorState {
                 let byte_pos = text.floor_char_boundary(self.content.cursor_col.min(text.len()));
                 text[..byte_pos]
                     .chars()
-                    .map(|ch| unicode_char_width(ch))
+                    .map(unicode_char_width)
                     .sum::<usize>()
             } else {
                 0
@@ -9067,7 +9145,7 @@ impl EditorState {
             // Task 8.5: 拖拽插入指示线（蓝色 2px 垂直线）
             if let (Some(drag_idx), Some(drop_idx)) = (self.dragging_tab, self.tab_drop_index) {
                 if drag_idx < self.tabs.len() && drop_idx <= self.tabs.len() {
-                    let drop_line_color = color_f(100.0 / 255.0, 150.0 / 255.0, 255.0 / 255.0, 1.0);
+                    let drop_line_color = color_f(100.0 / 255.0, 150.0 / 255.0, 1.0, 1.0);
                     let drop_line_brush = self
                         .render_ctx
                         .brush_cache
@@ -10834,7 +10912,7 @@ impl EditorState {
                 Err(_) => return,
             };
             // 勾选标记画刷（使用 hover 文本色）
-            let check_color = color_f(180.0 / 255.0, 220.0 / 255.0, 255.0 / 255.0, 1.0);
+            let check_color = color_f(180.0 / 255.0, 220.0 / 255.0, 1.0, 1.0);
             let check_brush = match self.render_ctx.brush_cache.get_brush(target, &check_color) {
                 Ok(b) => b,
                 Err(_) => return,

@@ -27,6 +27,13 @@ cargo_check_out.txt
 cargo_test_err.txt
 cargo_test_out.txt
 
+# Temporary diagnostic artifacts (root-level) -- 调试 ConPTY/IME 等时临时生成
+/app_output.txt
+/app_output2.txt
+/build_log.txt
+/send_ctrl_grave.ps1
+/test_conpty.cs
+
 # Temporary files
 *.tmp
 *.temp

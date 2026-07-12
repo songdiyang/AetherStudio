@@ -24,6 +24,29 @@ pub(crate) unsafe fn okd_ctrl_dispatch(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool)
     okd_ctrl_word_move(hwnd, vk, shift);
     okd_ctrl_file_nav(hwnd, vk);
     okd_ctrl_column(hwnd, vk, shift);
+    okd_ctrl_terminal_clear(hwnd, vk);
+}
+
+/// Ctrl+L：终端聚焦时清屏（发送 Form Feed 给 shell）
+unsafe fn okd_ctrl_terminal_clear(hwnd: HWND, vk: VIRTUAL_KEY) {
+    if vk != VK_L {
+        return;
+    }
+    let term_focused = EDITOR_STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|state| state.borrow().terminal_panel.focused)
+            .unwrap_or(false)
+    });
+    if term_focused {
+        EDITOR_STATE.with(|s| {
+            if let Some(state) = s.borrow().as_ref() {
+                // 发送 Ctrl+L (0x0C Form Feed)，shell 会执行清屏并重新绘制提示符
+                state.borrow_mut().terminal_panel.send_bytes(b"\x0c");
+                invalidate_window(hwnd);
+            }
+        });
+    }
 }
 
 /// Ctrl+O/K/S/N：文件/文件夹打开、保存、新建项目
@@ -147,6 +170,7 @@ unsafe fn okd_ctrl_view(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool) {
                     if state.borrow().layout.bottom_panel_visible {
                         // 打开时聚焦终端并按需启动 shell
                         state.borrow_mut().terminal_panel.focused = true;
+                        state.borrow_mut().set_terminal_ime_bypass(true);
                         if !state.borrow().terminal_panel.running {
                             let _ = state.borrow_mut().terminal_panel.start();
                         }
@@ -154,6 +178,7 @@ unsafe fn okd_ctrl_view(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool) {
                         let _ = SetTimer(hwnd, TERM_TIMER_ID, TERM_REFRESH_MS, None);
                     } else {
                         state.borrow_mut().terminal_panel.focused = false;
+                        state.borrow_mut().set_terminal_ime_bypass(false);
                         // 关闭时停止刷新定时器
                         let _ = KillTimer(hwnd, TERM_TIMER_ID);
                     }
@@ -198,12 +223,14 @@ unsafe fn okd_ctrl_view_shortcuts(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool) {
                     state.borrow_mut().layout.toggle_terminal_panel();
                     if state.borrow().layout.bottom_panel_visible {
                         state.borrow_mut().terminal_panel.focused = true;
+                        state.borrow_mut().set_terminal_ime_bypass(true);
                         if !state.borrow().terminal_panel.running {
                             let _ = state.borrow_mut().terminal_panel.start();
                         }
                         let _ = SetTimer(hwnd, TERM_TIMER_ID, TERM_REFRESH_MS, None);
                     } else {
                         state.borrow_mut().terminal_panel.focused = false;
+                        state.borrow_mut().set_terminal_ime_bypass(false);
                         let _ = KillTimer(hwnd, TERM_TIMER_ID);
                     }
                     state.borrow_mut().status_message =
@@ -218,25 +245,22 @@ unsafe fn okd_ctrl_view_shortcuts(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool) {
             });
         }
         // SubTask 13.5: Ctrl+Shift+E 切换到资源管理器视图
-        VK_E => {
-            if shift {
-                EDITOR_STATE.with(|s| {
-                    if let Some(state) = s.borrow().as_ref() {
-                        let mut st = state.borrow_mut();
-                        st.activity_bar
-                            .switch_to_view(crate::layout::ActivityBarView::Explorer);
-                        st.activity_view = crate::layout::ActivityBarView::Explorer;
-                        if !st.layout.sidebar_visible {
-                            st.layout.toggle_sidebar();
-                        }
-                        st.sidebar_content =
-                            crate::layout::SidebarContent::from_view(st.activity_view);
-                        st.status_message = "已切换到资源管理器".to_string();
-                        drop(st);
-                        invalidate_window(hwnd);
+        VK_E if shift => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    let mut st = state.borrow_mut();
+                    st.activity_bar
+                        .switch_to_view(crate::layout::ActivityBarView::Explorer);
+                    st.activity_view = crate::layout::ActivityBarView::Explorer;
+                    if !st.layout.sidebar_visible {
+                        st.layout.toggle_sidebar();
                     }
-                });
-            }
+                    st.sidebar_content = crate::layout::SidebarContent::from_view(st.activity_view);
+                    st.status_message = "已切换到资源管理器".to_string();
+                    drop(st);
+                    invalidate_window(hwnd);
+                }
+            });
         }
         _ => {}
     }
@@ -342,12 +366,33 @@ unsafe fn okd_ctrl_clipboard(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool) {
             });
         }
         VK_V => {
-            EDITOR_STATE.with(|s| {
-                if let Some(state) = s.borrow().as_ref() {
-                    state.borrow_mut().paste();
-                    invalidate_window(hwnd);
-                }
+            // 终端聚焦时，从剪贴板粘贴到 ConPTY；否则粘贴到编辑器
+            let term_focused = EDITOR_STATE.with(|s| {
+                s.borrow()
+                    .as_ref()
+                    .map(|state| state.borrow().terminal_panel.focused)
+                    .unwrap_or(false)
             });
+            if term_focused {
+                if let Some(text) = crate::editor::EditorState::get_clipboard_text() {
+                    EDITOR_STATE.with(|s| {
+                        if let Some(state) = s.borrow().as_ref() {
+                            state
+                                .borrow_mut()
+                                .terminal_panel
+                                .send_bytes(text.as_bytes());
+                            invalidate_window(hwnd);
+                        }
+                    });
+                }
+            } else {
+                EDITOR_STATE.with(|s| {
+                    if let Some(state) = s.borrow().as_ref() {
+                        state.borrow_mut().paste();
+                        invalidate_window(hwnd);
+                    }
+                });
+            }
         }
         VK_A => {
             if shift {
@@ -460,15 +505,13 @@ unsafe fn okd_ctrl_tabs(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool) {
             });
         }
         // SubTask 13.3: Ctrl+Shift+T 恢复最后关闭的标签
-        VK_T => {
-            if shift {
-                EDITOR_STATE.with(|s| {
-                    if let Some(state) = s.borrow().as_ref() {
-                        state.borrow_mut().reopen_last_closed_tab();
-                        invalidate_window(hwnd);
-                    }
-                });
-            }
+        VK_T if shift => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    state.borrow_mut().reopen_last_closed_tab();
+                    invalidate_window(hwnd);
+                }
+            });
         }
         _ => {}
     }

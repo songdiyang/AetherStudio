@@ -10,7 +10,7 @@ use windows::Win32::Foundation::{HWND, LRESULT};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::dialogs::Dialogs;
-use crate::editor::EditorState;
+use crate::editor::{BottomPanelTab, EditorState};
 
 use super::super::super::{invalidate_window, LP_THRESHOLD_MS, LP_TIMER_ID};
 
@@ -27,12 +27,9 @@ pub(super) unsafe fn lbd_activity_bar(
         return None;
     }
     let mut st = state.borrow_mut();
-    let Some(idx) = st
+    let idx = st
         .activity_bar
-        .hit_test(mouse_x, mouse_y, activity_region.y)
-    else {
-        return None;
-    };
+        .hit_test(mouse_x, mouse_y, activity_region.y)?;
     // 长按检测
     st.lpress_start = Some(std::time::Instant::now());
     st.lpress_x = mouse_x;
@@ -200,9 +197,7 @@ unsafe fn lbd_ssh_manager_buttons(
             break;
         }
     }
-    let Some((idx, action)) = clicked_btn else {
-        return None;
-    };
+    let (idx, action) = clicked_btn?;
     if idx < 997 {
         match action {
             0 => {
@@ -362,6 +357,15 @@ unsafe fn lbd_right_panel_apply_input(
 }
 
 /// 标签栏点击。
+///
+/// 重要：处理关闭按钮时，**不能**在 `borrow_mut()` 持有期间弹出模态确认对话框。
+/// `MessageBoxW` / `TaskDialog` 等模态对话框会启动自己的消息循环，期间会派发
+/// `WM_PAINT` / `WM_KILLFOCUS` 等消息，这些消息处理函数会再次尝试 `borrow_mut()`，
+/// 触发 `RefCell already borrowed` panic，导致应用卡死。
+///
+/// 解决方案：先在 `borrow()` 下完成所有点击检测，drop borrow 后再执行；
+/// 关闭路径额外提取 dirty 状态信息，drop borrow 后弹窗，确认后重新
+/// `borrow_mut()` 执行关闭。
 pub(super) unsafe fn lbd_tab_bar(
     hwnd: HWND,
     state: &Rc<RefCell<EditorState>>,
@@ -369,26 +373,142 @@ pub(super) unsafe fn lbd_tab_bar(
     mouse_y: f32,
     layout: &crate::layout::LayoutManager,
 ) -> Option<LRESULT> {
-    let mut st = state.borrow_mut();
-    let show_tab_bar = st.show_tab_bar();
-    let tab_region = layout.tab_bar_region(show_tab_bar);
-    if !tab_region.contains(mouse_x, mouse_y) {
-        return None;
+    // 阶段 1：在 borrow_mut() 内处理拖拽预备（标签体命中 → 延迟切换）
+    {
+        let mut st = state.borrow_mut();
+        let show_tab_bar = st.show_tab_bar();
+        let tab_region = layout.tab_bar_region(show_tab_bar);
+        if !tab_region.contains(mouse_x, mouse_y) {
+            return None;
+        }
+        if let Some(tab_idx) = st.tab_body_hit_test(mouse_x, mouse_y, tab_region.x) {
+            st.tab_drag_start = Some((mouse_x as i32, mouse_y as i32));
+            st.hover_tab = Some(tab_idx);
+            return Some(LRESULT(0));
+        }
     }
-    // Task 8.2: 点击标签体时延迟切换，记录拖拽起始位置等待 mouse_move 判定。
-    // 关闭按钮和 "+" 按钮仍立即响应。
-    if let Some(tab_idx) = st.tab_body_hit_test(mouse_x, mouse_y, tab_region.x) {
-        st.tab_drag_start = Some((mouse_x as i32, mouse_y as i32));
-        st.hover_tab = Some(tab_idx);
-        return Some(LRESULT(0));
+
+    // 阶段 2：在 borrow() 下检测点击类型（不修改 state）
+    enum TabBarAction {
+        CloseTab {
+            index: usize,
+            is_dirty: bool,
+            file_name: String,
+        },
+        SwitchTab(usize),
     }
-    // 非标签体（关闭按钮 / "+" 按钮）→ 立即处理
-    if st.handle_tab_bar_click(mouse_x, mouse_y, tab_region.x) {
-        drop(st);
-        invalidate_window(hwnd);
-        return Some(LRESULT(0));
+    let action: Option<TabBarAction> = {
+        let st = state.borrow();
+        let show_tab_bar = st.show_tab_bar();
+        if !show_tab_bar {
+            return None;
+        }
+        let tab_region = layout.tab_bar_region(show_tab_bar);
+        let editor_x = tab_region.x;
+
+        // "+" 新建按钮
+        if let Some((pl, pt, pr, pb)) = st.plus_button_rect {
+            if mouse_x >= pl && mouse_x < pr && mouse_y >= pt && mouse_y < pb {
+                return handle_new_tab(state, hwnd);
+            }
+        }
+
+        if mouse_x < editor_x {
+            return None;
+        }
+
+        // 遍历 tab_layouts 检测关闭按钮或 tab 体
+        let rel_x = mouse_x - editor_x + st.tab_scroll_x;
+        let mut found: Option<TabBarAction> = None;
+        for layout_entry in &st.tab_layouts {
+            if rel_x >= layout_entry.x && rel_x < layout_entry.x + layout_entry.width {
+                // 关闭按钮
+                if rel_x >= layout_entry.close_x
+                    && rel_x < layout_entry.close_x + layout_entry.close_width
+                {
+                    let index = layout_entry.index;
+                    let is_active = index == st.active_tab;
+                    let (is_dirty, file_name) = if is_active {
+                        let dirty = st.content.is_dirty;
+                        let name = st
+                            .content
+                            .file_path
+                            .as_ref()
+                            .and_then(|p| p.file_name())
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "未命名".to_string());
+                        (dirty, name)
+                    } else {
+                        let dirty = st
+                            .tabs
+                            .get(index)
+                            .map(|t| t.content.is_dirty)
+                            .unwrap_or(false);
+                        let name = st
+                            .tabs
+                            .get(index)
+                            .and_then(|t| t.content.file_path.as_ref())
+                            .and_then(|p| p.file_name())
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "未命名".to_string());
+                        (dirty, name)
+                    };
+                    found = Some(TabBarAction::CloseTab {
+                        index,
+                        is_dirty,
+                        file_name,
+                    });
+                    break;
+                }
+                // tab 体（不在关闭按钮区域）→ 立即切换
+                found = Some(TabBarAction::SwitchTab(layout_entry.index));
+                break;
+            }
+        }
+        found
+    };
+
+    // 阶段 3：drop borrow 后执行
+    match action {
+        Some(TabBarAction::CloseTab {
+            index,
+            is_dirty,
+            file_name,
+        }) => {
+            if is_dirty {
+                let msg = format!("{} 有未保存的修改，是否保存并关闭？", file_name);
+                // 弹窗在 borrow 释放后进行 → 不触发 RefCell panic
+                let confirmed = crate::dialogs::Dialogs::confirm_yes_no(hwnd, "关闭标签页", &msg);
+                if !confirmed {
+                    state.borrow_mut().status_message = "已取消关闭".to_string();
+                    invalidate_window(hwnd);
+                    return Some(LRESULT(0));
+                }
+            }
+            // 弹窗结束后重新 borrow_mut() 执行关闭
+            state.borrow_mut().close_tab(index);
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        }
+        Some(TabBarAction::SwitchTab(idx)) => {
+            state.borrow_mut().switch_tab(idx);
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        }
+        None => {}
     }
     None
+}
+
+/// 新建标签页（保持 borrow_mut() 持有时间最短）。
+unsafe fn handle_new_tab(state: &Rc<RefCell<EditorState>>, hwnd: HWND) -> Option<LRESULT> {
+    {
+        let mut st = state.borrow_mut();
+        st.new_tab();
+        st.status_message = "已新建标签页".to_string();
+    }
+    invalidate_window(hwnd);
+    Some(LRESULT(0))
 }
 
 /// 查找替换面板点击。
@@ -456,8 +576,98 @@ pub(super) unsafe fn lbd_bottom_panel(
     if !bottom_panel_region.contains(mouse_x, mouse_y) {
         return None;
     }
+    tracing::info!(
+        mx = mouse_x,
+        my = mouse_y,
+        visible = layout.bottom_panel_visible,
+        running = state.borrow().terminal_panel.running,
+        tab = ?state.borrow().bottom_panel_tab,
+        "lbd_bottom_panel: 点击底部面板"
+    );
+
+    // 标签栏 hit test：与 render_bottom_panel 中标签的坐标布局完全一致
+    // (tab_height=28, tab_w=60, 间距=4, 起始 x=region.x+10)
+    // 命中则切换 bottom_panel_tab，不进入终端 focus 逻辑。
+    let tab_height: f32 = 28.0;
+    let tab_w: f32 = 60.0;
+    let tab_gap: f32 = 4.0;
+    let tab_start_x = bottom_panel_region.x + 10.0;
+    let tab_top = bottom_panel_region.y + 2.0;
+    let tab_bottom = tab_top + tab_height - 2.0;
+    if mouse_y >= tab_top && mouse_y <= tab_bottom {
+        let rel_x = mouse_x - tab_start_x;
+        if rel_x >= 0.0 {
+            let step = tab_w + tab_gap;
+            let idx_f = rel_x / step;
+            let idx = idx_f as i32;
+            // 必须在标签的 x 范围内（防止落在 tab 间隙时误判）
+            let in_tab_x = (rel_x - idx_f * step) < tab_w;
+            if idx >= 0 && in_tab_x {
+                let tab = match idx {
+                    0 => BottomPanelTab::Terminal,
+                    1 => BottomPanelTab::Problems,
+                    _ => return None,
+                };
+                let mut st = state.borrow_mut();
+                if st.bottom_panel_tab != tab {
+                    tracing::info!(?tab, "lbd_bottom_panel: 切换底部面板 tab");
+                    st.bottom_panel_tab = tab;
+                    // 切到问题面板时取消终端 focus，避免低层钩子继续拦截 Backspace
+                    if tab == BottomPanelTab::Problems && st.terminal_panel.focused {
+                        st.terminal_panel.focused = false;
+                        st.set_terminal_ime_bypass(false);
+                    }
+                    drop(st);
+                    invalidate_window(hwnd);
+                }
+                return Some(LRESULT(0));
+            }
+        }
+    }
+
+    // 检测点击关闭按钮（×）—— 与 render_bottom_panel 中绘制的位置保持一致
+    const CLOSE_BTN_SIZE: f32 = 28.0;
+    const TITLE_BAR_H: f32 = 30.0;
+    let close_btn_x = bottom_panel_region.x + bottom_panel_region.width - CLOSE_BTN_SIZE;
+    let close_btn_y = bottom_panel_region.y;
+    if mouse_x >= close_btn_x
+        && mouse_x <= close_btn_x + CLOSE_BTN_SIZE
+        && mouse_y >= close_btn_y
+        && mouse_y <= close_btn_y + TITLE_BAR_H
+    {
+        tracing::info!("lbd_bottom_panel: 点击关闭按钮，关闭底部面板");
+        let mut st = state.borrow_mut();
+        st.layout.toggle_terminal_panel();
+        st.terminal_panel.focused = false;
+        st.set_terminal_ime_bypass(false);
+        let _ = KillTimer(hwnd, super::super::super::TERM_TIMER_ID);
+        drop(st);
+        invalidate_window(hwnd);
+        return Some(LRESULT(0));
+    }
+
+    // 点击在标签栏之外但在底部面板内：
+    // - 终端 tab：focus 终端，自动启动
+    // - 问题 tab：暂不响应（问题项点击后续在问题面板内部实现）
+    if state.borrow().bottom_panel_tab != BottomPanelTab::Terminal {
+        return Some(LRESULT(0));
+    }
+
     let mut st = state.borrow_mut();
     st.terminal_panel.focused = true;
+    st.set_terminal_ime_bypass(true);
+    // 如果终端未运行，点击时自动启动
+    if !st.terminal_panel.running {
+        tracing::info!("lbd_bottom_panel: 终端未运行，自动启动");
+        let _ = st.terminal_panel.start();
+    }
+    // 确保刷新定时器在运行（覆盖从按钮打开/关闭后定时器可能未启动的情况）
+    let _ = SetTimer(
+        hwnd,
+        super::super::super::TERM_TIMER_ID,
+        super::super::super::TERM_REFRESH_MS,
+        None,
+    );
     drop(st);
     invalidate_window(hwnd);
     Some(LRESULT(0))
@@ -483,6 +693,11 @@ pub(super) unsafe fn lbd_welcome_or_editor(
             - welcome_y
             - if layout.status_bar_visible {
                 layout.status_bar_height
+            } else {
+                0.0
+            }
+            - if layout.bottom_panel_visible {
+                layout.bottom_panel_height
             } else {
                 0.0
             }

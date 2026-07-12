@@ -13,6 +13,7 @@ pub(crate) unsafe fn on_char(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPA
     // 防止 Alt+Tab / 任务栏切换焦点后键盘输入路由到错误窗口的 EditorState
     get_and_set_state(hwnd);
     let ch = (wparam.0 & 0xFFFF) as u16;
+    tracing::info!(ch_code = ch, "on_char: 收到 WM_CHAR");
 
     // P2-9: 处理 UTF-16 代理对以支持 BMP 外字符（emoji、CJK 扩展 B 等）
     // WM_CHAR 对 BMP 外字符发送两条消息：先高代理（0xD800-0xDBFF），后低代理（0xDC00-0xDFFF）
@@ -37,6 +38,17 @@ pub(crate) unsafe fn on_char(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPA
 
     if ch >= 32 && ch != 127 {
         if let Some(c) = char::from_u32(code_point) {
+            // IME 合成期间：commit_composition 已经把提交结果路由到终端/编辑器，
+            // 此处不应再分发原始字符到终端或编辑器，否则会重复插入。
+            let ime_composing = EDITOR_STATE.with(|s| {
+                s.borrow()
+                    .as_ref()
+                    .map(|state| state.borrow().composition.is_some())
+                    .unwrap_or(false)
+            });
+            if ime_composing {
+                return LRESULT(0);
+            }
             // 按优先级依次尝试各输入目标，首个匹配的处理器消费字符
             if let Some(r) = oc_file_tree_input(hwnd, c) {
                 return r;
@@ -316,7 +328,7 @@ unsafe fn oc_find_replace(hwnd: HWND, c: char) -> Option<LRESULT> {
     }
 }
 
-/// 终端面板激活时，输入字符进入终端
+/// 终端面板激活时，输入字符直接发送到 ConPTY
 unsafe fn oc_terminal(hwnd: HWND, c: char) -> Option<LRESULT> {
     let active = EDITOR_STATE.with(|s| {
         s.borrow()
@@ -324,11 +336,11 @@ unsafe fn oc_terminal(hwnd: HWND, c: char) -> Option<LRESULT> {
             .map(|state| state.borrow().terminal_panel.focused)
             .unwrap_or(false)
     });
+    tracing::info!(active, char = %c, "oc_terminal: 检查终端焦点");
     if active {
         EDITOR_STATE.with(|s| {
             if let Some(state) = s.borrow().as_ref() {
-                state.borrow_mut().terminal_panel.input_line.push(c);
-                state.borrow_mut().terminal_panel.cursor_pos += 1;
+                state.borrow_mut().terminal_panel.send_char(c);
                 invalidate_window(hwnd);
             }
         });

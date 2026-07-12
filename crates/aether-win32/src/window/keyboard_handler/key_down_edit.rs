@@ -12,6 +12,25 @@ use super::super::{invalidate_window, EDITOR_STATE};
 
 /// 非 Ctrl 按键总分发
 pub(crate) unsafe fn okd_edit_dispatch(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool) {
+    // 终端聚焦时，将编辑键直接发送到 ConPTY（同步终端模式）
+    let terminal_active = EDITOR_STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|state| state.borrow().terminal_panel.focused)
+            .unwrap_or(false)
+    });
+    // IME 合成期间（中文/日文候选框打开时）不要拦截任何按键，
+    // 让 IME 自己处理 Backspace/字母/方向键等以更新或取消合成串
+    let ime_composing = EDITOR_STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|state| state.borrow().composition.is_some())
+            .unwrap_or(false)
+    });
+    if terminal_active && !ime_composing && okd_edit_terminal(hwnd, vk) {
+        return;
+    }
+
     match vk {
         VK_RETURN => okd_edit_return(hwnd),
         VK_BACK => okd_edit_back(hwnd),
@@ -22,6 +41,102 @@ pub(crate) unsafe fn okd_edit_dispatch(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool)
         VK_TAB => okd_edit_tab(hwnd),
         _ => {}
     }
+}
+
+/// 终端聚焦时的按键处理：将按键转换为 ANSI 序列发送到 ConPTY。
+/// 返回 true 表示已处理，false 表示按键不属于终端范畴。
+unsafe fn okd_edit_terminal(hwnd: HWND, vk: VIRTUAL_KEY) -> bool {
+    use crate::terminal::ArrowKey;
+    let handled = match vk {
+        VK_RETURN => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    state.borrow_mut().terminal_panel.send_enter();
+                }
+            });
+            true
+        }
+        VK_BACK => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    state.borrow_mut().terminal_panel.send_backspace();
+                }
+            });
+            true
+        }
+        VK_DELETE => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    state.borrow_mut().terminal_panel.send_delete();
+                }
+            });
+            true
+        }
+        VK_TAB => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    state.borrow_mut().terminal_panel.send_tab();
+                }
+            });
+            true
+        }
+        VK_UP => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    state.borrow_mut().terminal_panel.send_arrow(ArrowKey::Up);
+                }
+            });
+            true
+        }
+        VK_DOWN => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    state.borrow_mut().terminal_panel.send_arrow(ArrowKey::Down);
+                }
+            });
+            true
+        }
+        VK_LEFT => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    state.borrow_mut().terminal_panel.send_arrow(ArrowKey::Left);
+                }
+            });
+            true
+        }
+        VK_RIGHT => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    state
+                        .borrow_mut()
+                        .terminal_panel
+                        .send_arrow(ArrowKey::Right);
+                }
+            });
+            true
+        }
+        VK_HOME => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    state.borrow_mut().terminal_panel.send_home();
+                }
+            });
+            true
+        }
+        VK_END => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    state.borrow_mut().terminal_panel.send_end();
+                }
+            });
+            true
+        }
+        _ => false,
+    };
+    if handled {
+        invalidate_window(hwnd);
+    }
+    handled
 }
 
 /// 判断当前是否有选中文本
@@ -54,17 +169,8 @@ unsafe fn okd_edit_return(hwnd: HWND) {
             .unwrap_or(false)
     });
     if terminal_active {
-        EDITOR_STATE.with(|s| {
-            if let Some(state) = s.borrow().as_ref() {
-                let input = state.borrow().terminal_panel.input_line.clone();
-                state
-                    .borrow_mut()
-                    .terminal_panel
-                    .push_output(&format!("> {}", input));
-                state.borrow_mut().terminal_panel.send_enter();
-                invalidate_window(hwnd);
-            }
-        });
+        // ConPTY 模式下 Enter 已由 okd_edit_terminal 处理，此处不应到达
+        // 保留分支防止 fallback 到编辑器逻辑
     } else if ai_panel_active {
         EDITOR_STATE.with(|s| {
             if let Some(state) = s.borrow().as_ref() {
@@ -140,16 +246,7 @@ unsafe fn okd_edit_back(hwnd: HWND) {
             .unwrap_or(false)
     });
     if terminal_active {
-        EDITOR_STATE.with(|s| {
-            if let Some(state) = s.borrow().as_ref() {
-                let mut st = state.borrow_mut();
-                if !st.terminal_panel.input_line.is_empty() {
-                    st.terminal_panel.input_line.pop();
-                    st.terminal_panel.cursor_pos = st.terminal_panel.cursor_pos.saturating_sub(1);
-                }
-                invalidate_window(hwnd);
-            }
-        });
+        // ConPTY 模式下 Backspace 已由 okd_edit_terminal 处理，此处不应到达
     } else if ai_panel_active {
         EDITOR_STATE.with(|s| {
             if let Some(state) = s.borrow().as_ref() {

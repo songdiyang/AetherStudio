@@ -321,6 +321,165 @@ impl TreeSitterHighlighter {
     pub fn supports_language(&self, language: &str) -> bool {
         self.get_config(language).is_some()
     }
+
+    /// 获取 config 的原始指针（用于绕过借用冲突）
+    fn get_config_ptr(&self, language: &str) -> *const HighlightConfiguration {
+        match language {
+            "rust" => self
+                .rust_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            "javascript" | "js" => self
+                .js_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            "typescript" | "ts" | "tsx" => self
+                .ts_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            "python" | "py" => self
+                .python_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            "c" => self
+                .c_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            "cpp" | "c++" | "cxx" => self
+                .cpp_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            "json" => self
+                .json_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            "toml" => self
+                .toml_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            _ => std::ptr::null(),
+        }
+    }
+
+    /// 对整个文档进行高亮，返回每行的 token 列表
+    ///
+    /// 一次解析全文并高亮，比逐行 `highlight_line` 更正确（支持多行构造如块注释、
+    /// 三引号字符串、宏等）且更高效（避免逐行重复初始化解析器）。
+    ///
+    /// 注意：`tree-sitter-highlight` 0.20.x 的 `Highlighter::highlight` 第三参数为
+    /// `cancellation_flag: Option<&AtomicUsize>`（取消标志），而非旧语法树。
+    /// `Highlighter` 内部维护自己的 `Parser`，每次调用做完整解析。
+    /// 真正的增量解析需要升级到 `tree-sitter-highlight` 0.22+ 或手动遍历语法树。
+    pub fn highlight_document(
+        &mut self,
+        doc_id: &str,
+        language: &str,
+        full_text: &str,
+    ) -> Vec<Vec<LexemeSpan>> {
+        // 预计算行数和行起始偏移
+        let mut line_starts: Vec<usize> = vec![0];
+        for (i, b) in full_text.bytes().enumerate() {
+            if b == b'\n' {
+                line_starts.push(i + 1);
+            }
+        }
+        let line_count = line_starts.len();
+        let mut result: Vec<Vec<LexemeSpan>> = vec![Vec::new(); line_count];
+
+        // 获取 config（raw pointer 避免与 self.highlighter 的借用冲突）
+        let config_ptr = self.get_config_ptr(language);
+        let config = match unsafe { config_ptr.as_ref() } {
+            Some(c) => c,
+            None => return result,
+        };
+
+        // 更新语法树缓存（供代码折叠、结构导航等功能使用）
+        self.parse_document(doc_id, language, full_text);
+
+        // 调用 highlighter（第三参数为 cancellation_flag，传 None 表示不可取消）
+        let events = self
+            .highlighter
+            .highlight(config, full_text.as_bytes(), None, |_| None);
+
+        if let Ok(events) = events {
+            let mut current_start = 0usize;
+            let mut current_kind = TokenKind::Unknown;
+            let mut in_highlight = false;
+
+            for event in events {
+                match event {
+                    Ok(HighlightEvent::Source { start, end: _ }) => {
+                        if in_highlight && start > current_start {
+                            assign_segment_to_lines(
+                                current_start,
+                                start,
+                                current_kind,
+                                &line_starts,
+                                &mut result,
+                            );
+                        }
+                        current_start = start;
+                    }
+                    Ok(HighlightEvent::HighlightStart(s)) => {
+                        let name = config.names().get(s.0).map(|s| s.as_str()).unwrap_or("");
+                        current_kind = capture_name_to_token_kind(name);
+                        in_highlight = true;
+                    }
+                    Ok(HighlightEvent::HighlightEnd) => {
+                        in_highlight = false;
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+
+        result
+    }
+}
+
+/// 将字节区间 [byte_start, byte_end) 分配到对应的行
+fn assign_segment_to_lines(
+    byte_start: usize,
+    byte_end: usize,
+    kind: TokenKind,
+    line_starts: &[usize],
+    result: &mut [Vec<LexemeSpan>],
+) {
+    // 二分查找 byte_start 所在行
+    let line_idx = line_starts
+        .binary_search(&byte_start)
+        .unwrap_or_else(|i| i.saturating_sub(1));
+
+    let mut current_line = line_idx;
+    let mut offset = byte_start;
+
+    while offset < byte_end && current_line < line_starts.len() {
+        let l_start = line_starts[current_line];
+        let l_end = line_starts
+            .get(current_line + 1)
+            .copied()
+            .unwrap_or(usize::MAX)
+            .min(byte_end);
+
+        if l_end > offset {
+            result[current_line].push(LexemeSpan {
+                start: offset - l_start,
+                len: l_end - offset,
+                kind,
+                flags: 0,
+            });
+        }
+        offset = l_end;
+        current_line += 1;
+    }
 }
 
 impl Default for TreeSitterHighlighter {

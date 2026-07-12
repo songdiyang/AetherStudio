@@ -514,6 +514,9 @@ pub(crate) unsafe fn on_paint(hwnd: HWND, _msg: u32, _wparam: WPARAM, _lparam: L
 }
 
 /// REQ-P0-05: WM_SETFOCUS — 窗口获得焦点
+///
+/// 同 `on_kill_focus`，使用 `try_borrow_mut()` 防止模态对话框消息循环
+/// 重入时 panic。
 pub(crate) unsafe fn on_set_focus(
     hwnd: HWND,
     _msg: u32,
@@ -523,13 +526,21 @@ pub(crate) unsafe fn on_set_focus(
     get_and_set_state(hwnd);
     EDITOR_STATE.with(|s| {
         if let Some(state) = s.borrow().as_ref() {
-            state.borrow_mut().focus_manager.on_set_focus();
+            if let Ok(mut st) = state.try_borrow_mut() {
+                st.focus_manager.on_set_focus();
+            }
         }
     });
     LRESULT(0)
 }
 
 /// REQ-P0-05: WM_KILLFOCUS — 窗口失去焦点
+///
+/// 使用 `try_borrow_mut()` 而非 `borrow_mut()`：当用户关闭标签页时，
+/// `close_tab` → `close_current_tab_checked` 会弹出模态确认对话框，
+/// 对话框的消息循环可能派发 `WM_KILLFOCUS`，此时 `EditorState` 已被
+/// `close_tab` 的调用方持有 `borrow_mut()`，直接 `borrow_mut()` 会 panic。
+/// `try_borrow_mut` 在此场景下优雅跳过，避免应用程序崩溃。
 pub(crate) unsafe fn on_kill_focus(
     hwnd: HWND,
     _msg: u32,
@@ -539,10 +550,13 @@ pub(crate) unsafe fn on_kill_focus(
     get_and_set_state(hwnd);
     EDITOR_STATE.with(|s| {
         if let Some(state) = s.borrow().as_ref() {
-            let mut st = state.borrow_mut();
-            st.focus_manager.on_kill_focus();
-            // 自动保存：失焦立即保存（用户离开编辑场景的瞬间落盘）
-            st.autosave_on_focus_loss();
+            if let Ok(mut st) = state.try_borrow_mut() {
+                st.focus_manager.on_kill_focus();
+                // 自动保存：失焦立即保存（用户离开编辑场景的瞬间落盘）
+                st.autosave_on_focus_loss();
+            } else {
+                tracing::debug!("on_kill_focus: EditorState 已被借用（可能是模态对话框），跳过");
+            }
         }
     });
     invalidate_window(hwnd);
