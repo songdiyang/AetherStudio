@@ -636,8 +636,7 @@ impl EditorState {
         if self.tabs.len() <= 1 {
             // 最后一个标签页，重置为空文件
             // 保存 self.content 中的最新内容（而非 tabs[0].content 中的旧内容）
-            self.last_closed_tab =
-                Some(std::mem::replace(&mut self.content, TabContent::new()));
+            self.last_closed_tab = Some(std::mem::replace(&mut self.content, TabContent::new()));
             self.tabs[0] = Tab::new();
             self.active_tab = 0;
             // 将新空标签页内容交换到 self.content
@@ -647,8 +646,7 @@ impl EditorState {
             return true;
         }
         // 保存 self.content 中的最新内容到 last_closed_tab（而非 removed.content 旧内容）
-        self.last_closed_tab =
-            Some(std::mem::replace(&mut self.content, TabContent::new()));
+        self.last_closed_tab = Some(std::mem::replace(&mut self.content, TabContent::new()));
         // 从 tabs 中移除活动标签页（其 content 是旧内容，直接丢弃）
         let _removed = self.tabs.remove(self.active_tab);
         if self.active_tab >= self.tabs.len() {
@@ -3446,10 +3444,7 @@ impl EditorState {
         // 验证文件名不含 Windows 非法字符
         const INVALID_CHARS: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
         if name.contains(INVALID_CHARS) {
-            let bad: String = name
-                .chars()
-                .filter(|c| INVALID_CHARS.contains(c))
-                .collect();
+            let bad: String = name.chars().filter(|c| INVALID_CHARS.contains(c)).collect();
             self.status_message = format!("文件名不能包含: {}", bad);
             // 验证失败时保留输入框，让用户修改后重试
             self.file_tree_input = Some(input);

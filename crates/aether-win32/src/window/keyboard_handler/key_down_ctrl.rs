@@ -255,8 +255,7 @@ unsafe fn okd_ctrl_view_shortcuts(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool) {
                     if !st.layout.sidebar_visible {
                         st.layout.toggle_sidebar();
                     }
-                    st.sidebar_content =
-                        crate::layout::SidebarContent::from_view(st.activity_view);
+                    st.sidebar_content = crate::layout::SidebarContent::from_view(st.activity_view);
                     st.status_message = "已切换到资源管理器".to_string();
                     drop(st);
                     invalidate_window(hwnd);
@@ -378,7 +377,10 @@ unsafe fn okd_ctrl_clipboard(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool) {
                 if let Some(text) = crate::editor::EditorState::get_clipboard_text() {
                     EDITOR_STATE.with(|s| {
                         if let Some(state) = s.borrow().as_ref() {
-                            state.borrow_mut().terminal_panel.send_bytes(text.as_bytes());
+                            state
+                                .borrow_mut()
+                                .terminal_panel
+                                .send_bytes(text.as_bytes());
                             invalidate_window(hwnd);
                         }
                     });

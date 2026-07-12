@@ -53,11 +53,8 @@ impl BackgroundHighlighter {
             let mut highlighter = TreeSitterHighlighter::new();
 
             for req in req_rx {
-                let token_lines = highlighter.highlight_document(
-                    &req.doc_id,
-                    &req.language,
-                    &req.full_text,
-                );
+                let token_lines =
+                    highlighter.highlight_document(&req.doc_id, &req.language, &req.full_text);
                 // 结果发送失败表示主线程已关闭，退出循环
                 if res_tx
                     .send(HighlightResult {

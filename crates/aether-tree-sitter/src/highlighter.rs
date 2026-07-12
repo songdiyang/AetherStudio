@@ -325,18 +325,46 @@ impl TreeSitterHighlighter {
     /// 获取 config 的原始指针（用于绕过借用冲突）
     fn get_config_ptr(&self, language: &str) -> *const HighlightConfiguration {
         match language {
-            "rust" => self.rust_config.as_ref().map(|c| c as *const _).unwrap_or(std::ptr::null()),
-            "javascript" | "js" => self.js_config.as_ref().map(|c| c as *const _).unwrap_or(std::ptr::null()),
-            "typescript" | "ts" | "tsx" => {
-                self.ts_config.as_ref().map(|c| c as *const _).unwrap_or(std::ptr::null())
-            }
-            "python" | "py" => self.python_config.as_ref().map(|c| c as *const _).unwrap_or(std::ptr::null()),
-            "c" => self.c_config.as_ref().map(|c| c as *const _).unwrap_or(std::ptr::null()),
-            "cpp" | "c++" | "cxx" => {
-                self.cpp_config.as_ref().map(|c| c as *const _).unwrap_or(std::ptr::null())
-            }
-            "json" => self.json_config.as_ref().map(|c| c as *const _).unwrap_or(std::ptr::null()),
-            "toml" => self.toml_config.as_ref().map(|c| c as *const _).unwrap_or(std::ptr::null()),
+            "rust" => self
+                .rust_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            "javascript" | "js" => self
+                .js_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            "typescript" | "ts" | "tsx" => self
+                .ts_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            "python" | "py" => self
+                .python_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            "c" => self
+                .c_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            "cpp" | "c++" | "cxx" => self
+                .cpp_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            "json" => self
+                .json_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            "toml" => self
+                .toml_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
             _ => std::ptr::null(),
         }
     }

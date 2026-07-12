@@ -26,7 +26,9 @@
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::UI::Input::KeyboardAndMouse::{VK_BACK, VK_DELETE, VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN, VIRTUAL_KEY};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    VIRTUAL_KEY, VK_BACK, VK_DELETE, VK_DOWN, VK_LEFT, VK_RIGHT, VK_UP,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetForegroundWindow, PostMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
     HHOOK, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL, WM_APP,

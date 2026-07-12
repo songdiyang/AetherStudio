@@ -11,6 +11,7 @@
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
@@ -21,13 +22,12 @@ use windows::Win32::System::Console::{
 use windows::Win32::System::Memory::{GetProcessHeap, HeapAlloc, HeapFree, HEAP_FLAGS};
 use windows::Win32::System::Pipes::CreatePipe;
 use windows::Win32::System::Threading::{
-    CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess, InitializeProcThreadAttributeList,
-    LPPROC_THREAD_ATTRIBUTE_LIST, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
-    EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-    STARTUPINFOW,
+    CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
+    InitializeProcThreadAttributeList, TerminateProcess, UpdateProcThreadAttribute,
+    WaitForSingleObject, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
+    PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
-use windows::core::PCWSTR;
 
 /// ConPTY 进程属性值。Windows SDK 中 `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` = 0x20016。
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x20016;
@@ -489,7 +489,10 @@ impl Drop for ConPtySession {
             }
 
             match &self.backend {
-                Backend::ConPty { hpc, console_allocated } => {
+                Backend::ConPty {
+                    hpc,
+                    console_allocated,
+                } => {
                     // 先关闭 ConPTY，通知子进程控制台已断开
                     ClosePseudoConsole(*hpc);
                     // 等待子进程自行退出

@@ -4255,10 +4255,8 @@ impl EditorState {
                         DWRITE_PARAGRAPH_ALIGNMENT_CENTER.0 as u32,
                     )
                     .unwrap();
-                let hint_text: Vec<u16> = "问题面板（待实现）"
-                    .encode_utf16()
-                    .chain(Some(0))
-                    .collect();
+                let hint_text: Vec<u16> =
+                    "问题面板（待实现）".encode_utf16().chain(Some(0)).collect();
                 let hint_rect = D2D_RECT_F {
                     left: x,
                     top: content_y,
@@ -8331,7 +8329,7 @@ impl EditorState {
                 let sidebar = self.layout.sidebar_region();
                 let ft_input_y = sidebar.y + 28.0 + 6.0; // header_h + margin
                 let ft_value_x = sidebar.x + 10.0 + 6.0; // input_rect.left + padding
-                // 估算 value 宽度（近似，IME 候选窗口只需大致位置）
+                                                         // 估算 value 宽度（近似，IME 候选窗口只需大致位置）
                 let value_chars = self
                     .file_tree_input
                     .as_ref()
@@ -8357,8 +8355,7 @@ impl EditorState {
                 if let Some(comp) = self.composition.as_ref() {
                     if !comp.is_empty() {
                         // 合成串宽度（按字符宽度累加，CJK 字符 2 倍宽）
-                        let comp_char_width: usize =
-                            comp.chars().map(unicode_char_width).sum();
+                        let comp_char_width: usize = comp.chars().map(unicode_char_width).sum();
                         let comp_pixel_width = comp_char_width as f32 * char_width;
 
                         // 渲染合成串文本（与代码格式一致）

@@ -478,8 +478,7 @@ pub(super) unsafe fn lbd_tab_bar(
             if is_dirty {
                 let msg = format!("{} 有未保存的修改，是否保存并关闭？", file_name);
                 // 弹窗在 borrow 释放后进行 → 不触发 RefCell panic
-                let confirmed =
-                    crate::dialogs::Dialogs::confirm_yes_no(hwnd, "关闭标签页", &msg);
+                let confirmed = crate::dialogs::Dialogs::confirm_yes_no(hwnd, "关闭标签页", &msg);
                 if !confirmed {
                     state.borrow_mut().status_message = "已取消关闭".to_string();
                     invalidate_window(hwnd);

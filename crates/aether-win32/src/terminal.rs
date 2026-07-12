@@ -244,7 +244,11 @@ impl TerminalPanel {
                 }
             }
         } else {
-            tracing::warn!(bytes = data.len(), running = self.running, "send_bytes: conpty 为 None，无法发送（可能子进程已退出）");
+            tracing::warn!(
+                bytes = data.len(),
+                running = self.running,
+                "send_bytes: conpty 为 None，无法发送（可能子进程已退出）"
+            );
         }
     }
 
@@ -254,11 +258,7 @@ impl TerminalPanel {
     /// 管道模式下发送 `\r\n`（cmd.exe 管道模式需要 CRLF 行结束符）。
     pub fn send_enter(&mut self) {
         self.scroll_offset = 0;
-        let is_pipe = self
-            .conpty
-            .as_ref()
-            .map(|s| s.is_pipe())
-            .unwrap_or(false);
+        let is_pipe = self.conpty.as_ref().map(|s| s.is_pipe()).unwrap_or(false);
         if is_pipe {
             self.send_bytes(b"\r\n");
         } else {
@@ -345,13 +345,24 @@ impl TerminalPanel {
         let has_rx = self.output_receiver.is_some();
         let has_conpty = self.conpty.is_some();
         if !has_rx {
-            tracing::info!(has_rx, has_conpty, running = self.running, "flush_output: output_receiver 为 None，跳过");
+            tracing::info!(
+                has_rx,
+                has_conpty,
+                running = self.running,
+                "flush_output: output_receiver 为 None，跳过"
+            );
         }
         // 诊断：每 100 次调用记录一次，确认 flush_output 在持续运行
         static FLUSH_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let count = FLUSH_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if count.is_multiple_of(100) {
-            tracing::info!(count, has_rx, has_conpty, running = self.running, "flush_output: 定期诊断");
+            tracing::info!(
+                count,
+                has_rx,
+                has_conpty,
+                running = self.running,
+                "flush_output: 定期诊断"
+            );
         }
         if let Some(rx) = self.output_receiver.take() {
             let mut total_bytes = 0usize;
@@ -371,7 +382,8 @@ impl TerminalPanel {
                     Ok(bytes) => {
                         total_bytes += bytes.len();
                         msg_count += 1;
-                        self.ansi_parser.feed(&bytes, &mut self.output_lines, self.max_lines);
+                        self.ansi_parser
+                            .feed(&bytes, &mut self.output_lines, self.max_lines);
                     }
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
@@ -834,10 +846,7 @@ fn find_executable(name: &str) -> Option<String> {
             }
         }
     }
-    let common_paths = [
-        r"C:\Windows\System32",
-        r"C:\Program Files\PowerShell\7",
-    ];
+    let common_paths = [r"C:\Windows\System32", r"C:\Program Files\PowerShell\7"];
     for dir in &common_paths {
         let full = std::path::Path::new(dir).join(name);
         if full.exists() {

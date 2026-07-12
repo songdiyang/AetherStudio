@@ -65,7 +65,10 @@ fn conpty_smoke_spawns_cmd_and_stays_alive() {
         "cmd.exe 在 500ms 内退出，启动方式可能有误"
     );
     let backend = if session.is_pipe() { "pipe" } else { "ConPTY" };
-    println!("✓ conpty_smoke[1]: cmd.exe 启动并保持运行 (backend={})", backend);
+    println!(
+        "✓ conpty_smoke[1]: cmd.exe 启动并保持运行 (backend={})",
+        backend
+    );
 }
 
 /// 烟雾测试 2：spawn 后应能读到 cmd.exe 的初始 banner 输出。
@@ -81,7 +84,10 @@ fn conpty_smoke_reads_initial_banner() {
         .expect("write_input 失败");
 
     let bytes = drain_to_eof(PipeReader::new(read_handle), Duration::from_secs(5));
-    assert!(!bytes.is_empty(), "应能读取到 cmd.exe 的输出，但读到 0 bytes");
+    assert!(
+        !bytes.is_empty(),
+        "应能读取到 cmd.exe 的输出，但读到 0 bytes"
+    );
     // 抓一段 ASCII 可读文本作概览，方便排错
     let preview: String = bytes
         .iter()

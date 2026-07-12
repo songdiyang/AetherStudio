@@ -107,7 +107,10 @@ unsafe fn okd_edit_terminal(hwnd: HWND, vk: VIRTUAL_KEY) -> bool {
         VK_RIGHT => {
             EDITOR_STATE.with(|s| {
                 if let Some(state) = s.borrow().as_ref() {
-                    state.borrow_mut().terminal_panel.send_arrow(ArrowKey::Right);
+                    state
+                        .borrow_mut()
+                        .terminal_panel
+                        .send_arrow(ArrowKey::Right);
                 }
             });
             true
