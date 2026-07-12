@@ -1093,7 +1093,29 @@ mod tests {
         let mut lines = VecDeque::new();
         parser.feed(b"line1\nline2\n", &mut lines, 100);
         parser.feed(b"\x1b[2J", &mut lines, 100);
-        assert_eq!(lines.len(), 0);
+        // 清屏（ED 2/3J）只清空可见区域内行内容，保留滚动缓冲结构
+        // —— 真实终端行为，参见 test_ansi_parser_cursor_positioning_multiline
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].is_empty());
+        assert!(lines[1].is_empty());
+    }
+
+    #[test]
+    fn test_ansi_parser_clear_screen_preserves_scrollback() {
+        let mut parser = AnsiParser::new();
+        parser.set_visible_rows(2); // 限制可见区为 2 行
+        let mut lines = VecDeque::new();
+        for i in 1..=5 {
+            parser.feed(format!("line{}\n", i).as_bytes(), &mut lines, 100);
+        }
+        // 清屏：清空最后 visible_rows(2) 行内容，前 3 行作为滚动缓冲保留
+        parser.feed(b"\x1b[2J", &mut lines, 100);
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[0], "line1");
+        assert_eq!(lines[1], "line2");
+        assert_eq!(lines[2], "line3");
+        assert_eq!(lines[3], "");
+        assert_eq!(lines[4], "");
     }
 
     #[test]
