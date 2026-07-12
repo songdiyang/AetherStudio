@@ -84,10 +84,11 @@ pub(super) unsafe fn lbd_panel_resizing(
         && (mouse_x >= editor_region.right() - 4.0 && mouse_x <= editor_region.right() + 4.0)
         && mouse_y >= editor_region.y
         && mouse_y < editor_region.y + editor_region.height;
+    let bottom_region = layout.bottom_panel_region();
     let bottom_panel_resize_zone = layout.bottom_panel_visible
-        && (mouse_y >= editor_region.bottom() - 4.0 && mouse_y <= editor_region.bottom() + 4.0)
-        && mouse_x >= editor_region.x
-        && mouse_x < editor_region.x + editor_region.width;
+        && (mouse_y >= bottom_region.y - 4.0 && mouse_y <= bottom_region.y + 4.0)
+        && mouse_x >= bottom_region.x
+        && mouse_x < bottom_region.x + bottom_region.width;
     let mut st = state.borrow_mut();
     if right_panel_resize_zone {
         st.layout.right_panel_resizing = true;

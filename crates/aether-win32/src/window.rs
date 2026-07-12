@@ -11,6 +11,7 @@ use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 // ===== 子模块声明 =====
+mod app_icon;
 mod ime_handler;
 mod keyboard_handler;
 mod mouse_handler;
@@ -18,6 +19,7 @@ mod window_messages;
 mod window_setup;
 
 // ===== 从子模块导入处理函数 =====
+use app_icon::load_app_icons;
 use ime_handler::*;
 use keyboard_handler::*;
 use mouse_handler::*;
@@ -136,6 +138,8 @@ pub fn run(args: LaunchArgs) {
         let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap();
 
         let class_name: Vec<u16> = CLASS_NAME.encode_utf16().chain(Some(0)).collect();
+        // 加载应用图标（ICO），失败时 hIcon 留 null（使用系统默认）
+        let (hicon_big, _hicon_small) = load_app_icons();
         let wc = WNDCLASSW {
             // P2-5: 启用 CS_DBLCLKS 才能收到 WM_LBUTTONDBLCLK 双击消息
             style: CS_DBLCLKS,
@@ -144,6 +148,7 @@ pub fn run(args: LaunchArgs) {
             lpszClassName: windows::core::PCWSTR(class_name.as_ptr()),
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
             hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH(std::ptr::null_mut()),
+            hIcon: hicon_big.unwrap_or(HICON(std::ptr::null_mut())),
             ..Default::default()
         };
 

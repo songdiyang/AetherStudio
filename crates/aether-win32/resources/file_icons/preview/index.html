@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Aether Studio · File Icon Preview</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #1a1d24;
+    --border: #2a2f3a;
+    --text: #e4e6eb;
+    --muted: #9ca3af;
+    --accent: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 32px;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 24px 0 12px; color: var(--muted); font-weight: 600; }
+  .subtitle { color: var(--muted); margin-bottom: 24px; font-size: 13px; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 80px repeat(3, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .grid .header {
+    background: var(--panel);
+    padding: 10px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .grid .rowlabel {
+    background: var(--panel);
+    padding: 10px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .cell {
+    background: var(--panel);
+    padding: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    gap: 12px;
+  }
+  .cell svg, .cell img { display: block; }
+  .icon-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+  .icon-block span { font-size: 10px; color: var(--muted); }
+
+  .legend { display: flex; gap: 16px; margin-top: 12px; font-size: 12px; color: var(--muted); }
+  .legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .legend .flat { background: #4f8cff; }
+  .legend .minimal { background: #9ca3af; }
+  .legend .skeuo { background: #f59e0b; }
+
+  .note { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; font-size: 12px; color: var(--muted); margin-bottom: 16px; }
+  .note code { background: #2a2f3a; padding: 2px 6px; border-radius: 3px; color: #fbbf24; font-size: 11px; }
+</style>
+</head>
+<body>
+  <h1>File Type Icons · 视觉对比</h1>
+  <div class="subtitle">.py / .java / .txt × 3 styles × 3 sizes — Aether Studio</div>
+
+  <div class="note">
+    <b>当前集成风格：Minimal</b>（已接入 <code>icons.rs</code>，与现有 1.5px 描边体系一致，主题色自适应）<br>
+    <b>其他风格：</b>Flat / Skeuomorphic 作为设计资产保留，可在未来扩展多色填充渲染时启用。
+  </div>
+
+  <h2>三风格 × 三尺寸 对照（缩放清晰度验证）</h2>
+
+  <!-- FLAT row -->
+  <div class="grid">
+    <div class="header"></div>
+    <div class="header">16 × 16</div>
+    <div class="header">24 × 24（设计基准）</div>
+    <div class="header">32 × 32</div>
+
+    <div class="rowlabel"><span class="dot flat"></span>Flat · python</div>
+    <div class="cell">
+      <div class="icon-block"><img src="flat/python.svg" width="16" height="16"><span>16</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="flat/python.svg" width="24" height="24"><span>24</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="flat/python.svg" width="32" height="32"><span>32</span></div>
+    </div>
+
+    <div class="rowlabel"><span class="dot flat"></span>Flat · java</div>
+    <div class="cell">
+      <div class="icon-block"><img src="flat/java.svg" width="16" height="16"><span>16</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="flat/java.svg" width="24" height="24"><span>24</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="flat/java.svg" width="32" height="32"><span>32</span></div>
+    </div>
+
+    <div class="rowlabel"><span class="dot flat"></span>Flat · text</div>
+    <div class="cell">
+      <div class="icon-block"><img src="flat/text.svg" width="16" height="16"><span>16</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="flat/text.svg" width="24" height="24"><span>24</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="flat/text.svg" width="32" height="32"><span>32</span></div>
+    </div>
+
+    <div class="rowlabel"><span class="dot minimal"></span>Minimal · python</div>
+    <div class="cell">
+      <div class="icon-block"><img src="minimal/python.svg" width="16" height="16" style="color: #e4e6eb"><span>16</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="minimal/python.svg" width="24" height="24"><span>24</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="minimal/python.svg" width="32" height="32"><span>32</span></div>
+    </div>
+
+    <div class="rowlabel"><span class="dot minimal"></span>Minimal · java</div>
+    <div class="cell">
+      <div class="icon-block"><img src="minimal/java.svg" width="16" height="16"><span>16</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="minimal/java.svg" width="24" height="24"><span>24</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="minimal/java.svg" width="32" height="32"><span>32</span></div>
+    </div>
+
+    <div class="rowlabel"><span class="dot minimal"></span>Minimal · text</div>
+    <div class="cell">
+      <div class="icon-block"><img src="minimal/text.svg" width="16" height="16"><span>16</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="minimal/text.svg" width="24" height="24"><span>24</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="minimal/text.svg" width="32" height="32"><span>32</span></div>
+    </div>
+
+    <div class="rowlabel"><span class="dot skeuo"></span>Skeuo · python</div>
+    <div class="cell">
+      <div class="icon-block"><img src="skeuomorphic/python.svg" width="16" height="16"><span>16</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="skeuomorphic/python.svg" width="24" height="24"><span>24</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="skeuomorphic/python.svg" width="32" height="32"><span>32</span></div>
+    </div>
+
+    <div class="rowlabel"><span class="dot skeuo"></span>Skeuo · java</div>
+    <div class="cell">
+      <div class="icon-block"><img src="skeuomorphic/java.svg" width="16" height="16"><span>16</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="skeuomorphic/java.svg" width="24" height="24"><span>24</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="skeuomorphic/java.svg" width="32" height="32"><span>32</span></div>
+    </div>
+
+    <div class="rowlabel"><span class="dot skeuo"></span>Skeuo · text</div>
+    <div class="cell">
+      <div class="icon-block"><img src="skeuomorphic/text.svg" width="16" height="16"><span>16</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="skeuomorphic/text.svg" width="24" height="24"><span>24</span></div>
+    </div>
+    <div class="cell">
+      <div class="icon-block"><img src="skeuomorphic/text.svg" width="32" height="32"><span>32</span></div>
+    </div>
+  </div>
+
+  <h2>实际渲染效果（资源管理器侧栏，矢量描边）</h2>
+  <div class="note">
+    以下为最小模拟（使用 CSS 替代 Direct2D），展示接入后的真实显示效果。颜色由 currentColor 控制，会跟随主题。
+  </div>
+  <div class="grid" style="grid-template-columns: 1fr;">
+    <div class="cell" style="justify-content: flex-start; gap: 24px; padding: 16px 24px;">
+      <div style="display: flex; align-items: center; gap: 6px; color: #d1d5db; font-family: 'Consolas', monospace; font-size: 13px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color:#d1d5db">
+          <path d="M5.5 2.5 L14.5 2.5 L20.5 8.5 L20.5 20.5 Q20.5 21.5 19.5 21.5 L5.5 21.5 Q4.5 21.5 4.5 20.5 L4.5 3.5 Q4.5 2.5 5.5 2.5 Z"/>
+          <path d="M14.5 2.5 L14.5 8.5 L20.5 8.5"/>
+          <circle cx="9.7" cy="15" r="2.6"/>
+          <circle cx="14.3" cy="15" r="2.6"/>
+          <path d="M11.2 13.4 L12.8 16.6"/>
+        </svg>
+        main.py
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; color: #d1d5db; font-family: 'Consolas', monospace; font-size: 13px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color:#d1d5db">
+          <path d="M5.5 2.5 L14.5 2.5 L20.5 8.5 L20.5 20.5 Q20.5 21.5 19.5 21.5 L5.5 21.5 Q4.5 21.5 4.5 20.5 L4.5 3.5 Q4.5 2.5 5.5 2.5 Z"/>
+          <path d="M14.5 2.5 L14.5 8.5 L20.5 8.5"/>
+          <path d="M8 13 L16 13 L15.4 19 Q15.3 20 14.3 20 L9.7 20 Q8.7 20 8.6 19 Z"/>
+          <path d="M16 14.5 Q18 14.5 18 16.2 Q18 17.9 16 17.9"/>
+          <path d="M10 9 Q11 8 10 7"/>
+          <path d="M13 9 Q14 8 13 7"/>
+        </svg>
+        App.java
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; color: #d1d5db; font-family: 'Consolas', monospace; font-size: 13px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color:#d1d5db">
+          <path d="M5.5 2.5 L14.5 2.5 L20.5 8.5 L20.5 20.5 Q20.5 21.5 19.5 21.5 L5.5 21.5 Q4.5 21.5 4.5 20.5 L4.5 3.5 Q4.5 2.5 5.5 2.5 Z"/>
+          <path d="M14.5 2.5 L14.5 8.5 L20.5 8.5"/>
+          <path d="M7.5 12 L16.5 12"/>
+          <path d="M7.5 15 L16.5 15"/>
+          <path d="M7.5 18 L13 18"/>
+        </svg>
+        README.txt
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span><span class="dot flat"></span>Flat — 品牌色填充，无渐变</span>
+    <span><span class="dot minimal"></span>Minimal — 1.5px 描边，自适应主题色</span>
+    <span><span class="dot skeuo"></span>Skeuomorphic — 渐变 + 阴影，立体感</span>
+  </div>
+</body>
+</html>

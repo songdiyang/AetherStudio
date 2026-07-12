@@ -5591,7 +5591,7 @@ impl EditorState {
     ) {
         let line_height = self.text_renderer.line_height();
         let char_width = self.text_renderer.char_width();
-        let line_number_width = 60.0;
+        let line_number_width = 40.0;
 
         // P0-3: 鼠标 x 加上 scroll_x 抵消，确保点击的字符位置正确
         let rel_x = mouse_x - editor_x - line_number_width - 5.0 + self.content.scroll_x;

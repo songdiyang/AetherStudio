@@ -1029,6 +1029,8 @@ impl EditorState {
         text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
     ) {
         unsafe {
+            // 确保矢量图标几何已创建（FilePython / FileJava / FileText）
+            self.icons.ensure_created_from_target(target);
             let ui_format = self
                 .render_ctx
                 .text_format_cache
@@ -3743,8 +3745,14 @@ impl EditorState {
             let content_y = y + title_bar_h + 6.0;
             let content_bottom = y + height - 6.0; // 不再预留输入行空间
             let visible_lines = ((content_bottom - content_y) / line_h).floor() as usize;
-            // 同步 ConPTY 尺寸到面板实际可用区域（字符宽约 7px，11pt 等宽字体）
-            let term_cols = ((width - 20.0) / 7.0).max(20.0) as i16;
+            // 同步 ConPTY 尺寸到面板实际可用区域
+            // 使用 DirectWrite 实测 11pt 等宽字符宽度
+            let cell_w = self
+                .render_ctx
+                .text_format_cache
+                .measure_text_width("M", 11.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32)
+                .unwrap_or(7.0);
+            let term_cols = ((width - 20.0) / cell_w).max(20.0) as i16;
             let term_rows = visible_lines.max(5) as i16;
             self.terminal_panel.set_size(term_cols, term_rows);
             let lines = self.terminal_panel.visible_window(visible_lines);
@@ -4367,13 +4375,18 @@ impl EditorState {
                     );
                 }
             } else {
-                // 计算可见行数并同步 ConPTY 尺寸（与 render_central_terminal 保持一致）
-                // 字符宽约 7px（11pt 等宽字体），行高 14px
+                // 计算可见行数并同步 ConPTY 尺寸
+                // 使用 DirectWrite 实测 11pt Consolas 等宽字符宽度，避免硬编码 7px 与渲染偏差
+                let cell_w = self
+                    .render_ctx
+                    .text_format_cache
+                    .measure_text_width("M", 11.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32)
+                    .unwrap_or(7.0);
                 let line_h = 14.0;
                 let content_bottom = y + height - 6.0;
                 let visible_lines =
                     ((content_bottom - content_y) / line_h).floor().max(1.0) as usize;
-                let term_cols = ((width - 20.0) / 7.0).max(20.0) as i16;
+                let term_cols = ((width - 20.0) / cell_w).max(20.0) as i16;
                 let term_rows = visible_lines.max(5) as i16;
                 self.terminal_panel.set_size(term_cols, term_rows);
                 let lines = self.terminal_panel.visible_window(visible_lines);
@@ -4432,9 +4445,37 @@ impl EditorState {
                 let (cursor_row, cursor_col) = self.terminal_panel.cursor_position();
                 if cursor_row >= start_line && cursor_row < end_line {
                     let display_row = cursor_row - start_line;
-                    let cursor_x = x + 10.0 + cursor_col as f32 * 7.0;
+                    // 光标 x 使用 DirectWrite HitTestTextPosition 获取光标行前缀尾端的精确像素坐标
+                    // cursor_col 是字符索引（非显示列宽），因此按字符个数取前缀
+                    let cursor_x = if let Some(line) = self.terminal_panel.output_lines.get(cursor_row) {
+                        let char_count = line.chars().count();
+                        let take = cursor_col.min(char_count);
+                        let mut prefix_len = 0usize;
+                        let mut prefix_utf16_len = 0usize;
+                        for (idx, ch) in line.char_indices().take(take) {
+                            prefix_len = idx + ch.len_utf8();
+                            prefix_utf16_len += ch.encode_utf16(&mut [0; 2]).len();
+                        }
+                        let prefix = &line[..prefix_len];
+                        let prefix_x = self
+                            .render_ctx
+                            .text_format_cache
+                            .text_position_x(prefix, prefix_utf16_len, 11.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32)
+                            .unwrap_or(cursor_col as f32 * cell_w);
+                        let extra = (cursor_col.saturating_sub(char_count)) as f32 * cell_w;
+                        x + 10.0 + prefix_x + extra
+                    } else {
+                        x + 10.0 + cursor_col as f32 * cell_w
+                    };
                     let cursor_y = content_y + display_row as f32 * line_h;
-                    let cursor_w = 7.0;
+                    let cursor_w = if let Some(line) = self.terminal_panel.output_lines.get(cursor_row) {
+                        line.chars()
+                            .nth(cursor_col)
+                            .map(|ch| (unicode_char_width(ch) as f32).max(1.0) * cell_w)
+                            .unwrap_or(cell_w)
+                    } else {
+                        cell_w
+                    };
                     let cursor_h = line_h;
                     // 只在光标可见区域内绘制
                     if cursor_y + cursor_h <= content_bottom {
@@ -7695,12 +7736,22 @@ impl EditorState {
                 };
                 let name = tree.get_name(node);
 
+                // 优先使用矢量图标（.py/.java/.txt），未命中时回退到 emoji
+                let vector_icon = if node.kind == FileKind::File {
+                    self.get_file_vector_icon(name)
+                } else {
+                    None
+                };
+
                 let icon = if node.kind == FileKind::Directory {
                     if node.is_expanded {
                         "📂"
                     } else {
                         "📁"
                     }
+                } else if vector_icon.is_some() {
+                    // 矢量图标位置由下方单独绘制，文本中不再占位
+                    ""
                 } else {
                     self.get_file_icon(name)
                 };
@@ -7717,8 +7768,10 @@ impl EditorState {
 
                 display_buf.clear();
                 display_buf.push_str(arrow);
-                display_buf.push_str(icon);
-                display_buf.push(' ');
+                if vector_icon.is_none() {
+                    display_buf.push_str(icon);
+                    display_buf.push(' ');
+                }
                 display_buf.push_str(name);
 
                 let item_left = base_x + indent;
@@ -7759,12 +7812,19 @@ impl EditorState {
                     text_brush
                 };
 
+                let text_left = if vector_icon.is_some() {
+                    // 矢量图标占 16px 宽 + 2px 间距，文字右移避免被图标遮挡
+                    item_left + 18.0
+                } else {
+                    item_left
+                };
+
                 unsafe {
                     tree_text_buf.clear();
                     tree_text_buf.extend(display_buf.encode_utf16());
                     tree_text_buf.push(0);
                     let text_rect = D2D_RECT_F {
-                        left: item_left,
+                        left: text_left,
                         top: *current_y,
                         right: item_right,
                         bottom: *current_y + 20.0,
@@ -7777,6 +7837,14 @@ impl EditorState {
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
                         DWRITE_MEASURING_MODE_NATURAL,
                     );
+                }
+
+                // 矢量文件图标：在文本前绘制 16x16 矢量图标（命中 .py/.java/.txt）
+                if let Some(kind) = vector_icon {
+                    let icon_size = 16.0_f32;
+                    let icon_left = item_left;
+                    let icon_top = *current_y + (20.0 - icon_size) / 2.0;
+                    self.icons.draw(target, kind, icon_left, icon_top, icon_size, icon_size, text_brush);
                 }
 
                 *current_y += 20.0;
@@ -7864,6 +7932,44 @@ impl EditorState {
         }
     }
 
+    /// 为常用文件类型返回矢量图标（避免 emoji 字体差异）。
+    /// 命中 .py/.java/.txt 等常见扩展时返回对应 IconKind，渲染时将替代 emoji 占位。
+    fn get_file_vector_icon(&self, name: &str) -> Option<crate::icons::IconKind> {
+        use crate::icons::IconKind;
+        // Dockerfile 无扩展名特殊处理
+        if name.eq_ignore_ascii_case("Dockerfile") || name.eq_ignore_ascii_case("dockerfile") {
+            return Some(IconKind::FileDocker);
+        }
+        let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
+        match ext.as_str() {
+            "py" | "pyw" | "pyi" => Some(IconKind::FilePython),
+            "java" => Some(IconKind::FileJava),
+            "kt" | "kts" => Some(IconKind::FileKotlin),
+            "txt" => Some(IconKind::FileText),
+            "c" | "h" => Some(IconKind::FileC),
+            "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" => Some(IconKind::FileCpp),
+            "cs" => Some(IconKind::FileCSharp),
+            "go" => Some(IconKind::FileGo),
+            "rs" => Some(IconKind::FileRust),
+            "js" | "mjs" | "cjs" | "jsx" => Some(IconKind::FileJs),
+            "ts" | "tsx" => Some(IconKind::FileTs),
+            "html" | "htm" | "shtml" => Some(IconKind::FileHtml),
+            "css" | "scss" | "sass" | "less" => Some(IconKind::FileCss),
+            "json" | "jsonc" | "json5" => Some(IconKind::FileJson),
+            "yml" | "yaml" => Some(IconKind::FileYaml),
+            "toml" => Some(IconKind::FileToml),
+            "md" | "markdown" => Some(IconKind::FileMarkdown),
+            "sh" | "bash" | "zsh" | "ksh" => Some(IconKind::FileShell),
+            "sql" => Some(IconKind::FileSql),
+            "rb" | "ruby" | "erb" => Some(IconKind::FileRuby),
+            "php" | "php5" | "phtml" => Some(IconKind::FilePhp),
+            "lua" => Some(IconKind::FileLua),
+            "swift" => Some(IconKind::FileSwift),
+            "dart" => Some(IconKind::FileSwift), // Dart 与 Swift 风格相似，暂用 Swift 图标
+            _ => None,
+        }
+    }
+
     fn render_editor(
         &mut self,
         target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
@@ -7874,7 +7980,7 @@ impl EditorState {
     ) {
         let line_height = self.text_renderer.line_height();
         let char_width = self.text_renderer.char_width();
-        let line_number_width = 60.0;
+        let line_number_width = 40.0;
 
         unsafe {
             let bg_brush = self
@@ -8313,17 +8419,42 @@ impl EditorState {
             if self.terminal_panel.focused {
                 let term_region = self.layout.bottom_panel_region();
                 let (t_row, t_col) = self.terminal_panel.cursor_position();
-                let char_w = 7.0 * self.dpi_scale;
-                let line_h = 14.0 * self.dpi_scale;
-                let term_x = term_region.x + 8.0 + t_col as f32 * char_w;
-                let term_y = term_region.y + 24.0 + t_row as f32 * line_h;
+                // 光标位置使用 DirectWrite HitTestTextPosition 获取精确前缀坐标（逻辑像素，最后再乘 DPI）
+                let cell_w_logical = self
+                    .render_ctx
+                    .text_format_cache
+                    .measure_text_width("M", 11.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32)
+                    .unwrap_or(7.0);
+                let prefix_x_logical = if let Some(line) = self.terminal_panel.output_lines.get(t_row) {
+                    let char_count = line.chars().count();
+                    let take = t_col.min(char_count);
+                    let mut prefix_len = 0usize;
+                    let mut prefix_utf16_len = 0usize;
+                    for (idx, ch) in line.char_indices().take(take) {
+                        prefix_len = idx + ch.len_utf8();
+                        prefix_utf16_len += ch.encode_utf16(&mut [0; 2]).len();
+                    }
+                    let prefix = &line[..prefix_len];
+                    let prefix_x = self
+                        .render_ctx
+                        .text_format_cache
+                        .text_position_x(prefix, prefix_utf16_len, 11.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32)
+                        .unwrap_or(t_col as f32 * cell_w_logical);
+                    let extra = (t_col.saturating_sub(char_count)) as f32 * cell_w_logical;
+                    prefix_x + extra
+                } else {
+                    t_col as f32 * cell_w_logical
+                };
+                let line_h_logical = 14.0;
+                let term_x_logical = term_region.x + 8.0 + prefix_x_logical;
+                let term_y_logical = term_region.y + 24.0 + t_row as f32 * line_h_logical;
                 self.ime.set_composition_window_position(
-                    (term_x * self.dpi_scale) as i32,
-                    (term_y * self.dpi_scale) as i32,
+                    (term_x_logical * self.dpi_scale) as i32,
+                    (term_y_logical * self.dpi_scale) as i32,
                 );
                 self.ime.set_candidate_window_position(
-                    (term_x * self.dpi_scale) as i32,
-                    ((term_y + line_h) * self.dpi_scale) as i32,
+                    (term_x_logical * self.dpi_scale) as i32,
+                    ((term_y_logical + line_h_logical) * self.dpi_scale) as i32,
                 );
             } else if self.file_tree_input.is_some() {
                 let sidebar = self.layout.sidebar_region();

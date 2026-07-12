@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Text file icon (flat)">
+  <title>Text File (Flat)</title>
+  <!-- File body -->
+  <path d="M5.5 2.5 L14.5 2.5 L20.5 8.5 L20.5 20.5 Q20.5 21.5 19.5 21.5 L5.5 21.5 Q4.5 21.5 4.5 20.5 L4.5 3.5 Q4.5 2.5 5.5 2.5 Z"
+        fill="#6B7280"/>
+  <!-- Corner fold -->
+  <path d="M14.5 2.5 L20.5 8.5 L15.5 8.5 Q14.5 8.5 14.5 7.5 Z"
+        fill="#FFFFFF" fill-opacity="0.4"/>
+  <!-- Text lines (paragraph) -->
+  <rect x="7.5" y="12" width="9" height="1.4" rx="0.7" fill="#FFFFFF"/>
+  <rect x="7.5" y="14.6" width="9" height="1.4" rx="0.7" fill="#FFFFFF"/>
+  <rect x="7.5" y="17.2" width="6" height="1.4" rx="0.7" fill="#FFFFFF"/>
+</svg>

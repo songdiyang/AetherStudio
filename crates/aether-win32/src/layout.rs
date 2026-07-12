@@ -284,10 +284,16 @@ impl LayoutManager {
     }
 
     /// 计算编辑器内容区域（排除标签栏）
+    /// 当底部面板可见时，编辑器内容仅占编辑器区域上半部分（剩余给底部面板）
     pub fn editor_content_region(&self, show_tab_bar: bool) -> Region {
         let editor = self.editor_region();
         let tab_height = if show_tab_bar { TAB_BAR_HEIGHT } else { 0.0 };
-        let height = (editor.height - tab_height).max(0.0);
+        let bottom_height = if self.bottom_panel_visible {
+            self.bottom_panel_height
+        } else {
+            0.0
+        };
+        let height = (editor.height - tab_height - bottom_height).max(0.0);
         Region::new(editor.x, editor.y + tab_height, editor.width, height)
     }
 
@@ -310,18 +316,19 @@ impl LayoutManager {
     }
 
     /// 计算底部面板区域
-    /// 底部面板横跨整个窗口底部（覆盖左右侧边栏下方的空间），与状态栏一致
+    /// 底部面板位于编辑器区域（居中）的下半部分，不横跨侧边栏/活动栏
     pub fn bottom_panel_region(&self) -> Region {
-        let y = self.window_height - self.status_bar_height - self.bottom_panel_height;
+        let editor = self.editor_region();
+        let y = editor.bottom() - self.bottom_panel_height;
         if !self.bottom_panel_visible {
             return Region::new(
-                0.0,
-                self.window_height - self.status_bar_height,
-                self.window_width,
+                editor.x,
+                editor.bottom(),
+                editor.width,
                 0.0,
             );
         }
-        Region::new(0.0, y, self.window_width, self.bottom_panel_height)
+        Region::new(editor.x, y, editor.width, self.bottom_panel_height)
     }
 
     /// 计算状态栏区域
@@ -349,7 +356,8 @@ impl LayoutManager {
         offset
     }
 
-    /// 内容区域高度（排除标题栏、菜单栏、状态栏和底部面板）
+    /// 内容区域高度（排除标题栏、菜单栏、状态栏）
+    /// 注：底部面板现在位于编辑器区域内部，不再从侧边栏/活动栏空间中扣除
     fn content_height(&self) -> f32 {
         let mut height = self.window_height;
         if self.title_bar_visible {
@@ -361,8 +369,6 @@ impl LayoutManager {
         if self.status_bar_visible {
             height -= self.status_bar_height;
         }
-        // 无论底部面板是否可见，都预留空间以防止侧边栏/活动栏区域延伸到底部面板
-        height -= self.bottom_panel_height;
         // 确保内容区域至少有 0 像素的高度
         height.max(0.0)
     }
@@ -415,7 +421,10 @@ impl LayoutManager {
     pub fn toggle_bottom_panel(&mut self) {
         self.bottom_panel_visible = !self.bottom_panel_visible;
         if self.bottom_panel_visible {
-            self.bottom_panel_height = 200.0;
+            // 默认占编辑器区域（居中）的下半部分
+            self.bottom_panel_height = (self.content_height() / 2.0)
+                .max(MIN_BOTTOM_PANEL_HEIGHT)
+                .min(self.content_height());
         } else {
             self.bottom_panel_height = 0.0;
         }
@@ -596,11 +605,16 @@ mod tests {
         let right = layout.right_panel_region();
         assert_eq!(right.width, 300.0);
         assert_eq!(right.x, 1280.0 - 300.0);
+        assert_eq!(right.height, layout.content_height());
 
         layout.toggle_bottom_panel();
         let bottom = layout.bottom_panel_region();
-        assert_eq!(bottom.height, 200.0);
-        assert_eq!(bottom.y, 800.0 - STATUS_BAR_HEIGHT - 200.0);
+        let editor = layout.editor_region();
+        assert_eq!(bottom.x, editor.x);
+        assert_eq!(bottom.width, editor.width);
+        // 默认高度为编辑器区域的一半
+        assert_eq!(bottom.height, editor.height / 2.0);
+        assert_eq!(bottom.y, editor.bottom() - bottom.height);
 
         let editor = layout.editor_region();
         assert_eq!(
@@ -621,6 +635,21 @@ mod tests {
             layout.editor_region().height - TAB_BAR_HEIGHT
         );
         assert_eq!(content.y, layout.editor_region().y + TAB_BAR_HEIGHT);
+    }
+
+    #[test]
+    fn test_layout_manager_editor_content_with_bottom_panel() {
+        let mut layout = LayoutManager::new(1280.0, 800.0);
+        layout.toggle_bottom_panel();
+        let editor = layout.editor_region();
+        let bottom = layout.bottom_panel_region();
+        let content = layout.editor_content_region(true);
+
+        // 编辑器内容区 + 标签栏 + 底部面板 = 编辑器区域
+        assert_eq!(content.height + TAB_BAR_HEIGHT + bottom.height, editor.height);
+        assert_eq!(content.x, editor.x);
+        assert_eq!(content.width, editor.width);
+        assert_eq!(bottom.y, content.y + content.height);
     }
 
     #[test]
@@ -719,7 +748,8 @@ mod tests {
         layout.toggle_status_bar();
         assert_eq!(layout.content_height(), 600.0 - TITLE_BAR_HEIGHT);
 
+        // 底部面板现在位于编辑器区域内部，不影响 content_height
         layout.toggle_bottom_panel();
-        assert_eq!(layout.content_height(), 600.0 - TITLE_BAR_HEIGHT - 200.0);
+        assert_eq!(layout.content_height(), 600.0 - TITLE_BAR_HEIGHT);
     }
 }

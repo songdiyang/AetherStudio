@@ -506,10 +506,11 @@ unsafe fn omm_resize_drag(
         && (mouse_x >= editor_region.right() - 4.0 && mouse_x <= editor_region.right() + 4.0)
         && mouse_y >= editor_region.y
         && mouse_y < editor_region.y + editor_region.height;
+    let bottom_region = layout.bottom_panel_region();
     let bottom_panel_resize_zone = layout.bottom_panel_visible
-        && (mouse_y >= editor_region.bottom() - 4.0 && mouse_y <= editor_region.bottom() + 4.0)
-        && mouse_x >= editor_region.x
-        && mouse_x < editor_region.x + editor_region.width;
+        && (mouse_y >= bottom_region.y - 4.0 && mouse_y <= bottom_region.y + 4.0)
+        && mouse_x >= bottom_region.x
+        && mouse_x < bottom_region.x + bottom_region.width;
     // 设置拖拽光标
     if right_panel_resize_zone || st.layout.right_panel_resizing {
         let hcursor = LoadCursorW(None, IDC_SIZEWE).unwrap_or_default();
@@ -530,7 +531,7 @@ unsafe fn omm_resize_drag(
             invalidate_window(hwnd);
             return Some(LRESULT(0));
         } else if st.layout.bottom_panel_resizing {
-            let delta = mouse_y - editor_region.bottom();
+            let delta = mouse_y - bottom_region.y;
             st.layout.resize_bottom_panel(-delta);
             drop(st);
             invalidate_window(hwnd);
