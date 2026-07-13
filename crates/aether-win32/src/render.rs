@@ -1028,6 +1028,7 @@ impl EditorState {
         height: f32,
         text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
     ) {
+        let s = self.dpi_scale;
         unsafe {
             // 确保矢量图标几何已创建（FilePython / FileJava / FileText）
             self.icons.ensure_created_from_target(target);
@@ -1035,7 +1036,7 @@ impl EditorState {
                 .render_ctx
                 .text_format_cache
                 .get_format(
-                    12.0,
+                    12.0 * s,
                     DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
                     DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
                     DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
@@ -1046,7 +1047,7 @@ impl EditorState {
                 .render_ctx
                 .text_format_cache
                 .get_format(
-                    12.0,
+                    12.0 * s,
                     DWRITE_FONT_WEIGHT_BOLD.0 as u32,
                     DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
                     DWRITE_PARAGRAPH_ALIGNMENT_CENTER.0 as u32,
@@ -1056,7 +1057,7 @@ impl EditorState {
                 .render_ctx
                 .text_format_cache
                 .get_format(
-                    13.0,
+                    13.0 * s,
                     DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
                     DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
                     DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
@@ -1109,12 +1110,12 @@ impl EditorState {
                 .unwrap();
 
             // 章节标题栏（与"源代码管理"风格一致，约 28px 高）
-            let header_h = 28.0f32;
+            let header_h = 28.0f32 * s;
             let header_text: Vec<u16> = "资源管理器".encode_utf16().chain(Some(0)).collect();
             let header_text_rect = D2D_RECT_F {
-                left: x + 10.0,
+                left: x + 10.0 * s,
                 top: y,
-                right: x + width - 68.0,
+                right: x + width - 68.0 * s,
                 bottom: y + header_h,
             };
             target.DrawText(
@@ -1127,8 +1128,8 @@ impl EditorState {
             );
 
             // 标题栏右侧：新建文件 / 新建文件夹按钮
-            let btn_size = 20.0f32;
-            let btn_margin = 4.0f32;
+            let btn_size = 20.0f32 * s;
+            let btn_margin = 4.0f32 * s;
             let new_file_rect = D2D_RECT_F {
                 left: x + width - btn_size * 2.0 - btn_margin * 2.0,
                 top: y + (header_h - btn_size) / 2.0,
@@ -1187,7 +1188,7 @@ impl EditorState {
                 .render_ctx
                 .text_format_cache
                 .get_format(
-                    12.0,
+                    12.0 * s,
                     DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
                     DWRITE_TEXT_ALIGNMENT_CENTER.0 as u32,
                     DWRITE_PARAGRAPH_ALIGNMENT_CENTER.0 as u32,
@@ -1217,19 +1218,19 @@ impl EditorState {
                 left: x,
                 top: y + header_h,
                 right: x + width,
-                bottom: y + header_h + 1.0,
+                bottom: y + header_h + 1.0 * s,
             };
             target.FillRectangle(&sep_rect, &sep_brush);
 
             // 文件树内联输入框（新建文件/文件夹时显示）
             let mut input_offset_y = 0.0f32;
             if let Some(input) = &self.file_tree_input {
-                let input_y = y + header_h + 6.0;
-                let input_h = 26.0f32;
+                let input_y = y + header_h + 6.0 * s;
+                let input_h = 26.0f32 * s;
                 let input_rect = D2D_RECT_F {
-                    left: x + 10.0,
+                    left: x + 10.0 * s,
                     top: input_y,
-                    right: x + width - 10.0,
+                    right: x + width - 10.0 * s,
                     bottom: input_y + input_h,
                 };
                 let input_bg = color_f(0.12, 0.12, 0.12, 1.0);
@@ -1244,14 +1245,14 @@ impl EditorState {
                     .get_brush(target, &self.theme.cursor_color)
                     .unwrap();
                 target.FillRectangle(&input_rect, &input_bg_brush);
-                target.DrawRectangle(&input_rect, &sep_brush, 1.0, None);
+                target.DrawRectangle(&input_rect, &sep_brush, 1.0 * s, None);
 
                 let value_text: Vec<u16> = input.value.encode_utf16().collect();
                 let value_rect = D2D_RECT_F {
-                    left: input_rect.left + 6.0,
-                    top: input_rect.top + 2.0,
-                    right: input_rect.right - 6.0,
-                    bottom: input_rect.bottom - 2.0,
+                    left: input_rect.left + 6.0 * s,
+                    top: input_rect.top + 2.0 * s,
+                    right: input_rect.right - 6.0 * s,
+                    bottom: input_rect.bottom - 2.0 * s,
                 };
                 target.DrawText(
                     &value_text,
@@ -1263,7 +1264,7 @@ impl EditorState {
                 );
 
                 // 精确测量 value 文本宽度（支持 CJK 双宽字符）
-                let ui_font_size = 13.0f32;
+                let ui_font_size = 13.0f32 * s;
                 let value_width = self
                     .render_ctx
                     .text_format_cache
@@ -1317,24 +1318,24 @@ impl EditorState {
                     let caret_x = value_rect.left + value_width + comp_width;
                     let caret_rect = D2D_RECT_F {
                         left: caret_x,
-                        top: value_rect.top + 2.0,
-                        right: caret_x + 1.0,
-                        bottom: value_rect.bottom - 2.0,
+                        top: value_rect.top + 2.0 * s,
+                        right: caret_x + 1.0 * s,
+                        bottom: value_rect.bottom - 2.0 * s,
                     };
                     target.FillRectangle(&caret_rect, &cursor_brush);
                 }
 
-                input_offset_y = input_h + 10.0;
+                input_offset_y = input_h + 10.0 * s;
             }
 
             if let Some(tree) = &self.file_tree {
-                let mut current_y = y + header_h + 6.0 + input_offset_y - self.sidebar_scroll_y;
+                let mut current_y = y + header_h + 6.0 * s + input_offset_y - self.sidebar_scroll_y;
                 let mut tree_text_buf = std::mem::take(&mut self.tree_text_utf16_buf);
                 self.render_tree_nodes(
                     target,
                     tree,
                     u32::MAX,
-                    x + 10.0,
+                    x + 10.0 * s,
                     &mut current_y,
                     y,
                     height,
@@ -1353,10 +1354,10 @@ impl EditorState {
                     .chain(Some(0))
                     .collect();
                 let text_rect = D2D_RECT_F {
-                    left: x + 10.0,
-                    top: y + header_h + 6.0,
-                    right: x + width - 10.0,
-                    bottom: y + header_h + 26.0,
+                    left: x + 10.0 * s,
+                    top: y + header_h + 6.0 * s,
+                    right: x + width - 10.0 * s,
+                    bottom: y + header_h + 26.0 * s,
                 };
                 target.DrawText(
                     &text,
@@ -2001,11 +2002,12 @@ impl EditorState {
         text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
     ) {
         unsafe {
+            let s = self.dpi_scale;
             let ui_format = self
                 .render_ctx
                 .text_format_cache
                 .get_format(
-                    12.0,
+                    12.0 * s,
                     DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
                     DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
                     DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
@@ -2015,7 +2017,7 @@ impl EditorState {
                 .render_ctx
                 .text_format_cache
                 .get_format(
-                    13.0,
+                    13.0 * s,
                     DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
                     DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
                     DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
@@ -2051,10 +2053,10 @@ impl EditorState {
             };
             let title: Vec<u16> = title_text.encode_utf16().chain(Some(0)).collect();
             let title_rect = D2D_RECT_F {
-                left: x + 10.0,
-                top: y + 10.0,
-                right: x + width - 10.0,
-                bottom: y + 30.0,
+                left: x + 10.0 * s,
+                top: y + 10.0 * s,
+                right: x + width - 10.0 * s,
+                bottom: y + 30.0 * s,
             };
             target.DrawText(
                 &title,
@@ -2066,8 +2068,8 @@ impl EditorState {
             );
 
             if let Some(tree) = &self.remote_file_tree {
-                let node_height = 20.0_f32;
-                let mut current_y = y + 40.0 - self.remote_scroll_y;
+                let node_height = 20.0_f32 * s;
+                let mut current_y = y + 40.0 * s - self.remote_scroll_y;
                 let hover = self.hover_remote_node.as_ref();
                 let selected = self.selected_remote_node.as_ref();
                 Self::draw_remote_nodes_recursive(
@@ -2078,6 +2080,7 @@ impl EditorState {
                     y,
                     height,
                     node_height,
+                    s,
                     &mut current_y,
                     hover,
                     selected,
@@ -2090,10 +2093,10 @@ impl EditorState {
             } else {
                 let msg: Vec<u16> = "未连接远程服务器".encode_utf16().chain(Some(0)).collect();
                 let msg_rect = D2D_RECT_F {
-                    left: x + 10.0,
-                    top: y + 40.0,
-                    right: x + width - 10.0,
-                    bottom: y + 60.0,
+                    left: x + 10.0 * s,
+                    top: y + 40.0 * s,
+                    right: x + width - 10.0 * s,
+                    bottom: y + 60.0 * s,
                 };
                 target.DrawText(
                     &msg,
@@ -2117,6 +2120,7 @@ impl EditorState {
         clip_top: f32,
         clip_bottom: f32,
         node_height: f32,
+        scale: f32,
         current_y: &mut f32,
         hover: Option<&String>,
         selected: Option<&String>,
@@ -2126,6 +2130,7 @@ impl EditorState {
         sel_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
         tree_format: &IDWriteTextFormat,
     ) {
+        let s = scale;
         for node in nodes {
             // 超出可见区域底部：停止（节点按顺序排列）
             if *current_y > clip_bottom {
@@ -2133,9 +2138,9 @@ impl EditorState {
             }
             // 跳过完全在顶部以上的节点（但需推进 current_y）
             let visible = *current_y + node_height >= clip_top;
-            let indent = node.depth as f32 * 16.0;
-            let item_left = x + 10.0 + indent;
-            let item_right = x + width - 10.0;
+            let indent = node.depth as f32 * 16.0 * s;
+            let item_left = x + 10.0 * s + indent;
+            let item_right = x + width - 10.0 * s;
 
             if visible {
                 // P0-1: Direct2D 绘制调用需在 unsafe 块中执行
@@ -2143,7 +2148,7 @@ impl EditorState {
                     let is_hover = hover == Some(&node.path);
                     if is_hover {
                         let hover_rect = D2D_RECT_F {
-                            left: item_left - 4.0,
+                            left: item_left - 4.0 * s,
                             top: *current_y,
                             right: item_right,
                             bottom: *current_y + node_height,
@@ -2154,7 +2159,7 @@ impl EditorState {
                     let is_selected = selected == Some(&node.path) && !node.is_dir;
                     if is_selected {
                         let sel_rect = D2D_RECT_F {
-                            left: item_left - 4.0,
+                            left: item_left - 4.0 * s,
                             top: *current_y,
                             right: item_right,
                             bottom: *current_y + node_height,
@@ -2214,6 +2219,7 @@ impl EditorState {
                     clip_top,
                     clip_bottom,
                     node_height,
+                    scale,
                     current_y,
                     hover,
                     selected,
@@ -7698,7 +7704,9 @@ impl EditorState {
         hover_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
         tree_text_buf: &mut Vec<u16>,
     ) {
+        let s = self.dpi_scale;
         let mut display_buf = String::with_capacity(64);
+        let node_height = 20.0f32 * s;
         let mut child_idx = if parent_idx == u32::MAX {
             tree.first_root_node()
         } else {
@@ -7719,8 +7727,8 @@ impl EditorState {
                     break;
                 }
 
-                if *current_y + 20.0 < clip_y {
-                    *current_y += 20.0;
+                if *current_y + node_height < clip_y {
+                    *current_y += node_height;
                     if node.kind == FileKind::Directory && node.is_expanded {
                         self.skip_tree_nodes(tree, idx, current_y);
                     }
@@ -7732,7 +7740,7 @@ impl EditorState {
                 let indent = if node.parent_idx == u32::MAX {
                     0.0
                 } else {
-                    node.depth as f32 * 16.0
+                    node.depth as f32 * 16.0 * s
                 };
                 let name = tree.get_name(node);
 
@@ -7775,16 +7783,16 @@ impl EditorState {
                 display_buf.push_str(name);
 
                 let item_left = base_x + indent;
-                let item_right = base_x + sidebar_width - 10.0;
+                let item_right = base_x + sidebar_width - 10.0 * s;
 
                 // 绘制悬停背景
                 let is_hover = self.hover_file_node == Some(idx);
                 if is_hover {
                     let hover_rect = D2D_RECT_F {
-                        left: item_left - 4.0,
+                        left: item_left - 4.0 * s,
                         top: *current_y,
                         right: item_right,
-                        bottom: *current_y + 20.0,
+                        bottom: *current_y + node_height,
                     };
                     unsafe {
                         target.FillRectangle(&hover_rect, hover_brush);
@@ -7796,10 +7804,10 @@ impl EditorState {
                     self.selected_file_node == Some(idx) && node.kind == FileKind::File;
                 if is_selected {
                     let sel_rect = D2D_RECT_F {
-                        left: item_left - 4.0,
+                        left: item_left - 4.0 * s,
                         top: *current_y,
                         right: item_right,
-                        bottom: *current_y + 20.0,
+                        bottom: *current_y + node_height,
                     };
                     unsafe {
                         target.FillRectangle(&sel_rect, sel_brush);
@@ -7814,7 +7822,7 @@ impl EditorState {
 
                 let text_left = if vector_icon.is_some() {
                     // 矢量图标占 16px 宽 + 2px 间距，文字右移避免被图标遮挡
-                    item_left + 18.0
+                    item_left + 18.0 * s
                 } else {
                     item_left
                 };
@@ -7827,7 +7835,7 @@ impl EditorState {
                         left: text_left,
                         top: *current_y,
                         right: item_right,
-                        bottom: *current_y + 20.0,
+                        bottom: *current_y + node_height,
                     };
                     target.DrawText(
                         tree_text_buf,
@@ -7841,13 +7849,13 @@ impl EditorState {
 
                 // 矢量文件图标：在文本前绘制 16x16 矢量图标（命中 .py/.java/.txt）
                 if let Some(kind) = vector_icon {
-                    let icon_size = 16.0_f32;
+                    let icon_size = 16.0_f32 * s;
                     let icon_left = item_left;
-                    let icon_top = *current_y + (20.0 - icon_size) / 2.0;
+                    let icon_top = *current_y + (node_height - icon_size) / 2.0;
                     self.icons.draw(target, kind, icon_left, icon_top, icon_size, icon_size, text_brush);
                 }
 
-                *current_y += 20.0;
+                *current_y += node_height;
 
                 if node.kind == FileKind::Directory && node.is_expanded {
                     self.render_tree_nodes(
@@ -7876,13 +7884,15 @@ impl EditorState {
     }
 
     fn skip_tree_nodes(&self, tree: &FileTree, parent_idx: u32, current_y: &mut f32) {
+        let s = self.dpi_scale;
+        let node_height = 20.0f32 * s;
         let mut child_idx = tree
             .get_node(parent_idx)
             .map(|n| n.first_child)
             .filter(|&c| c != u32::MAX);
         while let Some(idx) = child_idx {
             if let Some(node) = tree.get_node(idx) {
-                *current_y += 20.0;
+                *current_y += node_height;
                 if node.kind == FileKind::Directory && node.is_expanded {
                     self.skip_tree_nodes(tree, idx, current_y);
                 }

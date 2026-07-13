@@ -1557,8 +1557,6 @@ impl EditorState {
                     end_line: self.content.buffer.len_lines(),
                 });
                 self.emit_event(crate::events::EditorEvent::StatusBarChanged);
-                // 接线 LSP：通知服务器文档已打开（按需启动 server），激活补全/悬停/诊断
-                self.lsp_notify_open();
             }
             Err(e) => {
                 let msg = format!("打开文件失败: {}", e);
@@ -1569,10 +1567,9 @@ impl EditorState {
 
         // 文件加载成功后通知 LSP 服务器
         if self.content.file_path.as_ref() == Some(&path) {
-            let text = self
-                .content
-                .buffer
-                .get_text(0, self.content.buffer.len_bytes());
+            let text = self.content.buffer.get_all_text();
+            // 接线 LSP：通知服务器文档已打开（按需启动 server），激活补全/悬停/诊断
+            self.lsp_notify_open(&text);
             self.lsp_open_document(&path, &text);
         }
     }
@@ -1580,7 +1577,7 @@ impl EditorState {
     /// 通知 LSP 服务器文档已打开（按需启动 server）。
     /// 在 load_file 后调用，激活智能补全/悬停/诊断。
     /// 异步执行：克隆所需数据后 spawn tokio task，不阻塞 UI 线程。
-    fn lsp_notify_open(&self) {
+    fn lsp_notify_open(&self, text: &str) {
         // 1. 映射语言到 LSP language_id（无配置则跳过）
         let language_id = match language_to_lsp_id_opt(self.content.language) {
             Some(id) => id.to_string(),
@@ -1597,12 +1594,10 @@ impl EditorState {
             Err(_) => return,
         };
 
-        // 3. 获取全文文本（did_open 需要完整文档内容）
-        let text = self.content.buffer.get_all_text();
-
-        // 4. 克隆 Arc<LspClient> 并 spawn 异步任务
+        // 3. 克隆 Arc<LspClient> 并 spawn 异步任务
         let client = self.lsp_client.clone();
         let lang_id = language_id;
+        let text = text.to_string();
         self.tokio_runtime.spawn(async move {
             // 按需启动 server：如果未就绪且有默认配置，启动它
             if !client.is_server_ready(&lang_id).await {
@@ -2634,13 +2629,14 @@ impl EditorState {
     pub fn scroll_sidebar(&mut self, delta_y: f32) {
         match &self.sidebar_content {
             crate::layout::SidebarContent::FileTree => {
-                let node_height = 20.0;
+                let s = self.dpi_scale;
+                let node_height = 20.0 * s;
                 let estimated_nodes = if let Some(tree) = &self.file_tree {
                     tree.len() as f32
                 } else {
                     0.0
                 };
-                let total_height = estimated_nodes * node_height + 20.0;
+                let total_height = estimated_nodes * node_height + 20.0 * s;
                 let sidebar_region = self.layout.sidebar_region();
                 let visible_height = sidebar_region.height;
                 let max_scroll = (total_height - visible_height).max(0.0);
@@ -3649,14 +3645,25 @@ impl EditorState {
             None => return false,
         };
 
-        let mut current_y = 34.0;
-        let sidebar_width = self.layout.sidebar_width;
+        let s = self.dpi_scale;
+        let header_h = 28.0 * s;
+        let input_offset_y = if self.file_tree_input.is_some() {
+            26.0 * s + 10.0 * s
+        } else {
+            0.0
+        };
+        let sidebar = self.layout.sidebar_region();
+        let rel_x = mouse_x - sidebar.x;
+        let content_y = mouse_y - sidebar.y + self.sidebar_scroll_y
+            - (header_h + 6.0 * s + input_offset_y);
+        let mut current_y = 0.0;
         let result = Self::find_tree_click_target(
             tree,
             u32::MAX,
-            mouse_x,
-            mouse_y,
-            sidebar_width,
+            rel_x,
+            content_y,
+            sidebar.width,
+            s,
             &mut current_y,
         );
 
@@ -3915,18 +3922,22 @@ impl EditorState {
     /// 仅遍历展开目录的子节点。
     fn find_remote_node_at_y(
         nodes: &[crate::ssh::RemoteFileNode],
-        mouse_y: f32,
+        content_y: f32,
         node_height: f32,
         current_y: &mut f32,
     ) -> Option<(String, bool)> {
         for node in nodes {
-            if mouse_y >= *current_y && mouse_y < *current_y + node_height {
+            // 已经越过目标 y，后续节点不可能命中
+            if *current_y > content_y {
+                return None;
+            }
+            if content_y >= *current_y && content_y < *current_y + node_height {
                 return Some((node.path.clone(), node.is_dir));
             }
             *current_y += node_height;
             if node.is_expanded {
                 if let Some(found) =
-                    Self::find_remote_node_at_y(&node.children, mouse_y, node_height, current_y)
+                    Self::find_remote_node_at_y(&node.children, content_y, node_height, current_y)
                 {
                     return Some(found);
                 }
@@ -3989,14 +4000,25 @@ impl EditorState {
             }
         };
 
-        let mut current_y = 34.0;
-        let sidebar_width = self.layout.sidebar_width;
+        let s = self.dpi_scale;
+        let header_h = 28.0 * s;
+        let input_offset_y = if self.file_tree_input.is_some() {
+            26.0 * s + 10.0 * s
+        } else {
+            0.0
+        };
+        let sidebar = self.layout.sidebar_region();
+        let rel_x = mouse_x - sidebar.x;
+        let content_y = mouse_y - sidebar.y + self.sidebar_scroll_y
+            - (header_h + 6.0 * s + input_offset_y);
+        let mut current_y = 0.0;
         let result = Self::find_tree_click_target(
             tree,
             u32::MAX,
-            mouse_x,
-            mouse_y,
-            sidebar_width,
+            rel_x,
+            content_y,
+            sidebar.width,
+            s,
             &mut current_y,
         );
 
@@ -4015,10 +4037,13 @@ impl EditorState {
             }
         };
         // P0-1: 递归遍历可见节点确定悬停目标（按路径标识）
-        let node_height = 20.0_f32;
-        let mut current_y = 10.0 - self.remote_scroll_y;
+        let s = self.dpi_scale;
+        let node_height = 20.0_f32 * s;
+        let sidebar = self.layout.sidebar_region();
+        let content_y = mouse_y - sidebar.y + self.remote_scroll_y - 40.0 * s;
+        let mut current_y = 0.0;
         let new_hover =
-            Self::find_remote_node_at_y(&tree.nodes, mouse_y, node_height, &mut current_y)
+            Self::find_remote_node_at_y(&tree.nodes, content_y, node_height, &mut current_y)
                 .map(|(path, _)| path);
         let changed = self.hover_remote_node != new_hover;
         self.hover_remote_node = new_hover;
@@ -4391,11 +4416,18 @@ impl EditorState {
     pub(crate) fn find_tree_click_target(
         tree: &FileTree,
         parent_idx: u32,
-        mouse_x: f32,
-        mouse_y: f32,
+        rel_x: f32,
+        content_y: f32,
         sidebar_width: f32,
+        scale: f32,
         current_y: &mut f32,
     ) -> Option<(u32, FileKind, FileTreeClickPart)> {
+        let s = scale;
+        let node_height = 20.0 * s;
+        let base_x = 10.0 * s;
+        let right_pad = 10.0 * s;
+        let left_pad = 4.0 * s;
+        let arrow_width = 20.0 * s;
         let mut child_idx = if parent_idx == u32::MAX {
             tree.first_root_node()
         } else {
@@ -4412,32 +4444,32 @@ impl EditorState {
                     None
                 };
 
-                // 节点按 y 递增排列，鼠标在当前节点上方则后续不可能命中
-                if mouse_y < *current_y {
+                // 节点按 y 递增排列，目标在当前节点上方则后续不可能命中
+                if content_y < *current_y {
                     return None;
                 }
 
-                if mouse_y >= *current_y && mouse_y < *current_y + 20.0 {
+                if content_y >= *current_y && content_y < *current_y + node_height {
                     // 计算该节点在渲染时的横向范围，与 render_tree_nodes 保持一致
-                    let base_x = 10.0;
+                    // rel_x / content_y 均相对于侧边栏内容区域（已扣除滚动和输入框偏移）
                     let indent = if node.parent_idx == u32::MAX {
                         0.0
                     } else {
-                        node.depth as f32 * 16.0
+                        node.depth as f32 * 16.0 * s
                     };
                     let item_left = base_x + indent;
-                    let item_right = sidebar_width - 10.0;
+                    let item_right = sidebar_width - right_pad;
 
                     // x 超出节点有效区域视为未命中（避免点击滚动条或空白处误触发）
-                    if mouse_x < item_left - 4.0 || mouse_x > item_right {
+                    if rel_x < item_left - left_pad || rel_x > item_right {
                         return None;
                     }
 
                     // 判断点击的是目录展开箭头还是名称/图标区域
                     let part = if node.kind == FileKind::Directory {
                         // 箭头区域近似为节点左侧约 20px（"▶ " / "▼ "）
-                        let arrow_right = item_left + 20.0;
-                        if mouse_x < arrow_right {
+                        let arrow_right = item_left + arrow_width;
+                        if rel_x < arrow_right {
                             FileTreeClickPart::Arrow
                         } else {
                             FileTreeClickPart::Label
@@ -4448,20 +4480,26 @@ impl EditorState {
 
                     return Some((idx, node.kind, part));
                 }
-                *current_y += 20.0;
+                *current_y += node_height;
 
                 // 如果目录展开，递归查找子节点
                 if node.kind == FileKind::Directory && node.is_expanded {
                     if let Some(result) = Self::find_tree_click_target(
                         tree,
                         idx,
-                        mouse_x,
-                        mouse_y,
+                        rel_x,
+                        content_y,
                         sidebar_width,
+                        scale,
                         current_y,
                     ) {
                         return Some(result);
                     }
+                }
+
+                // 累计 y 已超过目标 y，后续节点不可能命中
+                if *current_y > content_y {
+                    return None;
                 }
 
                 child_idx = next_sibling;
