@@ -321,12 +321,7 @@ impl LayoutManager {
         let editor = self.editor_region();
         let y = editor.bottom() - self.bottom_panel_height;
         if !self.bottom_panel_visible {
-            return Region::new(
-                editor.x,
-                editor.bottom(),
-                editor.width,
-                0.0,
-            );
+            return Region::new(editor.x, editor.bottom(), editor.width, 0.0);
         }
         Region::new(editor.x, y, editor.width, self.bottom_panel_height)
     }
@@ -646,7 +641,10 @@ mod tests {
         let content = layout.editor_content_region(true);
 
         // 编辑器内容区 + 标签栏 + 底部面板 = 编辑器区域
-        assert_eq!(content.height + TAB_BAR_HEIGHT + bottom.height, editor.height);
+        assert_eq!(
+            content.height + TAB_BAR_HEIGHT + bottom.height,
+            editor.height
+        );
         assert_eq!(content.x, editor.x);
         assert_eq!(content.width, editor.width);
         assert_eq!(bottom.y, content.y + content.height);

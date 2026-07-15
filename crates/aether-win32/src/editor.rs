@@ -31,7 +31,9 @@ use crate::dialogs::Dialogs;
 use crate::focus_manager::FocusManager;
 use crate::git::GitIntegration;
 use crate::input::{KeyMap, PressTarget};
-use crate::layout::{ActivityBarView, LayoutManager, SidebarContent, SIDEBAR_RESIZE_GRAB, TAB_BAR_HEIGHT};
+use crate::layout::{
+    ActivityBarView, LayoutManager, SidebarContent, SIDEBAR_RESIZE_GRAB, TAB_BAR_HEIGHT,
+};
 use crate::menu_bar::MenuBar;
 use crate::ssh::{
     CloneRepoDialog, RemoteFileTree, RemoteSession, SshConnectionDialog, SshManagerPanel,
@@ -601,9 +603,7 @@ impl EditorState {
 
     /// 当前活动文件标签页的文件路径
     pub fn active_file_path(&self) -> Option<&std::path::PathBuf> {
-        self.tabs
-            .get(self.active_tab)
-            .and_then(|t| t.file_path())
+        self.tabs.get(self.active_tab).and_then(|t| t.file_path())
     }
 
     /// 查找设置 tab 的索引
@@ -684,7 +684,8 @@ impl EditorState {
             // 最后一个标签页：保存内容并清空 tabs（渲染层根据 tabs.is_empty() 显示欢迎页/空占位页）
             // 文件 tab 才需要保存 last_closed_tab；设置/欢迎等不保存
             if self.active_tab_is_file() {
-                self.last_closed_tab = Some(std::mem::replace(&mut self.content, TabContent::new()));
+                self.last_closed_tab =
+                    Some(std::mem::replace(&mut self.content, TabContent::new()));
             }
             self.tabs.clear();
             self.active_tab = 0;
@@ -748,11 +749,7 @@ impl EditorState {
             return self.close_current_tab_checked();
         }
         // 非活动标签页：检查 is_dirty（与 handle_tab_bar_click 中关闭按钮逻辑一致）
-        let tab_dirty = self
-            .tabs
-            .get(index)
-            .map(|t| t.is_dirty())
-            .unwrap_or(false);
+        let tab_dirty = self.tabs.get(index).map(|t| t.is_dirty()).unwrap_or(false);
         if tab_dirty {
             let tab_name = self
                 .tabs
@@ -824,7 +821,8 @@ impl EditorState {
         if active_in_closed {
             // 活动标签页在被关闭的右侧：保存 self.content 中的最新内容（文件 tab 才需要）
             if self.active_tab_is_file() {
-                self.last_closed_tab = Some(std::mem::replace(&mut self.content, TabContent::new()));
+                self.last_closed_tab =
+                    Some(std::mem::replace(&mut self.content, TabContent::new()));
             }
         } else {
             // 活动标签页不在右侧：保存最后一个被关闭标签的内容
@@ -3974,12 +3972,13 @@ impl EditorState {
                 match session.read_remote_file(&remote_path) {
                     Ok(content) => {
                         let text = String::from_utf8_lossy(&content).to_string();
-                        let tab = crate::tabs::Tab::File(crate::tabs::TabContent::with_loaded_buffer(
-                            Some(PathBuf::from(format!("remote:{}", remote_path))),
-                            PieceTable::from_string(text),
-                            Language::PlainText,
-                            false,
-                        ));
+                        let tab =
+                            crate::tabs::Tab::File(crate::tabs::TabContent::with_loaded_buffer(
+                                Some(PathBuf::from(format!("remote:{}", remote_path))),
+                                PieceTable::from_string(text),
+                                Language::PlainText,
+                                false,
+                            ));
                         self.open_in_new_tab(tab);
                         self.status_message = format!("已打开远程文件: {}", remote_path);
                     }
@@ -6373,9 +6372,11 @@ impl EditorState {
             crate::ai_context::AiContextAttachment::CurrentFile,
             crate::ai_context::AiContextAttachment::Diagnostics,
         ]);
-        let _ = self
-            .ai_panel
-            .send_message_with_prepared_context(&settings, context, crate::ai_prompt::AiMode::Edit);
+        let _ = self.ai_panel.send_message_with_prepared_context(
+            &settings,
+            context,
+            crate::ai_prompt::AiMode::Edit,
+        );
     }
 
     /// 自动应用 AI 面板中待确认的编辑到工作区
@@ -6618,9 +6619,7 @@ impl EditorState {
                                 .map(|p| p.to_string_lossy().to_string())
                                 .unwrap_or_else(|| format!("未命名-{}", i + 1));
                             let lang = language_str(content.language);
-                            let text = content
-                                .buffer
-                                .get_text(0, content.buffer.len_bytes());
+                            let text = content.buffer.get_text(0, content.buffer.len_bytes());
                             (path, lang, text)
                         } else {
                             continue;
@@ -6884,9 +6883,8 @@ impl EditorState {
                 }
                 // 从磁盘删除文件
                 if full_path.exists() {
-                    std::fs::remove_file(&full_path).map_err(|e| {
-                        format!("删除文件 {} 失败: {}", full_path.display(), e)
-                    })?;
+                    std::fs::remove_file(&full_path)
+                        .map_err(|e| format!("删除文件 {} 失败: {}", full_path.display(), e))?;
                 }
                 self.status_message = format!("已删除文件: {}", full_path.display());
                 applied.push(full_path);

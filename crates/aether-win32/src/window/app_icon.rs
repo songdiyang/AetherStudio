@@ -16,13 +16,10 @@ use std::path::PathBuf;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::HINSTANCE;
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
-use windows::Win32::UI::WindowsAndMessaging::{
-    LoadImageW, HICON, IMAGE_ICON, LR_LOADFROMFILE,
-};
+use windows::Win32::UI::WindowsAndMessaging::{LoadImageW, HICON, IMAGE_ICON, LR_LOADFROMFILE};
 
 /// 嵌入的多尺寸 ICO 数据
-const APP_ICO_BYTES: &[u8] =
-    include_bytes!("../../resources/app_icons/aether.ico");
+const APP_ICO_BYTES: &[u8] = include_bytes!("../../resources/app_icons/aether.ico");
 
 /// ICO 中可用的位图尺寸（按升序排列，用于 DPI 向上取最近匹配）
 const ICO_AVAILABLE_SIZES: &[u32] = &[16, 32, 48, 64, 128, 256];

@@ -8,8 +8,8 @@ use windows::Win32::Graphics::DirectWrite::IDWriteTextLayout;
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL,
     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_HIT_TEST_METRICS,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING,
 };
 
 /// 预存画笔槽位数量（覆盖最常用的主题颜色）
@@ -343,7 +343,13 @@ impl TextFormatCache {
     /// 测量文本中指定 UTF-16 位置处的 x 坐标（逻辑像素）
     ///
     /// 使用 DirectWrite TextLayout::HitTestTextPosition 获取渲染后光标应处的精确位置。
-    pub fn text_position_x(&self, text: &str, position: usize, font_size: f32, font_weight: u32) -> Option<f32> {
+    pub fn text_position_x(
+        &self,
+        text: &str,
+        position: usize,
+        font_size: f32,
+        font_weight: u32,
+    ) -> Option<f32> {
         unsafe {
             let format = self
                 .create_format_internal(

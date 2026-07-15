@@ -145,8 +145,8 @@ pub(crate) unsafe fn on_r_button_down(
         0.0
     };
     let sidebar_rel_x = mouse_x - sidebar_region.x;
-    let content_y = mouse_y - sidebar_region.y + st.sidebar_scroll_y
-        - (header_h + 6.0 * s + input_offset_y);
+    let content_y =
+        mouse_y - sidebar_region.y + st.sidebar_scroll_y - (header_h + 6.0 * s + input_offset_y);
     let sidebar_width = st.layout.sidebar_width;
 
     // 命中文件/文件夹节点 → 选中该节点但不弹出空白区域菜单

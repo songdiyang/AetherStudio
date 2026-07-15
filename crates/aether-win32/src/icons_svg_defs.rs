@@ -87,7 +87,10 @@ const UI_COPY: SvgDef = SvgDef {
     viewbox: (0.0, 0.0, 24.0, 24.0),
     shapes: &[
         SvgShape::Rect(8.0, 8.0, 14.0, 14.0, None, Some(2.0)),
-        SvgShape::Path("M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2", None),
+        SvgShape::Path(
+            "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2",
+            None,
+        ),
     ],
 };
 
@@ -110,7 +113,10 @@ const UI_PASTE: SvgDef = SvgDef {
         SvgShape::Path("M11 14h10", None),
         SvgShape::Path("M16 4h2a2 2 0 0 1 2 2v1.344", None),
         SvgShape::Path("m17 18 4-4-4-4", None),
-        SvgShape::Path("M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 1.793-1.113", None),
+        SvgShape::Path(
+            "M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 1.793-1.113",
+            None,
+        ),
         SvgShape::Rect(8.0, 2.0, 8.0, 4.0, None, Some(1.0)),
     ],
 };
@@ -155,7 +161,10 @@ const UI_UNDO: SvgDef = SvgDef {
     viewbox: (0.0, 0.0, 24.0, 24.0),
     shapes: &[
         SvgShape::Path("M9 14 4 9l5-5", None),
-        SvgShape::Path("M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11", None),
+        SvgShape::Path(
+            "M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11",
+            None,
+        ),
     ],
 };
 
@@ -164,7 +173,10 @@ const UI_REDO: SvgDef = SvgDef {
     viewbox: (0.0, 0.0, 24.0, 24.0),
     shapes: &[
         SvgShape::Path("m15 14 5-5-5-5", None),
-        SvgShape::Path("M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13", None),
+        SvgShape::Path(
+            "M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13",
+            None,
+        ),
     ],
 };
 
@@ -210,9 +222,10 @@ const UI_HASH: SvgDef = SvgDef {
 /// Lucide "play" - 播放
 const UI_PLAY: SvgDef = SvgDef {
     viewbox: (0.0, 0.0, 24.0, 24.0),
-    shapes: &[
-        SvgShape::Path("M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z", None),
-    ],
+    shapes: &[SvgShape::Path(
+        "M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z",
+        None,
+    )],
 };
 
 /// Lucide "bug" - 调试
@@ -220,7 +233,10 @@ const UI_BUG: SvgDef = SvgDef {
     viewbox: (0.0, 0.0, 24.0, 24.0),
     shapes: &[
         SvgShape::Path("M12 20v-9", None),
-        SvgShape::Path("M14 7a4 4 0 0 1 4 4v3a6 6 0 0 1-12 0v-3a4 4 0 0 1 4-4z", None),
+        SvgShape::Path(
+            "M14 7a4 4 0 0 1 4 4v3a6 6 0 0 1-12 0v-3a4 4 0 0 1 4-4z",
+            None,
+        ),
         SvgShape::Path("M14.12 3.88 16 2", None),
         SvgShape::Path("M21 21a4 4 0 0 0-3.81-4", None),
         SvgShape::Path("M21 5a4 4 0 0 1-3.55 3.97", None),
@@ -266,7 +282,10 @@ const UI_ERROR: SvgDef = SvgDef {
 const UI_WARNING: SvgDef = SvgDef {
     viewbox: (0.0, 0.0, 24.0, 24.0),
     shapes: &[
-        SvgShape::Path("m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3", None),
+        SvgShape::Path(
+            "m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3",
+            None,
+        ),
         SvgShape::Path("M12 9v4", None),
         SvgShape::Path("M12 17h.01", None),
     ],
@@ -349,17 +368,13 @@ const UI_PLUS: SvgDef = SvgDef {
 /// Lucide "chevron-left" - 左折角
 const UI_CHEVRON_LEFT: SvgDef = SvgDef {
     viewbox: (0.0, 0.0, 24.0, 24.0),
-    shapes: &[
-        SvgShape::Path("m15 18-6-6 6-6", None),
-    ],
+    shapes: &[SvgShape::Path("m15 18-6-6 6-6", None)],
 };
 
 /// Lucide "chevron-right" - 右折角
 const UI_CHEVRON_RIGHT: SvgDef = SvgDef {
     viewbox: (0.0, 0.0, 24.0, 24.0),
-    shapes: &[
-        SvgShape::Path("m9 18 6-6-6-6", None),
-    ],
+    shapes: &[SvgShape::Path("m9 18 6-6-6-6", None)],
 };
 
 /// Lucide "bot" - 机器人（AI 助手）
@@ -381,7 +396,10 @@ const UI_SSH: SvgDef = SvgDef {
     shapes: &[
         SvgShape::Path("M12 22v-5", None),
         SvgShape::Path("M15 8V2", None),
-        SvgShape::Path("M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z", None),
+        SvgShape::Path(
+            "M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z",
+            None,
+        ),
         SvgShape::Path("M9 8V2", None),
     ],
 };

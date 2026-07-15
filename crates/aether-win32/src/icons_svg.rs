@@ -184,8 +184,16 @@ where
                 let c2y = p.read_number().ok_or("C 缺 c2y")?;
                 let x = p.read_number().ok_or("C 缺 x")?;
                 let y = p.read_number().ok_or("C 缺 y")?;
-                let p1 = if rel { (cx + c1x, cy + c1y) } else { (c1x, c1y) };
-                let p2 = if rel { (cx + c2x, cy + c2y) } else { (c2x, c2y) };
+                let p1 = if rel {
+                    (cx + c1x, cy + c1y)
+                } else {
+                    (c1x, c1y)
+                };
+                let p2 = if rel {
+                    (cx + c2x, cy + c2y)
+                } else {
+                    (c2x, c2y)
+                };
                 let pp = if rel { (cx + x, cy + y) } else { (x, y) };
                 cb('C', &[p1.0, p1.1, p2.0, p2.1, pp.0, pp.1])?;
                 last_cubic_cx = p2.0;
@@ -205,7 +213,11 @@ where
                 } else {
                     (cx, cy)
                 };
-                let p2 = if rel { (cx + c2x, cy + c2y) } else { (c2x, c2y) };
+                let p2 = if rel {
+                    (cx + c2x, cy + c2y)
+                } else {
+                    (c2x, c2y)
+                };
                 let pp = if rel { (cx + x, cy + y) } else { (x, y) };
                 cb('C', &[c1x, c1y, p2.0, p2.1, pp.0, pp.1])?;
                 last_cubic_cx = p2.0;
@@ -225,7 +237,11 @@ where
                 let cpy = p.read_number().ok_or("Q 缺 cpy")?;
                 let x = p.read_number().ok_or("Q 缺 x")?;
                 let y = p.read_number().ok_or("Q 缺 y")?;
-                let cp = if rel { (cx + cpx, cy + cpy) } else { (cpx, cpy) };
+                let cp = if rel {
+                    (cx + cpx, cy + cpy)
+                } else {
+                    (cpx, cpy)
+                };
                 let pp = if rel { (cx + x, cy + y) } else { (x, y) };
                 let cp1x = cx + 2.0 / 3.0 * (cp.0 - cx);
                 let cp1y = cy + 2.0 / 3.0 * (cp.1 - cy);

@@ -697,8 +697,7 @@ mod tests {
     #[test]
     fn test_highlight_line_java() {
         let mut highlighter = TreeSitterHighlighter::new();
-        let spans =
-            highlighter.highlight_line("class Foo { void bar() { return; } }", "java");
+        let spans = highlighter.highlight_line("class Foo { void bar() { return; } }", "java");
         assert!(!spans.is_empty(), "Java 简单代码应产生高亮 span");
     }
 
