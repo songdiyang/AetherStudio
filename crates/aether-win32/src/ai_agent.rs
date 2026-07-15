@@ -20,6 +20,10 @@ impl AiEdit {
     pub fn is_create_new(&self) -> bool {
         self.search.trim().is_empty()
     }
+
+    pub fn is_delete(&self) -> bool {
+        self.replace.trim().is_empty() && !self.search.trim().is_empty()
+    }
 }
 
 /// 从 AI 回复中解析编辑块

@@ -24,6 +24,8 @@ pub mod editor;
 pub mod git;
 pub mod hit_test;
 pub mod icons;
+pub(crate) mod icons_svg;
+pub(crate) mod icons_svg_defs;
 pub mod ime;
 pub mod inline_completion;
 pub mod input;

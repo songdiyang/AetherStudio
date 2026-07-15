@@ -13,6 +13,8 @@ pub fn get_language(language_id: &str) -> Option<Language> {
         "python" | "py" | "pyw" | "pyi" => Some(tree_sitter_python::language()),
         "c" | "h" => Some(tree_sitter_c::language()),
         "cpp" | "hpp" | "cc" | "cxx" | "c++" => Some(tree_sitter_cpp::language()),
+        "go" => Some(tree_sitter_go::language()),
+        "java" => Some(tree_sitter_java::language()),
         "json" => Some(tree_sitter_json::language()),
         "toml" => Some(tree_sitter_toml::language()),
         _ => None,
@@ -73,6 +75,16 @@ mod tests {
     #[test]
     fn test_get_language_json() {
         assert!(get_language("json").is_some());
+    }
+
+    #[test]
+    fn test_get_language_go() {
+        assert!(get_language("go").is_some());
+    }
+
+    #[test]
+    fn test_get_language_java() {
+        assert!(get_language("java").is_some());
     }
 
     #[test]

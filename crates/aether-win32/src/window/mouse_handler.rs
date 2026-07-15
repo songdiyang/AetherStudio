@@ -77,7 +77,9 @@ pub(crate) unsafe fn on_l_button_up(
                 let mouse_y = raw_y / dpi_scale;
                 let show_tab_bar = st.show_tab_bar();
                 let tab_region = st.layout.tab_bar_region(show_tab_bar);
-                if let Some(tab_idx) = st.tab_body_hit_test(mouse_x, mouse_y, tab_region.x) {
+                if let Some(tab_idx) =
+                    st.tab_body_hit_test(mouse_x, mouse_y, tab_region.x, tab_region.y)
+                {
                     st.switch_tab(tab_idx);
                 }
                 true

@@ -26,15 +26,15 @@ use crate::activity_bar::ActivityBar;
 use crate::ai_agent::AiEdit;
 use crate::ai_context::{truncate_middle, wrap_code_block, AiContextAttachment};
 use crate::ai_panel::AiPanel;
-use crate::ai_prompt::AiMode;
 use crate::command_palette::CommandPalette;
 use crate::dialogs::Dialogs;
 use crate::focus_manager::FocusManager;
 use crate::git::GitIntegration;
 use crate::input::{KeyMap, PressTarget};
-use crate::layout::{ActivityBarView, LayoutManager, SidebarContent, TAB_BAR_HEIGHT};
+use crate::layout::{
+    ActivityBarView, LayoutManager, SidebarContent, SIDEBAR_RESIZE_GRAB, TAB_BAR_HEIGHT,
+};
 use crate::menu_bar::MenuBar;
-use crate::settings::SettingsPanel;
 use crate::ssh::{
     CloneRepoDialog, RemoteFileTree, RemoteSession, SshConnectionDialog, SshManagerPanel,
 };
@@ -248,8 +248,6 @@ pub struct EditorState {
     pub is_selecting: bool,
     /// 行号 UTF-16 预缓存（避免每帧 format! + encode_utf16 分配）
     pub(crate) cached_line_numbers: Vec<Vec<u16>>,
-    /// 文件树渲染用的可复用 UTF-16 缓冲区（避免 render_tree_nodes 中每次分配 Vec<u16>）
-    pub(crate) tree_text_utf16_buf: Vec<u16>,
     /// 标签页系统（后台存储，切换时同步）
     pub(crate) tabs: Vec<Tab>,
     pub(crate) active_tab: usize,
@@ -356,6 +354,8 @@ pub struct EditorState {
     pub is_main_window: bool,
     /// 标题栏按钮悬停状态 (0=最小化, 1=最大化, 2=关闭)
     pub titlebar_hover_button: Option<usize>,
+    /// 侧边栏宽度调整手柄的悬停状态
+    pub hover_sidebar_resize: bool,
     /// 文件树中选中的节点索引
     pub selected_file_node: Option<u32>,
     /// 文件树中鼠标悬停的节点索引
@@ -384,8 +384,8 @@ pub struct EditorState {
     pub app_settings: aether_shared::settings::AppSettings,
     /// 设置面板
     pub settings_panel: crate::settings::SettingsPanel,
-    /// 打开标签页面板
-    pub open_tabs_panel: crate::open_tabs::OpenTabsPanel,
+    /// 标签栏面板
+    pub tabs_panel: crate::open_tabs::TabsPanel,
     /// Git 面板
     pub git_panel: crate::git::GitIntegration,
     /// 脏矩形追踪器（用于局部重绘优化）
@@ -475,6 +475,8 @@ pub struct EditorState {
     pub tooltip_state: crate::tooltip::TooltipState,
     /// Task 13.3: 最后关闭的标签内容（用于 Ctrl+Shift+T 恢复）
     pub last_closed_tab: Option<TabContent>,
+    /// Logo 位图（aether-512.png），懒加载，用于欢迎页和空占位页
+    pub(crate) logo_bitmap: Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap>,
 }
 
 /// Task 8.4: 标签重排核心逻辑（自由函数，可独立测试）。
@@ -525,7 +527,9 @@ pub(crate) fn remove_tab_saving_content(
         return false;
     }
     let removed = tabs.remove(index);
-    *last_closed = Some(removed.content);
+    if let crate::tabs::Tab::File(content) = removed {
+        *last_closed = Some(content);
+    }
     true
 }
 
@@ -540,7 +544,7 @@ pub(crate) fn reopen_last_closed_tab_logic(
     let Some(content) = last_closed.take() else {
         return false;
     };
-    tabs.push(Tab { content });
+    tabs.push(crate::tabs::Tab::File(content));
     *active = tabs.len() - 1;
     true
 }
@@ -551,8 +555,8 @@ impl EditorState {
     /// 将 `self.content` 与 `self.tabs[index].content` 原子交换，
     /// 消除手动字段同步，保证状态归属单一。
     fn swap_tab_content(&mut self, index: usize) {
-        if index < self.tabs.len() {
-            std::mem::swap(&mut self.content, &mut self.tabs[index].content);
+        if let Some(crate::tabs::Tab::File(content)) = self.tabs.get_mut(index) {
+            std::mem::swap(&mut self.content, content);
         }
     }
 
@@ -566,9 +570,60 @@ impl EditorState {
         self.tabs.len()
     }
 
-    /// 是否显示标签栏：多标签，或当前活动标签页已关联文件时均显示
+    /// 是否显示标签栏：只要有标签页就显示（仅欢迎页例外）。
+    /// 修复：原先单个未关联文件的 File tab 会导致标签栏消失，用户误以为"全关了"，
+    /// 但 self.content 仍持有内容可编辑。现在保证空 File tab 也显示标签栏。
     pub fn show_tab_bar(&self) -> bool {
-        self.tabs.len() > 1 || self.content.file_path.is_some()
+        !self.tabs.is_empty() && !self.active_tab_is_welcome()
+    }
+
+    /// 是否显示欢迎页
+    // pub fn show_welcome(&self) -> bool {
+    //     self.tabs.is_empty() || self.active_tab_is_welcome()
+    // }
+
+    /// 是否显示空占位页（tabs 为空时的默认状态）
+    pub fn show_empty_placeholder(&self) -> bool {
+        self.tabs.is_empty()
+    }
+
+    /// 当前活动标签页是否是文件 tab
+    pub fn active_tab_is_file(&self) -> bool {
+        self.tabs
+            .get(self.active_tab)
+            .map(|t| t.is_file())
+            .unwrap_or(false)
+    }
+
+    /// 当前活动标签页是否是设置 tab
+    pub fn active_tab_is_settings(&self) -> bool {
+        self.tabs
+            .get(self.active_tab)
+            .map(|t| t.is_settings())
+            .unwrap_or(false)
+    }
+
+    /// 当前活动标签页是否是欢迎 tab
+    pub fn active_tab_is_welcome(&self) -> bool {
+        self.tabs
+            .get(self.active_tab)
+            .map(|t| t.is_welcome())
+            .unwrap_or(false)
+    }
+
+    /// 当前活动文件标签页的文件路径
+    pub fn active_file_path(&self) -> Option<&std::path::PathBuf> {
+        self.tabs.get(self.active_tab).and_then(|t| t.file_path())
+    }
+
+    /// 查找设置 tab 的索引
+    pub fn find_settings_tab(&self) -> Option<usize> {
+        self.tabs.iter().position(|t| t.is_settings())
+    }
+
+    /// 查找欢迎 tab 的索引
+    pub fn find_welcome_tab(&self) -> Option<usize> {
+        self.tabs.iter().position(|t| t.is_welcome())
     }
 
     /// 切换活动视图到指定视图（非 AI 助手）。
@@ -578,20 +633,22 @@ impl EditorState {
     pub fn switch_activity_view(&mut self, view: ActivityBarView) {
         self.activity_bar.switch_to_view(view);
         self.activity_view = view;
-        self.layout.sidebar_visible = true;
+        // 切换活动栏视图时打开侧边栏：恢复上次保存的宽度
+        self.layout.show_sidebar();
         self.sidebar_content = SidebarContent::from_view(view);
     }
 
     /// 切换到指定标签页
     pub fn switch_tab(&mut self, index: usize) {
         if index < self.tabs.len() && index != self.active_tab {
-            // REQ-P1-09: swap old tab's content out, then swap new tab's content in
+            // REQ-P1-09: 仅文件 tab 需要 swap content；设置/欢迎等通用 tab 无 content
             self.swap_tab_content(self.active_tab);
             self.active_tab = index;
             self.swap_tab_content(self.active_tab);
             self.is_selecting = false;
             self.sync_file_tree_selection();
-            self.status_message = format!("切换到: {}", self.content.file_name());
+            let title = self.tabs[self.active_tab].title();
+            self.status_message = format!("切换到: {}", title);
             self.emit_event(crate::events::EditorEvent::TabChanged);
             // 显式标记局部脏区域，避免标签切换触发全窗口重绘导致卡顿
             let editor_region = self.layout.editor_region();
@@ -634,38 +691,41 @@ impl EditorState {
     /// 关闭当前标签页，返回是否还有标签页
     pub fn close_current_tab(&mut self) -> bool {
         if self.tabs.len() <= 1 {
-            // 最后一个标签页，重置为空文件
-            // 保存 self.content 中的最新内容（而非 tabs[0].content 中的旧内容）
-            self.last_closed_tab = Some(std::mem::replace(&mut self.content, TabContent::new()));
-            self.tabs[0] = Tab::new();
+            // 最后一个标签页：保存内容并清空 tabs（渲染层根据 tabs.is_empty() 显示欢迎页/空占位页）
+            // 文件 tab 才需要保存 last_closed_tab；设置/欢迎等不保存
+            if self.active_tab_is_file() {
+                self.last_closed_tab =
+                    Some(std::mem::replace(&mut self.content, TabContent::new()));
+            }
+            self.tabs.clear();
             self.active_tab = 0;
-            // 将新空标签页内容交换到 self.content
-            self.swap_tab_content(self.active_tab);
             self.is_selecting = false;
             self.status_message = "已关闭".to_string();
             return true;
         }
-        // 保存 self.content 中的最新内容到 last_closed_tab（而非 removed.content 旧内容）
-        self.last_closed_tab = Some(std::mem::replace(&mut self.content, TabContent::new()));
-        // 从 tabs 中移除活动标签页（其 content 是旧内容，直接丢弃）
+        // 保存 self.content 中的最新内容到 last_closed_tab（文件 tab 才需要）
+        if self.active_tab_is_file() {
+            self.last_closed_tab = Some(std::mem::replace(&mut self.content, TabContent::new()));
+        }
+        // 从 tabs 中移除活动标签页
         let _removed = self.tabs.remove(self.active_tab);
         if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len() - 1;
         }
         // 将新活动标签页的内容交换到 self.content
-        // swap 后 tabs[active_tab].content 持有空 TabContent（安全，不会被误匹配路径）
+        // swap 后文件 tabs[active_tab].content 持有空 TabContent（安全，不会被误匹配路径）
         self.swap_tab_content(self.active_tab);
         self.is_selecting = false;
-        self.status_message = format!("已关闭，剩余 {} 个文件", self.tabs.len());
+        self.status_message = format!("已关闭，剩余 {} 个标签页", self.tabs.len());
         !self.tabs.is_empty()
     }
 
     /// P2-8: 带保存确认的关闭标签页。
     /// 返回值：true 表示已关闭（用户确认或无需保存），false 表示用户取消。
     pub fn close_current_tab_checked(&mut self) -> bool {
-        // self 上的 is_dirty / buffer / file_path 即为当前活动标签页的实时状态
-        // （编辑操作直接作用于 self，仅在切换标签页时通过 sync_to_tab/sync_from_tab 交换）
-        if self.content.is_dirty {
+        // self 上的 is_dirty / buffer / file_path 即为当前文件活动标签页的实时状态
+        // （编辑操作直接作用于 self，仅在切换标签页时通过 swap 交换）
+        if self.active_tab_is_file() && self.content.is_dirty {
             let file_name = self
                 .content
                 .file_path
@@ -699,16 +759,12 @@ impl EditorState {
             return self.close_current_tab_checked();
         }
         // 非活动标签页：检查 is_dirty（与 handle_tab_bar_click 中关闭按钮逻辑一致）
-        let tab_dirty = self
-            .tabs
-            .get(index)
-            .map(|t| t.content.is_dirty)
-            .unwrap_or(false);
+        let tab_dirty = self.tabs.get(index).map(|t| t.is_dirty()).unwrap_or(false);
         if tab_dirty {
             let tab_name = self
                 .tabs
                 .get(index)
-                .and_then(|t| t.content.file_path.as_ref())
+                .and_then(|t| t.file_path())
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "未命名".to_string());
@@ -723,7 +779,7 @@ impl EditorState {
         if index < self.active_tab {
             self.active_tab -= 1;
         }
-        self.status_message = format!("已关闭，剩余 {} 个文件", self.tabs.len());
+        self.status_message = format!("已关闭，剩余 {} 个标签页", self.tabs.len());
         true
     }
 
@@ -738,26 +794,22 @@ impl EditorState {
         if self.tabs.len() == 1 {
             return true;
         }
-        // 关闭其他标签前：若活动标签页是 dirty 的非保留标签，语义上直接丢弃
-        // （与右键菜单"关闭其他"在 VS Code 中的行为一致：不逐个弹保存对话框）
-        let was_active = self.active_tab == keep_idx;
-        // 取出保留标签的最新内容：活动标签在 self.content，非活动在 tabs[keep_idx].content
-        let kept_content = if was_active {
-            std::mem::replace(&mut self.content, TabContent::new())
-        } else {
-            std::mem::replace(&mut self.tabs[keep_idx].content, TabContent::new())
-        };
-        // 移除保留标签（content 已被替换为空）
-        let _kept_tab = self.tabs.remove(keep_idx);
-        // Task 13.3: 保存最后一个被关闭的标签内容以支持 Ctrl+Shift+T 恢复
+        // 取出保留标签，剩余标签中最后一个是 last_closed 候选
+        let kept = self.tabs.remove(keep_idx);
         let last_closed = self.tabs.pop();
         self.tabs.clear();
-        self.tabs.push(Tab::new());
+        if let Some(crate::tabs::Tab::File(content)) = last_closed {
+            self.last_closed_tab = Some(content);
+        }
+        self.tabs.push(kept);
         self.active_tab = 0;
-        // 将保留标签内容加载到 self.content（tabs[0].content 保持空作为活动标签占位）
-        self.content = kept_content;
-        if let Some(t) = last_closed {
-            self.last_closed_tab = Some(t.content);
+        // 让 self.content 反映保留标签
+        if self.tabs[0].is_file() {
+            if let crate::tabs::Tab::File(content) = &mut self.tabs[0] {
+                self.content = std::mem::replace(content, TabContent::new());
+            }
+        } else {
+            self.content = TabContent::new();
         }
         self.is_selecting = false;
         self.status_message = "已关闭其他标签页".to_string();
@@ -777,14 +829,16 @@ impl EditorState {
         }
         let active_in_closed = self.active_tab > idx;
         if active_in_closed {
-            // 活动标签页在被关闭的右侧：保存 self.content 中的最新内容
-            // （而非 tabs.pop().content 旧内容）以支持 Ctrl+Shift+T 恢复
-            self.last_closed_tab = Some(std::mem::replace(&mut self.content, TabContent::new()));
+            // 活动标签页在被关闭的右侧：保存 self.content 中的最新内容（文件 tab 才需要）
+            if self.active_tab_is_file() {
+                self.last_closed_tab =
+                    Some(std::mem::replace(&mut self.content, TabContent::new()));
+            }
         } else {
             // 活动标签页不在右侧：保存最后一个被关闭标签的内容
             let last_closed = self.tabs.pop();
-            if let Some(t) = last_closed {
-                self.last_closed_tab = Some(t.content);
+            if let Some(crate::tabs::Tab::File(content)) = last_closed {
+                self.last_closed_tab = Some(content);
             }
         }
         self.tabs.truncate(idx + 1);
@@ -794,15 +848,16 @@ impl EditorState {
             self.swap_tab_content(self.active_tab);
             self.is_selecting = false;
         }
-        self.status_message = format!("已关闭右侧标签页，剩余 {} 个文件", self.tabs.len());
+        self.status_message = format!("已关闭右侧标签页，剩余 {} 个标签页", self.tabs.len());
         true
     }
 
     /// SubTask 9.4: 关闭所有标签页，并创建一个新的空标签页。
     pub fn close_all_tabs(&mut self) {
-        // 保存 self.content 中的最新内容（而非 tabs[active].content 旧内容）
-        // 以支持 Ctrl+Shift+T 恢复
-        self.last_closed_tab = Some(std::mem::replace(&mut self.content, TabContent::new()));
+        // 保存 self.content 中的最新内容（文件 tab 才需要）以支持 Ctrl+Shift+T 恢复
+        if self.active_tab_is_file() {
+            self.last_closed_tab = Some(std::mem::replace(&mut self.content, TabContent::new()));
+        }
         self.tabs.clear();
         self.tabs.push(Tab::new());
         self.active_tab = 0;
@@ -820,9 +875,9 @@ impl EditorState {
             self.status_message = "没有可恢复的标签".to_string();
             return false;
         };
-        // 将当前 self.content swap 回当前活动标签，再 push 新标签并切换
+        // 将当前 self.content swap 回当前活动标签，再 push 新文件标签并切换
         self.swap_tab_content(self.active_tab);
-        self.tabs.push(Tab { content });
+        self.tabs.push(crate::tabs::Tab::File(content));
         self.active_tab = self.tabs.len() - 1;
         self.swap_tab_content(self.active_tab);
         self.is_selecting = false;
@@ -960,22 +1015,63 @@ impl EditorState {
         self.hover_tab = None;
     }
 
+    /// 命中检测：侧边栏右侧的宽度调整手柄
+    /// 仅当侧边栏可见、活动栏已渲染（侧边栏真实存在宽度）时返回 true
+    pub fn hit_test_sidebar_resize(&self, mouse_x: f32, mouse_y: f32) -> bool {
+        if !self.layout.sidebar_visible {
+            return false;
+        }
+        let sidebar = self.layout.sidebar_region();
+        if mouse_y < sidebar.y || mouse_y >= sidebar.y + sidebar.height {
+            return false;
+        }
+        let handle_x = sidebar.x + sidebar.width;
+        mouse_x >= handle_x - SIDEBAR_RESIZE_GRAB && mouse_x <= handle_x + SIDEBAR_RESIZE_GRAB
+    }
+
+    /// 文件树节点列表的起始 Y 坐标（相对侧边栏顶部），与 render_tree_nodes
+    /// 中的 `y + header_h + 6.0 * s + input_offset_y - sidebar_scroll_y` 严格一致。
+    ///
+    /// 之前三处（render、handle_file_tree_click、update_local_tree_hover、rbutton_down）
+    /// 各自硬编码 34.0，未考虑 dpi_scale、sidebar_scroll_y 和 file_tree_input，
+    /// 导致高 DPI / 滚动 / 内联输入时点击/悬停位置与渲染节点错位，
+    /// 表现为"焦点与选中状态分离"。
+    pub fn file_tree_list_start_y(&self) -> f32 {
+        let s = self.dpi_scale;
+        let header_h = 28.0 * s;
+        let base = header_h + 6.0 * s;
+        let input_offset_y = if self.file_tree_input.is_some() {
+            26.0 * s + 10.0 * s
+        } else {
+            0.0
+        };
+        base + input_offset_y - self.sidebar_scroll_y
+    }
+
     /// Task 8.2: 命中检测——返回鼠标所在标签体的索引。
     ///
     /// 仅当点击落在标签体内（非关闭按钮、非 "+" 按钮）时返回 `Some(idx)`。
     /// 用于拖拽重排：点击标签体时延迟切换，等待拖拽判定。
+    ///
+    /// `mouse_y` 是窗口绝对坐标，`tab_y` 是标签栏顶部 y 偏移（来自 layout）。
+    /// 修复：原先将绝对 mouse_y 与 TAB_BAR_HEIGHT 直接比较，标签栏位于
+    /// y=32..62 时总是返回 None，导致标签拖拽/点击切换失效。
     pub(crate) fn tab_body_hit_test(
         &self,
         mouse_x: f32,
         mouse_y: f32,
         editor_x: f32,
+        tab_y: f32,
     ) -> Option<usize> {
         let tab_bar_height = if self.show_tab_bar() {
             TAB_BAR_HEIGHT
         } else {
             0.0
         };
-        if tab_bar_height == 0.0 || mouse_y < 0.0 || mouse_y > tab_bar_height || mouse_x < editor_x
+        if tab_bar_height == 0.0
+            || mouse_y < tab_y
+            || mouse_y >= tab_y + tab_bar_height
+            || mouse_x < editor_x
         {
             return None;
         }
@@ -1105,7 +1201,6 @@ impl EditorState {
             content: TabContent::new(),
             is_selecting: false,
             cached_line_numbers: Vec::new(),
-            tree_text_utf16_buf: Vec::with_capacity(64),
             tabs: Vec::new(),
             active_tab: 0,
             tab_layouts: Vec::new(),
@@ -1154,8 +1249,8 @@ impl EditorState {
             legacy_lsp_client: None,
             lsp_rx: None,
             lsp_runtime: None,
-            settings_panel: SettingsPanel::from_settings(&app_settings),
-            open_tabs_panel: crate::open_tabs::OpenTabsPanel::new(),
+            settings_panel: crate::settings::SettingsPanel::from_settings(&app_settings),
+            tabs_panel: crate::open_tabs::TabsPanel::new(),
             app_settings,
             ssh_dialog: SshConnectionDialog::new(),
             remote_session: None,
@@ -1170,6 +1265,7 @@ impl EditorState {
             is_maximized: false,
             is_main_window,
             titlebar_hover_button: None,
+            hover_sidebar_resize: false,
             selected_file_node: None,
             hover_file_node: None,
             file_tree_input: None,
@@ -1231,6 +1327,7 @@ impl EditorState {
             hover_y: 0.0,
             tooltip_state: crate::tooltip::TooltipState::default(),
             last_closed_tab: None,
+            logo_bitmap: None,
         };
         // 应用持久化的活动栏/菜单栏顺序（空配置使用默认顺序）
         let activity_order = state.app_settings.ui.activity_bar_order.clone();
@@ -1244,9 +1341,9 @@ impl EditorState {
         if !menu_order.is_empty() {
             state.menu_bar.apply_order(&menu_order);
         }
-        // 创建第一个标签页并同步
-        state.tabs.push(Tab::new());
-        state.swap_tab_content(state.active_tab);
+        // 启动时 tabs 为空，由渲染层根据 show_welcome()/show_empty_placeholder() 显示欢迎页
+        // 不再创建 Tab::Welcome 作为显式标签页，避免标签栏出现"欢迎"tab
+        state.active_tab = 0;
 
         // P0.2c: 主窗口启动时自动恢复上次打开的工作区。
         // 仅在路径仍然存在时打开,避免引用已删除/移动的目录。
@@ -1350,7 +1447,7 @@ impl EditorState {
         self.content.cursor_col += comp.text.len();
         self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.content.is_dirty = true;
+            tab.mark_dirty();
         }
         self.content.buffer_version += 1;
         self.emit_edit_events();
@@ -1541,14 +1638,12 @@ impl EditorState {
                     // REQ-P1-09: self.content 即活动标签页状态，无需再手动同步到 Tab
                     self.status_message = format!("已打开: {}", path.display());
                 } else {
-                    let tab = Tab {
-                        content: TabContent::with_loaded_buffer(
-                            Some(path.clone()),
-                            buffer,
-                            lang,
-                            false,
-                        ),
-                    };
+                    let tab = Tab::File(TabContent::with_loaded_buffer(
+                        Some(path.clone()),
+                        buffer,
+                        lang,
+                        false,
+                    ));
                     self.open_in_new_tab(tab);
                     self.status_message = format!("已打开: {}", path.display());
                 }
@@ -1567,19 +1662,19 @@ impl EditorState {
             }
         }
 
-        // 文件加载成功后通知 LSP 服务器
-        if self.content.file_path.as_ref() == Some(&path) {
-            let text = self
-                .content
-                .buffer
-                .get_text(0, self.content.buffer.len_bytes());
-            self.lsp_open_document(&path, &text);
-        }
+        // 文件加载成功后通知 LSP 服务器。
+        // 注：lsp_notify_open() 已在上面调用过（会按需启动 server 并 send did_open），
+        // 此处无需重复 get_text + lsp_open_document，避免对 UI 线程造成双倍的
+        // 全文件拷贝（get_text 是 O(N) String 分配，对大文件耗时明显）。
     }
 
     /// 通知 LSP 服务器文档已打开（按需启动 server）。
     /// 在 load_file 后调用，激活智能补全/悬停/诊断。
     /// 异步执行：克隆所需数据后 spawn tokio task，不阻塞 UI 线程。
+    ///
+    /// 重要：get_all_text 是 O(N) 全文件 String 拷贝，对大文件耗时明显。
+    /// 之前在 UI 线程上调用（line 1690），导致打开第一个文件时严重卡顿。
+    /// 修复：把 buffer Arc 克隆进 spawn，由后台线程读取并构造 LSP 文本。
     fn lsp_notify_open(&self) {
         // 1. 映射语言到 LSP language_id（无配置则跳过）
         let language_id = match language_to_lsp_id_opt(self.content.language) {
@@ -1597,13 +1692,13 @@ impl EditorState {
             Err(_) => return,
         };
 
-        // 3. 获取全文文本（did_open 需要完整文档内容）
-        let text = self.content.buffer.get_all_text();
-
-        // 4. 克隆 Arc<LspClient> 并 spawn 异步任务
+        // 3. 克隆 Arc<buffer>，把昂贵的 get_all_text 推迟到后台线程
+        let buffer = self.content.buffer.clone();
         let client = self.lsp_client.clone();
         let lang_id = language_id;
         self.tokio_runtime.spawn(async move {
+            // 后台线程读取全文件（O(N) 拷贝，不再阻塞 UI 渲染）
+            let text = buffer.get_all_text();
             // 按需启动 server：如果未就绪且有默认配置，启动它
             if !client.is_server_ready(&lang_id).await {
                 let config = match default_server_config(&lang_id) {
@@ -1891,14 +1986,12 @@ impl EditorState {
             self.reset_editor_state();
             self.status_message = format!("已打开图片: {}", path.display());
         } else {
-            let tab = Tab {
-                content: TabContent::with_loaded_buffer(
-                    Some(path.clone()),
-                    PieceTable::from_string(content),
-                    Language::Image,
-                    false,
-                ),
-            };
+            let tab = Tab::File(TabContent::with_loaded_buffer(
+                Some(path.clone()),
+                PieceTable::from_string(content),
+                Language::Image,
+                false,
+            ));
             self.open_in_new_tab(tab);
             self.status_message = format!("已打开图片: {}", path.display());
         }
@@ -1918,14 +2011,12 @@ impl EditorState {
             self.reset_editor_state();
             self.status_message = format!("不支持的文件格式: .{}", ext);
         } else {
-            let tab = Tab {
-                content: TabContent::with_loaded_buffer(
-                    Some(path.to_path_buf()),
-                    PieceTable::from_string(message),
-                    Language::PlainText,
-                    false,
-                ),
-            };
+            let tab = Tab::File(TabContent::with_loaded_buffer(
+                Some(path.to_path_buf()),
+                PieceTable::from_string(message),
+                Language::PlainText,
+                false,
+            ));
             self.open_in_new_tab(tab);
             self.status_message = format!("不支持的文件格式: .{}", ext);
         }
@@ -2605,11 +2696,11 @@ impl EditorState {
         self.content.selection_end = None;
 
         // 同步到当前标签页
-        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.content.cursor_line = target_line;
-            tab.content.cursor_col = target_col;
-            tab.content.selection_start = None;
-            tab.content.selection_end = None;
+        if let Some(crate::tabs::Tab::File(content)) = self.tabs.get_mut(self.active_tab) {
+            content.cursor_line = target_line;
+            content.cursor_col = target_col;
+            content.selection_start = None;
+            content.selection_end = None;
         }
 
         // 垂直滚动：让目标行可见
@@ -2634,7 +2725,7 @@ impl EditorState {
     pub fn scroll_sidebar(&mut self, delta_y: f32) {
         match &self.sidebar_content {
             crate::layout::SidebarContent::FileTree => {
-                let node_height = 20.0;
+                let node_height = 18.0;
                 let estimated_nodes = if let Some(tree) = &self.file_tree {
                     tree.len() as f32
                 } else {
@@ -2647,7 +2738,7 @@ impl EditorState {
                 self.sidebar_scroll_y = (self.sidebar_scroll_y + delta_y).clamp(0.0, max_scroll);
             }
             crate::layout::SidebarContent::RemoteFileTree => {
-                let node_height = 20.0;
+                let node_height = 18.0;
                 // P0-1: 按可见节点数（含展开的子节点）估算滚动高度
                 let visible_nodes = self
                     .remote_file_tree
@@ -3649,14 +3740,16 @@ impl EditorState {
             None => return false,
         };
 
-        let mut current_y = 34.0;
+        let mut current_y = self.file_tree_list_start_y();
         let sidebar_width = self.layout.sidebar_width;
+        let dpi_scale = self.dpi_scale;
         let result = Self::find_tree_click_target(
             tree,
             u32::MAX,
             mouse_x,
             mouse_y,
             sidebar_width,
+            dpi_scale,
             &mut current_y,
         );
 
@@ -3701,7 +3794,7 @@ impl EditorState {
                                     if i == active_idx {
                                         active_path.as_ref() == Some(&path)
                                     } else {
-                                        tab.content.file_path.as_ref() == Some(&path)
+                                        tab.file_path() == Some(&path)
                                     }
                                 })
                             {
@@ -3846,7 +3939,7 @@ impl EditorState {
                 Some(t) => t,
                 None => return false,
             };
-            let node_height = 20.0_f32;
+            let node_height = 18.0_f32;
             let mut current_y = 10.0 - self.remote_scroll_y;
             let target =
                 Self::find_remote_node_at_y(&tree.nodes, mouse_y, node_height, &mut current_y);
@@ -3889,14 +3982,13 @@ impl EditorState {
                 match session.read_remote_file(&remote_path) {
                     Ok(content) => {
                         let text = String::from_utf8_lossy(&content).to_string();
-                        let tab = crate::tabs::Tab {
-                            content: crate::tabs::TabContent::with_loaded_buffer(
+                        let tab =
+                            crate::tabs::Tab::File(crate::tabs::TabContent::with_loaded_buffer(
                                 Some(PathBuf::from(format!("remote:{}", remote_path))),
                                 PieceTable::from_string(text),
                                 Language::PlainText,
                                 false,
-                            ),
-                        };
+                            ));
                         self.open_in_new_tab(tab);
                         self.status_message = format!("已打开远程文件: {}", remote_path);
                     }
@@ -3950,14 +4042,12 @@ impl EditorState {
                 } else {
                     stdout
                 };
-                let tab = crate::tabs::Tab {
-                    content: crate::tabs::TabContent::with_loaded_buffer(
-                        Some(PathBuf::from(format!("diff: {}", file))),
-                        PieceTable::from_string(diff_text),
-                        Language::PlainText,
-                        false,
-                    ),
-                };
+                let tab = crate::tabs::Tab::File(crate::tabs::TabContent::with_loaded_buffer(
+                    Some(PathBuf::from(format!("diff: {}", file))),
+                    PieceTable::from_string(diff_text),
+                    Language::PlainText,
+                    false,
+                ));
                 self.open_in_new_tab(tab);
                 self.status_message = format!("显示 {} 的差异", file);
             } else {
@@ -3989,14 +4079,16 @@ impl EditorState {
             }
         };
 
-        let mut current_y = 34.0;
+        let mut current_y = self.file_tree_list_start_y();
         let sidebar_width = self.layout.sidebar_width;
+        let dpi_scale = self.dpi_scale;
         let result = Self::find_tree_click_target(
             tree,
             u32::MAX,
             mouse_x,
             mouse_y,
             sidebar_width,
+            dpi_scale,
             &mut current_y,
         );
 
@@ -4015,7 +4107,7 @@ impl EditorState {
             }
         };
         // P0-1: 递归遍历可见节点确定悬停目标（按路径标识）
-        let node_height = 20.0_f32;
+        let node_height = 18.0_f32;
         let mut current_y = 10.0 - self.remote_scroll_y;
         let new_hover =
             Self::find_remote_node_at_y(&tree.nodes, mouse_y, node_height, &mut current_y)
@@ -4394,8 +4486,11 @@ impl EditorState {
         mouse_x: f32,
         mouse_y: f32,
         sidebar_width: f32,
+        dpi_scale: f32,
         current_y: &mut f32,
     ) -> Option<(u32, FileKind, FileTreeClickPart)> {
+        let node_height = 18.0 * dpi_scale;
+        let base_x = 10.0;
         let mut child_idx = if parent_idx == u32::MAX {
             tree.first_root_node()
         } else {
@@ -4417,26 +4512,25 @@ impl EditorState {
                     return None;
                 }
 
-                if mouse_y >= *current_y && mouse_y < *current_y + 20.0 {
+                if mouse_y >= *current_y && mouse_y < *current_y + node_height {
                     // 计算该节点在渲染时的横向范围，与 render_tree_nodes 保持一致
-                    let base_x = 10.0;
                     let indent = if node.parent_idx == u32::MAX {
                         0.0
                     } else {
-                        node.depth as f32 * 16.0
+                        node.depth as f32 * 16.0 * dpi_scale
                     };
                     let item_left = base_x + indent;
-                    let item_right = sidebar_width - 10.0;
+                    let item_right = sidebar_width - 10.0 * dpi_scale;
 
                     // x 超出节点有效区域视为未命中（避免点击滚动条或空白处误触发）
-                    if mouse_x < item_left - 4.0 || mouse_x > item_right {
+                    if mouse_x < item_left - 4.0 * dpi_scale || mouse_x > item_right {
                         return None;
                     }
 
                     // 判断点击的是目录展开箭头还是名称/图标区域
                     let part = if node.kind == FileKind::Directory {
                         // 箭头区域近似为节点左侧约 20px（"▶ " / "▼ "）
-                        let arrow_right = item_left + 20.0;
+                        let arrow_right = item_left + 20.0 * dpi_scale;
                         if mouse_x < arrow_right {
                             FileTreeClickPart::Arrow
                         } else {
@@ -4448,7 +4542,7 @@ impl EditorState {
 
                     return Some((idx, node.kind, part));
                 }
-                *current_y += 20.0;
+                *current_y += node_height;
 
                 // 如果目录展开，递归查找子节点
                 if node.kind == FileKind::Directory && node.is_expanded {
@@ -4458,6 +4552,7 @@ impl EditorState {
                         mouse_x,
                         mouse_y,
                         sidebar_width,
+                        dpi_scale,
                         current_y,
                     ) {
                         return Some(result);
@@ -4488,7 +4583,7 @@ impl EditorState {
         self.content.cursor_col += ch.len_utf8();
         self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.content.is_dirty = true;
+            tab.mark_dirty();
         }
         self.content.buffer_version += 1;
 
@@ -4595,7 +4690,7 @@ impl EditorState {
 
             self.content.is_dirty = true;
             if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                tab.content.is_dirty = true;
+                tab.mark_dirty();
             }
             self.content.buffer_version += 1;
 
@@ -4623,7 +4718,7 @@ impl EditorState {
 
         self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.content.is_dirty = true;
+            tab.mark_dirty();
         }
         self.content.buffer_version += 1;
 
@@ -4770,7 +4865,7 @@ impl EditorState {
         self.content.cursor_col += tab_text.len();
         self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.content.is_dirty = true;
+            tab.mark_dirty();
         }
         self.content.buffer_version += 1;
 
@@ -4831,7 +4926,7 @@ impl EditorState {
         self.content.cursor_col = full_indent.len();
         self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.content.is_dirty = true;
+            tab.mark_dirty();
         }
         self.content.buffer_version += 1;
 
@@ -4864,7 +4959,7 @@ impl EditorState {
                 self.content.cursor_col -= pos - prev_pos;
                 self.content.is_dirty = true;
                 if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                    tab.content.is_dirty = true;
+                    tab.mark_dirty();
                 }
                 self.content.buffer_version += 1;
 
@@ -4902,7 +4997,7 @@ impl EditorState {
                     self.content.cursor_col = prev_len;
                     self.content.is_dirty = true;
                     if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                        tab.content.is_dirty = true;
+                        tab.mark_dirty();
                     }
                     self.content.buffer_version += 1;
 
@@ -4937,7 +5032,7 @@ impl EditorState {
             self.content.buffer.delete(pos, next_pos);
             self.content.is_dirty = true;
             if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                tab.content.is_dirty = true;
+                tab.mark_dirty();
             }
             self.content.buffer_version += 1;
 
@@ -5007,7 +5102,7 @@ impl EditorState {
 
         self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.content.is_dirty = true;
+            tab.mark_dirty();
         }
         self.content.buffer_version += 1;
         self.status_message = format!("已在 {} 个位置插入", self.multi_cursor.cursor_count());
@@ -5091,7 +5186,7 @@ impl EditorState {
 
         self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.content.is_dirty = true;
+            tab.mark_dirty();
         }
         self.content.buffer_version += 1;
         self.emit_edit_events();
@@ -5144,7 +5239,7 @@ impl EditorState {
 
         self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.content.is_dirty = true;
+            tab.mark_dirty();
         }
         self.content.buffer_version += 1;
         self.emit_edit_events();
@@ -5412,6 +5507,8 @@ impl EditorState {
             | Language::C
             | Language::JavaScript
             | Language::TypeScript
+            | Language::Go
+            | Language::Java
             | Language::Json => "// ",
             Language::Python | Language::Toml => "# ",
             _ => return, // 不支持的语言（如 PlainText/Markdown/Html/Css）直接返回
@@ -5445,7 +5542,7 @@ impl EditorState {
 
         self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.content.is_dirty = true;
+            tab.mark_dirty();
         }
         self.content.buffer_version += 1;
 
@@ -5591,7 +5688,7 @@ impl EditorState {
     ) {
         let line_height = self.text_renderer.line_height();
         let char_width = self.text_renderer.char_width();
-        let line_number_width = 60.0;
+        let line_number_width = 40.0;
 
         // P0-3: 鼠标 x 加上 scroll_x 抵消，确保点击的字符位置正确
         let rel_x = mouse_x - editor_x - line_number_width - 5.0 + self.content.scroll_x;
@@ -6229,7 +6326,7 @@ impl EditorState {
 
         self.content.is_dirty = true;
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.content.is_dirty = true;
+            tab.mark_dirty();
         }
         self.content.buffer_version += 1;
         self.find_results.clear();
@@ -6280,20 +6377,80 @@ impl EditorState {
 
     /// 把当前文件的 LSP 诊断发送给 AI 修复
     pub fn ai_fix_diagnostics(&mut self) {
-        let settings = self.app_settings.ai.clone();
-        let attachments = vec![
-            AiContextAttachment::CurrentFile,
-            AiContextAttachment::Diagnostics,
-        ];
-        let context = self.gather_context(&attachments);
-        self.ai_panel.clear_input();
-        self.ai_panel.clear_attachments();
-        self.ai_panel.attachments = attachments;
-        self.ai_panel.mode = AiMode::Edit;
-        self.ai_panel.input = "请分析并修复当前文件中的问题。".to_string();
-        let _ = self
-            .ai_panel
-            .send_message_with_prepared_context(&settings, context, AiMode::Edit);
+        let settings = self.app_settings.active_ai_settings();
+        let context = self.gather_context(&[
+            crate::ai_context::AiContextAttachment::CurrentFile,
+            crate::ai_context::AiContextAttachment::Diagnostics,
+        ]);
+        let _ = self.ai_panel.send_message_with_prepared_context(
+            &settings,
+            context,
+            crate::ai_prompt::AiMode::Edit,
+        );
+    }
+
+    /// 自动应用 AI 面板中待确认的编辑到工作区
+    pub fn ai_apply_pending_changes(&mut self) {
+        if self.ai_panel.is_generating || self.ai_panel.diff_view.files.is_empty() {
+            return;
+        }
+        let edits = {
+            let diff_view = &mut self.ai_panel.diff_view;
+            diff_view.accept_all();
+            diff_view.to_edits()
+        };
+        if !edits.is_empty() {
+            match self.apply_ai_workspace_edits(&edits) {
+                Ok(paths) => {
+                    self.status_message = format!("已应用 AI 编辑: {} 个文件", paths.len())
+                }
+                Err(e) => self.status_message = format!("AI 编辑应用失败: {}", e),
+            }
+        }
+        self.ai_panel.clear_pending_changes();
+    }
+
+    /// 打开设置标签页（作为通用 tab 插入到标签栏）
+    pub fn open_settings_tab(&mut self) {
+        self.settings_panel.apply_settings(&self.app_settings);
+        if let Some(idx) = self.find_settings_tab() {
+            self.switch_tab(idx);
+        } else {
+            self.swap_tab_content(self.active_tab);
+            self.tabs.push(crate::tabs::Tab::Settings);
+            self.active_tab = self.tabs.len() - 1;
+            // 设置 tab 无 content，self.content 保持空即可
+            self.ai_panel.input_focused = false;
+            self.status_message = "已打开设置标签页".to_string();
+            self.emit_event(crate::events::EditorEvent::TabChanged);
+        }
+    }
+
+    /// 关闭设置标签页
+    pub fn close_settings_tab(&mut self) {
+        if let Some(idx) = self.find_settings_tab() {
+            if idx == self.active_tab {
+                // 关闭活动设置 tab，切换到最近的文件 tab
+                self.close_current_tab();
+            } else {
+                // 非活动设置 tab 直接移除
+                self.tabs.remove(idx);
+                if self.active_tab > idx {
+                    self.active_tab -= 1;
+                }
+                self.status_message = "已关闭设置标签页".to_string();
+            }
+        }
+        self.settings_panel.active_field = None;
+    }
+
+    /// 切换设置标签页
+    pub fn toggle_settings_tab(&mut self) {
+        if self.active_tab_is_settings() {
+            self.close_settings_tab();
+        } else {
+            self.open_settings_tab();
+        }
     }
 
     /// 初始化 LSP 客户端（在打开工作区文件夹时调用）
@@ -6465,19 +6622,17 @@ impl EditorState {
                                 active_lang,
                                 active_text.clone(),
                             )
-                        } else {
-                            let path = tab
-                                .content
+                        } else if let Some(content) = tab.as_file() {
+                            let path = content
                                 .file_path
                                 .as_deref()
                                 .map(|p| p.to_string_lossy().to_string())
                                 .unwrap_or_else(|| format!("未命名-{}", i + 1));
-                            let lang = language_str(tab.content.language);
-                            let text = tab
-                                .content
-                                .buffer
-                                .get_text(0, tab.content.buffer.len_bytes());
+                            let lang = language_str(content.language);
+                            let text = content.buffer.get_text(0, content.buffer.len_bytes());
                             (path, lang, text)
+                        } else {
+                            continue;
                         };
                         summary.push_str(&wrap_code_block(
                             &path,
@@ -6598,6 +6753,8 @@ fn language_str(lang: Language) -> &'static str {
         Language::Toml => "toml",
         Language::Html => "html",
         Language::Css => "css",
+        Language::Go => "go",
+        Language::Java => "java",
         Language::PlainText => "text",
         Language::Image => "image",
     }
@@ -6722,11 +6879,33 @@ impl EditorState {
         for edit in edits {
             let full_path = self.resolve_edit_path(&edit.path);
 
+            // 删除文件操作
+            if edit.is_delete() {
+                // 关闭对应 tab（如果有）；用户取消则跳过此文件
+                if let Some(idx) = self
+                    .tabs
+                    .iter()
+                    .position(|t| t.file_path() == Some(&full_path))
+                {
+                    if !self.close_tab(idx) {
+                        continue;
+                    }
+                }
+                // 从磁盘删除文件
+                if full_path.exists() {
+                    std::fs::remove_file(&full_path)
+                        .map_err(|e| format!("删除文件 {} 失败: {}", full_path.display(), e))?;
+                }
+                self.status_message = format!("已删除文件: {}", full_path.display());
+                applied.push(full_path);
+                continue;
+            }
+
             // 找到或创建对应标签页
             let tab_idx = self
                 .tabs
                 .iter()
-                .position(|t| t.content.file_path.as_ref() == Some(&full_path));
+                .position(|t| t.file_path() == Some(&full_path));
             if let Some(idx) = tab_idx {
                 self.switch_tab(idx);
             } else if full_path.exists() {
@@ -6787,14 +6966,12 @@ impl EditorState {
 
     fn create_new_file_tab(&mut self, path: &Path) {
         let lang = Language::from_path(path);
-        let tab = Tab {
-            content: TabContent::with_loaded_buffer(
-                Some(path.to_path_buf()),
-                PieceTable::from_string(String::new()),
-                lang,
-                true,
-            ),
-        };
+        let tab = Tab::File(TabContent::with_loaded_buffer(
+            Some(path.to_path_buf()),
+            PieceTable::from_string(String::new()),
+            lang,
+            true,
+        ));
         self.open_in_new_tab(tab);
     }
 }
@@ -6829,6 +7006,8 @@ fn language_to_ts_str(lang: Language) -> Option<&'static str> {
         Language::C => Some("c"),
         Language::Json => Some("json"),
         Language::Toml => Some("toml"),
+        Language::Go => Some("go"),
+        Language::Java => Some("java"),
         // Markdown/Html/Css/PlainText/Image → None，fallback 到手写 lexer
         _ => None,
     }

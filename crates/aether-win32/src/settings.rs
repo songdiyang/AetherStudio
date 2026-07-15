@@ -10,6 +10,12 @@ pub enum SettingsField {
     Temperature,
     MaxTokens,
     SystemPrompt,
+    /// 添加模型对话框字段
+    ContextInput,
+    ContextOutput,
+    ToolCallRounds,
+    /// 展示名称
+    DisplayName,
 }
 
 /// 设置面板按钮标识
@@ -30,6 +36,10 @@ pub enum SettingsTab {
     Appearance,
     /// 远程：SSH 主机等
     Remote,
+    /// 账户
+    Account,
+    /// 模型管理
+    Models,
 }
 
 impl SettingsTab {
@@ -39,6 +49,8 @@ impl SettingsTab {
             Self::Ai => "AI",
             Self::Appearance => "外观",
             Self::Remote => "远程",
+            Self::Account => "账户",
+            Self::Models => "模型",
         }
     }
 
@@ -48,6 +60,154 @@ impl SettingsTab {
         SettingsTab::Appearance,
         SettingsTab::Remote,
     ];
+}
+
+/// 服务商模板按钮
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderTemplateButton {
+    DeepSeek,
+    Kimi,
+    Claude,
+    CustomOpenAi,
+}
+
+/// 设置下拉类型
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsDropdownKind {
+    Provider,
+    Model,
+}
+
+/// 模型按钮类型
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelButton {
+    Add,
+    Activate,
+    Delete,
+}
+
+/// 添加模型对话框按钮
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddModelDialogButton {
+    Close,
+    AddModel,
+}
+
+/// 添加模型对话框标签页
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddModelDialogTab {
+    Provider,
+    Custom,
+}
+
+impl AddModelDialogTab {
+    pub const ALL: [AddModelDialogTab; 2] =
+        [AddModelDialogTab::Provider, AddModelDialogTab::Custom];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            AddModelDialogTab::Provider => "服务商",
+            AddModelDialogTab::Custom => "自定义",
+        }
+    }
+}
+
+/// 添加模型下拉类型
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddModelDropdownKind {
+    Provider,
+    Model,
+}
+
+/// 模型配置项
+#[derive(Clone, Debug)]
+pub struct ModelConfig {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+}
+
+/// 添加模型对话框状态
+#[derive(Clone, Debug)]
+pub struct AddModelDialog {
+    pub visible: bool,
+    pub active_tab: AddModelDialogTab,
+    pub hover_tab: Option<AddModelDialogTab>,
+    pub hover_button: Option<AddModelDialogButton>,
+    pub close_region: Option<(f32, f32, f32, f32)>,
+    pub open_dropdown: Option<AddModelDropdownKind>,
+    pub hover_dropdown: Option<AddModelDropdownKind>,
+    pub hover_dropdown_index: Option<usize>,
+    pub selected_provider_button: Option<ProviderTemplateButton>,
+    pub selected_model_id: String,
+    pub display_name: String,
+    pub context_input: String,
+    pub context_output: String,
+    pub tool_call_rounds: String,
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+    pub field_regions: Vec<(SettingsField, f32, f32, f32, f32)>,
+    pub button_regions: Vec<(AddModelDialogButton, f32, f32, f32, f32)>,
+    pub dropdown_trigger_regions: Vec<(AddModelDropdownKind, f32, f32, f32, f32)>,
+    pub dropdown_item_regions: Vec<(AddModelDropdownKind, usize, f32, f32, f32, f32)>,
+    pub provider_template_regions: Vec<(ProviderTemplateButton, f32, f32, f32, f32)>,
+    pub advanced_toggle_region: Option<(f32, f32, f32, f32)>,
+    pub advanced_expanded: bool,
+    pub tab_regions: Vec<(AddModelDialogTab, f32, f32, f32, f32)>,
+    pub active_field: Option<SettingsField>,
+}
+
+impl AddModelDialog {
+    pub fn new() -> Self {
+        Self {
+            visible: false,
+            active_tab: AddModelDialogTab::Provider,
+            hover_tab: None,
+            hover_button: None,
+            close_region: None,
+            open_dropdown: None,
+            hover_dropdown: None,
+            hover_dropdown_index: None,
+            selected_provider_button: None,
+            selected_model_id: String::new(),
+            display_name: String::new(),
+            context_input: String::new(),
+            context_output: String::new(),
+            tool_call_rounds: "3".to_string(),
+            provider: String::new(),
+            base_url: String::new(),
+            model: String::new(),
+            field_regions: Vec::new(),
+            button_regions: Vec::new(),
+            dropdown_trigger_regions: Vec::new(),
+            dropdown_item_regions: Vec::new(),
+            provider_template_regions: Vec::new(),
+            advanced_toggle_region: None,
+            advanced_expanded: false,
+            tab_regions: Vec::new(),
+            active_field: None,
+        }
+    }
+
+    pub fn provider_label(&self) -> String {
+        self.selected_provider_button
+            .map(|b| match b {
+                ProviderTemplateButton::DeepSeek => "DeepSeek".to_string(),
+                ProviderTemplateButton::Kimi => "Kimi".to_string(),
+                ProviderTemplateButton::Claude => "Claude".to_string(),
+                ProviderTemplateButton::CustomOpenAi => "OpenAI".to_string(),
+            })
+            .unwrap_or_else(|| "请选择".to_string())
+    }
+
+    pub fn masked_api_key(&self) -> String {
+        "••••".to_string()
+    }
+
+    pub fn model_options(&self) -> Vec<String> {
+        vec![]
+    }
 }
 
 /// AI 设置面板状态
@@ -73,6 +233,27 @@ pub struct SettingsPanel {
     pub hover_tab: Option<SettingsTab>,
     /// 标签页命中区域缓存 (tab, x, y, w, h)
     pub tab_regions: Vec<(SettingsTab, f32, f32, f32, f32)>,
+    // 导航栏
+    pub nav_width: f32,
+    pub hover_nav_resize: bool,
+    pub nav_resizing: bool,
+    // 模型管理
+    pub models: Vec<ModelConfig>,
+    pub selected_model_id: Option<String>,
+    pub hover_model_id: Option<String>,
+    pub active_model_id: Option<String>,
+    pub hover_model_button: Option<ModelButton>,
+    // 添加模型对话框
+    pub add_model_dialog: AddModelDialog,
+    // 模型按钮/项命中区域
+    model_button_regions: Vec<(ModelButton, f32, f32, f32, f32)>,
+    model_item_regions: Vec<(String, f32, f32, f32, f32)>,
+    // 下拉框
+    pub open_dropdown: Option<SettingsDropdownKind>,
+    pub dropdown_trigger_regions: Vec<(SettingsDropdownKind, f32, f32, f32, f32)>,
+    pub dropdown_item_regions: Vec<(SettingsDropdownKind, usize, f32, f32, f32, f32)>,
+    pub hover_dropdown: Option<SettingsDropdownKind>,
+    pub hover_dropdown_index: Option<usize>,
 }
 
 impl SettingsPanel {
@@ -94,6 +275,22 @@ impl SettingsPanel {
             active_tab: SettingsTab::Ai,
             hover_tab: None,
             tab_regions: Vec::new(),
+            nav_width: 160.0,
+            hover_nav_resize: false,
+            nav_resizing: false,
+            models: Vec::new(),
+            selected_model_id: None,
+            hover_model_id: None,
+            active_model_id: None,
+            hover_model_button: None,
+            add_model_dialog: AddModelDialog::new(),
+            model_button_regions: Vec::new(),
+            model_item_regions: Vec::new(),
+            open_dropdown: None,
+            dropdown_trigger_regions: Vec::new(),
+            dropdown_item_regions: Vec::new(),
+            hover_dropdown: None,
+            hover_dropdown_index: None,
         }
     }
 
@@ -123,6 +320,22 @@ impl SettingsPanel {
             active_tab: SettingsTab::Ai,
             hover_tab: None,
             tab_regions: Vec::new(),
+            nav_width: 160.0,
+            hover_nav_resize: false,
+            nav_resizing: false,
+            models: Vec::new(),
+            selected_model_id: None,
+            hover_model_id: None,
+            active_model_id: None,
+            hover_model_button: None,
+            add_model_dialog: AddModelDialog::new(),
+            model_button_regions: Vec::new(),
+            model_item_regions: Vec::new(),
+            open_dropdown: None,
+            dropdown_trigger_regions: Vec::new(),
+            dropdown_item_regions: Vec::new(),
+            hover_dropdown: None,
+            hover_dropdown_index: None,
         }
     }
 
@@ -168,6 +381,8 @@ impl SettingsPanel {
         self.field_regions.clear();
         self.button_regions.clear();
         self.tab_regions.clear();
+        self.model_button_regions.clear();
+        self.model_item_regions.clear();
     }
 
     pub fn add_field_region(&mut self, field: SettingsField, x: f32, y: f32, w: f32, h: f32) {
@@ -220,6 +435,7 @@ impl SettingsPanel {
                 SettingsField::Temperature => self.temperature.push(ch),
                 SettingsField::MaxTokens => self.max_tokens.push(ch),
                 SettingsField::SystemPrompt => self.system_prompt.push(ch),
+                _ => {}
             }
         }
     }
@@ -249,6 +465,7 @@ impl SettingsPanel {
                 SettingsField::SystemPrompt => {
                     self.system_prompt.pop();
                 }
+                _ => {}
             }
         }
     }
@@ -264,6 +481,7 @@ impl SettingsPanel {
                 SettingsField::Temperature => self.temperature.clear(),
                 SettingsField::MaxTokens => self.max_tokens.clear(),
                 SettingsField::SystemPrompt => self.system_prompt.clear(),
+                _ => {}
             }
         }
     }
@@ -278,6 +496,7 @@ impl SettingsPanel {
             Some(SettingsField::Temperature) => Some(SettingsField::MaxTokens),
             Some(SettingsField::MaxTokens) => Some(SettingsField::SystemPrompt),
             Some(SettingsField::SystemPrompt) => None,
+            _ => None,
         };
         self.active_field = next;
     }
@@ -292,6 +511,7 @@ impl SettingsPanel {
             Some(SettingsField::BaseUrl) => Some(SettingsField::ApiKey),
             Some(SettingsField::ApiKey) => Some(SettingsField::Provider),
             Some(SettingsField::Provider) => None,
+            _ => None,
         };
         self.active_field = prev;
     }
@@ -305,6 +525,97 @@ impl SettingsPanel {
             let dots = "•".repeat(chars.len().saturating_sub(4));
             let last_four: String = chars.iter().rev().take(4).rev().collect();
             format!("{}{}", dots, last_four)
+        }
+    }
+
+    // 模型管理方法
+
+    pub fn provider_display_label(&self) -> String {
+        match self.provider.as_str() {
+            "openai" => "OpenAI".to_string(),
+            "kimi" => "Kimi".to_string(),
+            "deepseek" => "DeepSeek".to_string(),
+            "claude" => "Claude".to_string(),
+            _ => self.provider.clone(),
+        }
+    }
+
+    pub fn provider_dropdown_options() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("openai", "OpenAI"),
+            ("kimi", "Kimi"),
+            ("deepseek", "DeepSeek"),
+            ("claude", "Claude"),
+            ("custom", "自定义"),
+        ]
+    }
+
+    pub fn model_dropdown_options(&self) -> Vec<(String, String)> {
+        // 返回当前服务商的模型列表
+        match self.provider.as_str() {
+            "openai" => vec![
+                ("gpt-4".to_string(), "GPT-4".to_string()),
+                ("gpt-4-turbo".to_string(), "GPT-4 Turbo".to_string()),
+                ("gpt-3.5-turbo".to_string(), "GPT-3.5 Turbo".to_string()),
+            ],
+            "kimi" => vec![
+                ("moonshot-v1-8k".to_string(), "Moonshot 8K".to_string()),
+                ("moonshot-v1-32k".to_string(), "Moonshot 32K".to_string()),
+                ("moonshot-v1-128k".to_string(), "Moonshot 128K".to_string()),
+            ],
+            "deepseek" => vec![
+                ("deepseek-chat".to_string(), "DeepSeek Chat".to_string()),
+                ("deepseek-coder".to_string(), "DeepSeek Coder".to_string()),
+            ],
+            "claude" => vec![
+                ("claude-3-opus".to_string(), "Claude 3 Opus".to_string()),
+                ("claude-3-sonnet".to_string(), "Claude 3 Sonnet".to_string()),
+                ("claude-3-haiku".to_string(), "Claude 3 Haiku".to_string()),
+            ],
+            _ => vec![(self.model.clone(), self.model.clone())],
+        }
+    }
+
+    pub fn poll_test_result(&mut self) -> bool {
+        // 模拟测试连接结果轮询
+        if self.is_testing {
+            self.is_testing = false;
+            self.test_status = "连接成功".to_string();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn add_model_button_region(&mut self, button: ModelButton, x: f32, y: f32, w: f32, h: f32) {
+        self.model_button_regions.push((button, x, y, w, h));
+    }
+
+    pub fn add_model_item_region(&mut self, id: String, x: f32, y: f32, w: f32, h: f32) {
+        self.model_item_regions.push((id, x, y, w, h));
+    }
+
+    pub fn dropdown_items(&self, kind: AddModelDropdownKind) -> Vec<String> {
+        match kind {
+            AddModelDropdownKind::Provider => Self::provider_dropdown_options()
+                .into_iter()
+                .map(|(_, name)| name.to_string())
+                .collect(),
+            AddModelDropdownKind::Model => self
+                .model_dropdown_options()
+                .into_iter()
+                .map(|(_, name)| name)
+                .collect(),
+        }
+    }
+
+    pub fn current_provider_button(&self) -> Option<ProviderTemplateButton> {
+        match self.provider.as_str() {
+            "deepseek" => Some(ProviderTemplateButton::DeepSeek),
+            "kimi" => Some(ProviderTemplateButton::Kimi),
+            "claude" => Some(ProviderTemplateButton::Claude),
+            "openai" => Some(ProviderTemplateButton::CustomOpenAi),
+            _ => None,
         }
     }
 }

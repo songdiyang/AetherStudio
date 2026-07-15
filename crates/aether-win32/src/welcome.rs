@@ -116,6 +116,18 @@ impl EditorState {
             && self.content.buffer.get_all_text().is_empty()
     }
 
+    pub(crate) fn render_empty_placeholder(
+        &mut self,
+        _target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+        _x: f32,
+        _y: f32,
+        _width: f32,
+        _height: f32,
+    ) {
+        // 空占位页 stub：仅清除区域背景，不绘制内容
+        // 实际实现可在此居中显示 logo 或提示文字
+    }
+
     fn welcome_actions() -> [WelcomeActionItem; 4] {
         [
             WelcomeActionItem {

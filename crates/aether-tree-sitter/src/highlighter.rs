@@ -16,6 +16,8 @@ pub struct TreeSitterHighlighter {
     cpp_config: Option<HighlightConfiguration>,
     json_config: Option<HighlightConfiguration>,
     toml_config: Option<HighlightConfiguration>,
+    go_config: Option<HighlightConfiguration>,
+    java_config: Option<HighlightConfiguration>,
     /// 缓存每文档的语法树，用于增量解析
     /// key: 文档标识 (如文件路径), value: (语言, 语法树)
     pub tree_cache: HashMap<String, (String, Tree)>,
@@ -54,6 +56,8 @@ impl TreeSitterHighlighter {
             cpp_config: None,
             json_config: None,
             toml_config: None,
+            go_config: None,
+            java_config: None,
             tree_cache: HashMap::new(),
             parser_cache: HashMap::new(),
         };
@@ -149,6 +153,28 @@ impl TreeSitterHighlighter {
             config.configure(HIGHLIGHT_NAMES);
             self.toml_config = Some(config);
         }
+
+        // Go
+        if let Ok(mut config) = HighlightConfiguration::new(
+            tree_sitter_go::language(),
+            tree_sitter_go::HIGHLIGHT_QUERY,
+            "",
+            "",
+        ) {
+            config.configure(HIGHLIGHT_NAMES);
+            self.go_config = Some(config);
+        }
+
+        // Java
+        if let Ok(mut config) = HighlightConfiguration::new(
+            tree_sitter_java::language(),
+            tree_sitter_java::HIGHLIGHT_QUERY,
+            "",
+            "",
+        ) {
+            config.configure(HIGHLIGHT_NAMES);
+            self.java_config = Some(config);
+        }
     }
 
     /// 对单行文本进行高亮
@@ -195,6 +221,16 @@ impl TreeSitterHighlighter {
                 .unwrap_or(std::ptr::null()),
             "toml" => self
                 .toml_config
+                .as_ref()
+                .map(|c| c as *const HighlightConfiguration)
+                .unwrap_or(std::ptr::null()),
+            "go" => self
+                .go_config
+                .as_ref()
+                .map(|c| c as *const HighlightConfiguration)
+                .unwrap_or(std::ptr::null()),
+            "java" => self
+                .java_config
                 .as_ref()
                 .map(|c| c as *const HighlightConfiguration)
                 .unwrap_or(std::ptr::null()),
@@ -300,6 +336,8 @@ impl TreeSitterHighlighter {
             "cpp" | "c++" | "cxx" => Some(tree_sitter_cpp::language()),
             "json" => Some(tree_sitter_json::language()),
             "toml" => Some(tree_sitter_toml::language()),
+            "go" => Some(tree_sitter_go::language()),
+            "java" => Some(tree_sitter_java::language()),
             _ => None,
         }
     }
@@ -314,6 +352,8 @@ impl TreeSitterHighlighter {
             "cpp" | "c++" | "cxx" => self.cpp_config.as_ref(),
             "json" => self.json_config.as_ref(),
             "toml" => self.toml_config.as_ref(),
+            "go" => self.go_config.as_ref(),
+            "java" => self.java_config.as_ref(),
             _ => None,
         }
     }
@@ -362,6 +402,16 @@ impl TreeSitterHighlighter {
                 .unwrap_or(std::ptr::null()),
             "toml" => self
                 .toml_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            "go" => self
+                .go_config
+                .as_ref()
+                .map(|c| c as *const _)
+                .unwrap_or(std::ptr::null()),
+            "java" => self
+                .java_config
                 .as_ref()
                 .map(|c| c as *const _)
                 .unwrap_or(std::ptr::null()),
@@ -553,6 +603,8 @@ mod tests {
         assert!(highlighter.supports_language("cxx"));
         assert!(highlighter.supports_language("json"));
         assert!(highlighter.supports_language("toml"));
+        assert!(highlighter.supports_language("go"));
+        assert!(highlighter.supports_language("java"));
         assert!(highlighter.tree_cache.is_empty());
         assert!(highlighter.parser_cache.is_empty());
     }
@@ -636,6 +688,20 @@ mod tests {
     }
 
     #[test]
+    fn test_highlight_line_go() {
+        let mut highlighter = TreeSitterHighlighter::new();
+        let spans = highlighter.highlight_line("func main() { return }", "go");
+        assert!(!spans.is_empty(), "Go 简单代码应产生高亮 span");
+    }
+
+    #[test]
+    fn test_highlight_line_java() {
+        let mut highlighter = TreeSitterHighlighter::new();
+        let spans = highlighter.highlight_line("class Foo { void bar() { return; } }", "java");
+        assert!(!spans.is_empty(), "Java 简单代码应产生高亮 span");
+    }
+
+    #[test]
     fn test_highlight_line_unsupported_language() {
         let mut highlighter = TreeSitterHighlighter::new();
         let spans = highlighter.highlight_line("hello", "unknown");
@@ -714,6 +780,20 @@ mod tests {
     fn test_parse_document_toml() {
         let mut highlighter = TreeSitterHighlighter::new();
         let tree = highlighter.parse_document("doc_toml", "toml", "key = \"value\"");
+        assert!(tree.is_some());
+    }
+
+    #[test]
+    fn test_parse_document_go() {
+        let mut highlighter = TreeSitterHighlighter::new();
+        let tree = highlighter.parse_document("doc_go", "go", "package main\nfunc main() {}");
+        assert!(tree.is_some());
+    }
+
+    #[test]
+    fn test_parse_document_java() {
+        let mut highlighter = TreeSitterHighlighter::new();
+        let tree = highlighter.parse_document("doc_java", "java", "class Foo {}");
         assert!(tree.is_some());
     }
 

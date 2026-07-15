@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="C++ file icon (flat)">
+  <title>C++ File (Flat)</title>
+  <path d="M5 3 L14 3 L20 9 L20 20 L4 20 Z" fill="#00599C"/>
+  <path d="M14 3 L20 9 L14 9 Z" fill="#FFFFFF" fill-opacity="0.5"/>
+  <path d="M12.5 13 C11 11.5 7.5 11.5 7.5 15.5 C7.5 19.5 11 19.5 12.5 18 C11.5 18.5 8.5 18.5 8.5 15.5 C8.5 12.5 11.5 12.5 12.5 13 Z" fill="#FFFFFF"/>
+  <rect x="13.5" y="12.5" width="2" height="0.8" fill="#FFFFFF"/>
+  <rect x="14.1" y="11.9" width="0.8" height="2" fill="#FFFFFF"/>
+  <rect x="16" y="16" width="2" height="0.8" fill="#FFFFFF"/>
+  <rect x="16.6" y="15.4" width="0.8" height="2" fill="#FFFFFF"/>
+</svg>

@@ -11,6 +11,9 @@ pub struct OpenTabsPanel {
     pub close_regions: Vec<(usize, f32, f32, f32, f32)>,
 }
 
+/// 标签页面板别名（兼容旧代码中的 `TabsPanel` 名称）
+pub type TabsPanel = OpenTabsPanel;
+
 impl OpenTabsPanel {
     pub fn new() -> Self {
         Self {

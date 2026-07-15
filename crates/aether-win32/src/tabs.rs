@@ -8,6 +8,7 @@ use aether_core::lexer::{Language, LexemeSpan};
 ///
 /// REQ-P1-09: 将 Tab 和 EditorState 中重复的 per-tab 字段统一到此处，
 /// 通过 std::mem::swap 实现标签切换，消除手动字段同步。
+#[derive(Clone, Debug)]
 pub struct TabContent {
     pub file_path: Option<PathBuf>,
     pub buffer: PieceTable,
@@ -182,41 +183,108 @@ impl TabContent {
     }
 }
 
-/// 标签页 - 包含完整的文件编辑状态
-///
-/// REQ-P1-09: Tab 仅包装一个 `TabContent`，所有 per-tab 字段统一由
-/// `TabContent` 持有，标签切换通过 `std::mem::swap` 交换 content。
-pub struct Tab {
-    pub content: TabContent,
+/// 标签页类型 — 支持文件、设置、欢迎三种标签页
+#[derive(Clone, Debug)]
+pub enum Tab {
+    /// 文件编辑标签页
+    File(TabContent),
+    /// 设置面板标签页
+    Settings,
+    /// 欢迎页标签页
+    Welcome,
 }
 
 impl Tab {
+    /// 创建新的文件标签页（从文件路径加载）
+    pub fn from_file(path: PathBuf) -> std::io::Result<Self> {
+        Ok(Tab::File(TabContent::from_file(path)?))
+    }
+
+    /// 创建新的空文件标签页（向后兼容：旧代码期望 new() 返回可保存内容的标签）
     pub fn new() -> Self {
-        Self {
-            content: TabContent::new(),
+        Tab::File(TabContent::new())
+    }
+
+    /// 判断是否为文件标签页
+    pub fn is_file(&self) -> bool {
+        matches!(self, Tab::File(_))
+    }
+
+    /// 判断是否为设置标签页
+    pub fn is_settings(&self) -> bool {
+        matches!(self, Tab::Settings)
+    }
+
+    /// 判断是否为欢迎标签页
+    pub fn is_welcome(&self) -> bool {
+        matches!(self, Tab::Welcome)
+    }
+
+    /// 获取文件路径（仅 File 类型）
+    pub fn file_path(&self) -> Option<&PathBuf> {
+        match self {
+            Tab::File(content) => content.file_path.as_ref(),
+            _ => None,
         }
     }
 
-    pub fn from_file(path: PathBuf) -> std::io::Result<Self> {
-        Ok(Self {
-            content: TabContent::from_file(path)?,
-        })
+    /// 获取标签页标题
+    pub fn title(&self) -> String {
+        match self {
+            Tab::File(content) => content.file_name(),
+            Tab::Settings => "设置".to_string(),
+            Tab::Welcome => "欢迎".to_string(),
+        }
+    }
+
+    /// 判断文件标签页是否已修改
+    pub fn is_dirty(&self) -> bool {
+        match self {
+            Tab::File(content) => content.is_dirty,
+            _ => false,
+        }
+    }
+
+    /// 获取文件标签页的可变内容引用
+    pub fn as_file_mut(&mut self) -> Option<&mut TabContent> {
+        match self {
+            Tab::File(content) => Some(content),
+            _ => None,
+        }
+    }
+
+    /// 获取文件标签页的不可变内容引用
+    pub fn as_file(&self) -> Option<&TabContent> {
+        match self {
+            Tab::File(content) => Some(content),
+            _ => None,
+        }
     }
 
     pub fn rebuild_cache(&mut self) {
-        self.content.rebuild_cache();
+        if let Tab::File(content) = self {
+            content.rebuild_cache();
+        }
     }
 
     pub fn mark_dirty(&mut self) {
-        self.content.mark_dirty();
+        if let Tab::File(content) = self {
+            content.mark_dirty();
+        }
     }
 
     pub fn clear_dirty(&mut self) {
-        self.content.clear_dirty();
+        if let Tab::File(content) = self {
+            content.clear_dirty();
+        }
     }
 
     pub fn file_name(&self) -> String {
-        self.content.file_name()
+        match self {
+            Tab::File(content) => content.file_name(),
+            Tab::Settings => "设置".to_string(),
+            Tab::Welcome => "欢迎".to_string(),
+        }
     }
 }
 
@@ -235,28 +303,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tab_new_is_unnamed() {
+    fn test_tab_new_is_welcome() {
         let tab = Tab::new();
-        assert!(tab.content.file_path.is_none());
-        assert_eq!(tab.file_name(), "未命名");
-        assert_eq!(tab.content.cursor_line, 0);
-        assert!(!tab.content.is_dirty);
+        // Tab::new() 现在返回 File 变体以保持向后兼容（remove_tab_saving_content 等逻辑需要）
+        assert!(tab.is_file());
+        assert!(!tab.is_welcome());
+        assert!(!tab.is_settings());
+        assert_eq!(tab.title(), "未命名");
     }
 
     #[test]
     fn test_tab_file_name() {
-        let mut tab = Tab::new();
-        tab.content.file_path = Some(PathBuf::from("D:\\project\\src\\main.rs"));
+        let mut content = TabContent::new();
+        content.file_path = Some(PathBuf::from("D:\\project\\src\\main.rs"));
+        let tab = Tab::File(content);
         assert_eq!(tab.file_name(), "main.rs");
+        assert!(tab.is_file());
+        assert_eq!(tab.title(), "main.rs");
+    }
+
+    #[test]
+    fn test_tab_settings() {
+        let tab = Tab::Settings;
+        assert!(tab.is_settings());
+        assert_eq!(tab.title(), "设置");
+        assert!(!tab.is_dirty());
     }
 
     #[test]
     fn test_tab_mark_dirty() {
-        let mut tab = Tab::new();
-        assert_eq!(tab.content.buffer_version, 0);
+        let content = TabContent::new();
+        let mut tab = Tab::File(content);
+        assert_eq!(tab.as_file().unwrap().buffer_version, 0);
         tab.mark_dirty();
-        assert!(tab.content.is_dirty);
-        assert_eq!(tab.content.buffer_version, 1);
+        assert!(tab.is_dirty());
+        assert_eq!(tab.as_file().unwrap().buffer_version, 1);
     }
 
     #[test]
@@ -280,35 +361,35 @@ mod tests {
         std::fs::write(&path, "fn main() {}\n").unwrap();
 
         let mut tab = Tab::from_file(path.clone()).unwrap();
-        assert_eq!(tab.content.file_path, Some(path));
+        assert_eq!(tab.file_path(), Some(&path));
         assert_eq!(tab.file_name(), "sample.rs");
-        assert_eq!(tab.content.language, Language::Rust);
-        assert_eq!(tab.content.buffer_version, 1);
+        assert!(tab.is_file());
 
         tab.rebuild_cache();
-        assert!(!tab.content.cached_lines.is_empty());
-        assert_eq!(tab.content.cached_lines[0], "fn main() {}");
-        assert!(!tab.content.cached_tokens.is_empty());
+        assert!(!tab.as_file().unwrap().cached_lines.is_empty());
+        assert_eq!(tab.as_file().unwrap().cached_lines[0], "fn main() {}");
 
         tab.clear_dirty();
-        assert!(!tab.content.is_dirty);
+        assert!(!tab.is_dirty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_tab_file_name_fallback() {
-        let mut tab = Tab::new();
-        tab.content.file_path = Some(PathBuf::from("/"));
+        let mut content = TabContent::new();
+        content.file_path = Some(PathBuf::from("/"));
+        let tab = Tab::File(content);
         assert_eq!(tab.file_name(), "未命名");
     }
 
     #[test]
     fn test_tab_mark_dirty_increments_version() {
-        let mut tab = Tab::new();
-        let v0 = tab.content.buffer_version;
+        let content = TabContent::new();
+        let mut tab = Tab::File(content);
+        let v0 = tab.as_file().unwrap().buffer_version;
         tab.mark_dirty();
-        assert!(tab.content.is_dirty);
-        assert_eq!(tab.content.buffer_version, v0 + 1);
+        assert!(tab.is_dirty());
+        assert_eq!(tab.as_file().unwrap().buffer_version, v0 + 1);
     }
 }

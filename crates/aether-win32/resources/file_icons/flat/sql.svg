@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="SQL file icon (flat)">
+  <title>SQL File (Flat)</title>
+  <path d="M5 3 L14 3 L20 9 L20 20 L4 20 Z" fill="#E38C00"/>
+  <path d="M14 3 L20 9 L14 9 Z" fill="#FFFFFF" fill-opacity="0.5"/>
+  <ellipse cx="11.75" cy="12.5" rx="3.75" ry="1.5" fill="#FFFFFF"/>
+  <ellipse cx="11.75" cy="16.5" rx="3.75" ry="1.5" fill="#FFFFFF"/>
+  <path d="M8 12.5 L8 16.5 L9 16.5 L9 12.5 Z" fill="#FFFFFF"/>
+  <path d="M14.5 12.5 L14.5 16.5 L15.5 16.5 L15.5 12.5 Z" fill="#FFFFFF"/>
+</svg>

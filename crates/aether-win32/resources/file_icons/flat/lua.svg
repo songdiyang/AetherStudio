@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Lua file icon (flat)">
+  <title>Lua File (Flat)</title>
+  <path d="M5 3 L14 3 L20 9 L20 20 L4 20 Z" fill="#000080"/>
+  <path d="M14 3 L20 9 L14 9 Z" fill="#FFFFFF" fill-opacity="0.5"/>
+  <polygon points="9,11 11,11 11,18 15.5,18 15.5,19.5 9,19.5" fill="#FFFFFF"/>
+</svg>

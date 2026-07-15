@@ -13,10 +13,6 @@ use crate::editor::EditorState;
 use crate::layout::SidebarContent;
 use crate::tab_context_menu::TabContextMenuState;
 
-/// 文件树渲染起始 y 偏移（与 handle_file_tree_click 中的 34.0 保持一致：
-/// header_h=28 + 分隔线 + 少量上边距）
-const FILE_TREE_LIST_START_Y: f32 = 34.0;
-
 /// WM_RBUTTONDOWN
 pub(crate) unsafe fn on_r_button_down(
     hwnd: HWND,
@@ -50,13 +46,9 @@ pub(crate) unsafe fn on_r_button_down(
     let show_tab_bar = st.show_tab_bar();
     let tab_region = st.layout.tab_bar_region(show_tab_bar);
     if show_tab_bar && tab_region.contains(mouse_x, mouse_y) {
-        if let Some(tab_idx) = st.tab_body_hit_test(mouse_x, mouse_y, tab_region.x) {
+        if let Some(tab_idx) = st.tab_body_hit_test(mouse_x, mouse_y, tab_region.x, tab_region.y) {
             // 获取该标签的 file_path（用于判断 has_path 和复制路径）
-            let has_path = st
-                .tabs
-                .get(tab_idx)
-                .and_then(|t| t.content.file_path.as_ref())
-                .is_some();
+            let has_path = st.tabs.get(tab_idx).and_then(|t| t.file_path()).is_some();
             let mut menu = TabContextMenuState::build_for_tab(tab_idx, has_path);
             menu.open_at(mouse_x, mouse_y, window_w, window_h);
             st.tab_context_menu = menu;
@@ -141,21 +133,30 @@ pub(crate) unsafe fn on_r_button_down(
     }
 
     // 侧边栏内坐标（相对侧边栏左上角）
+    let s = st.dpi_scale;
+    let header_h = 28.0 * s;
+    let input_offset_y = if st.file_tree_input.is_some() {
+        26.0 * s + 10.0 * s
+    } else {
+        0.0
+    };
     let sidebar_rel_x = mouse_x - sidebar_region.x;
-    let sidebar_rel_y = mouse_y - sidebar_region.y;
+    let content_y =
+        mouse_y - sidebar_region.y + st.sidebar_scroll_y - (header_h + 6.0 * s + input_offset_y);
     let sidebar_width = st.layout.sidebar_width;
 
     // 命中文件/文件夹节点 → 选中该节点但不弹出空白区域菜单
     // （节点级上下文菜单不在本次需求范围内）
     // 先以不可变借用查询命中节点，提取 node_idx 后再修改状态，避免借用冲突。
     let hit_node_idx: Option<u32> = st.file_tree.as_ref().and_then(|tree| {
-        let mut current_y = FILE_TREE_LIST_START_Y;
+        let mut current_y = 0.0;
         EditorState::find_tree_click_target(
             tree,
             u32::MAX,
             sidebar_rel_x,
-            sidebar_rel_y,
+            content_y,
             sidebar_width,
+            st.dpi_scale,
             &mut current_y,
         )
         .map(|(node_idx, _, _)| node_idx)

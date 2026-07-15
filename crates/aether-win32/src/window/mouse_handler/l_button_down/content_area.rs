@@ -84,10 +84,11 @@ pub(super) unsafe fn lbd_panel_resizing(
         && (mouse_x >= editor_region.right() - 4.0 && mouse_x <= editor_region.right() + 4.0)
         && mouse_y >= editor_region.y
         && mouse_y < editor_region.y + editor_region.height;
+    let bottom_region = layout.bottom_panel_region();
     let bottom_panel_resize_zone = layout.bottom_panel_visible
-        && (mouse_y >= editor_region.bottom() - 4.0 && mouse_y <= editor_region.bottom() + 4.0)
-        && mouse_x >= editor_region.x
-        && mouse_x < editor_region.x + editor_region.width;
+        && (mouse_y >= bottom_region.y - 4.0 && mouse_y <= bottom_region.y + 4.0)
+        && mouse_x >= bottom_region.x
+        && mouse_x < bottom_region.x + bottom_region.width;
     let mut st = state.borrow_mut();
     if right_panel_resize_zone {
         st.layout.right_panel_resizing = true;
@@ -381,7 +382,7 @@ pub(super) unsafe fn lbd_tab_bar(
         if !tab_region.contains(mouse_x, mouse_y) {
             return None;
         }
-        if let Some(tab_idx) = st.tab_body_hit_test(mouse_x, mouse_y, tab_region.x) {
+        if let Some(tab_idx) = st.tab_body_hit_test(mouse_x, mouse_y, tab_region.x, tab_region.y) {
             st.tab_drag_start = Some((mouse_x as i32, mouse_y as i32));
             st.hover_tab = Some(tab_idx);
             return Some(LRESULT(0));
@@ -439,15 +440,11 @@ pub(super) unsafe fn lbd_tab_bar(
                             .unwrap_or_else(|| "未命名".to_string());
                         (dirty, name)
                     } else {
-                        let dirty = st
-                            .tabs
-                            .get(index)
-                            .map(|t| t.content.is_dirty)
-                            .unwrap_or(false);
+                        let dirty = st.tabs.get(index).map(|t| t.is_dirty()).unwrap_or(false);
                         let name = st
                             .tabs
                             .get(index)
-                            .and_then(|t| t.content.file_path.as_ref())
+                            .and_then(|t| t.file_path())
                             .and_then(|p| p.file_name())
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_else(|| "未命名".to_string());
