@@ -84,6 +84,8 @@ pub enum Language {
     Python,
     JavaScript,
     TypeScript,
+    Go,
+    Java,
     Json,
     Markdown,
     Toml,
@@ -108,6 +110,10 @@ impl Language {
             // JavaScript/TypeScript 及其衍生
             "js" | "jsx" | "mjs" | "cjs" | "es" | "es6" => Language::JavaScript,
             "ts" | "tsx" | "mts" | "cts" => Language::TypeScript,
+            // Go
+            "go" => Language::Go,
+            // Java
+            "java" => Language::Java,
             // JSON / JSON-like
             "json" | "jsonc" | "jsonl" => Language::Json,
             // Markdown / 文档
@@ -142,6 +148,9 @@ impl Language {
             Language::Rust => Box::new(rust_lexer::RustLexer::new()),
             Language::Python => Box::new(python_lexer::PythonLexer::new()),
             Language::JavaScript | Language::TypeScript => Box::new(js_lexer::JsLexer::new()),
+            // Go/Java 无独立 lexer，复用 C 家族 lexer 作为 fallback（仅在 tree-sitter
+            // 不可用时使用，如大文件），可高亮注释、字符串、数字、大括号等公共结构
+            Language::Go | Language::Java => Box::new(c_lexer::CLexer::new()),
             Language::Json => Box::new(json_lexer::JsonLexer::new()),
             Language::Markdown => Box::new(markdown_lexer::MarkdownLexer::new()),
             Language::Toml => Box::new(toml_lexer::TomlLexer::new()),
@@ -160,6 +169,7 @@ impl Language {
             Language::Rust => rust_lexer::RustLexer::new().lex_full(text),
             Language::Python => python_lexer::PythonLexer::new().lex_full(text),
             Language::JavaScript | Language::TypeScript => js_lexer::JsLexer::new().lex_full(text),
+            Language::Go | Language::Java => c_lexer::CLexer::new().lex_full(text),
             Language::Json => json_lexer::JsonLexer::new().lex_full(text),
             Language::Markdown => markdown_lexer::MarkdownLexer::new().lex_full(text),
             Language::Toml => toml_lexer::TomlLexer::new().lex_full(text),
