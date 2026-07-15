@@ -6437,6 +6437,9 @@ impl EditorState {
                 crate::settings::SettingsTab::Account => "账号",
                 crate::settings::SettingsTab::General => "通用",
                 crate::settings::SettingsTab::Models => "模型",
+                crate::settings::SettingsTab::Ai => "AI",
+                crate::settings::SettingsTab::Appearance => "外观",
+                crate::settings::SettingsTab::Remote => "远程",
             };
             let page_title_wide: Vec<u16> = page_title.encode_utf16().chain(Some(0)).collect();
             let page_title_rect = D2D_RECT_F {
@@ -6523,6 +6526,7 @@ impl EditorState {
                         );
                     }
                 }
+                _ => {}
             }
         }
     }
@@ -6906,7 +6910,7 @@ impl EditorState {
                 .settings_panel
                 .model_dropdown_options()
                 .into_iter()
-                .map(|s| s.to_string())
+                .map(|(id, name)| name)
                 .collect();
             cy = self.render_settings_dropdown(
                 target,
@@ -8351,12 +8355,9 @@ impl EditorState {
             // 如果展开，渲染下拉项
             if is_open {
                 let items: Vec<String> = match kind {
-                    crate::settings::AddModelDropdownKind::Provider => {
-                        crate::settings::dropdown_items()
-                            .into_iter()
-                            .map(|(_, name)| name.to_string())
-                            .collect()
-                    }
+                    crate::settings::AddModelDropdownKind::Provider => self
+                        .settings_panel
+                        .dropdown_items(crate::settings::AddModelDropdownKind::Provider),
                     crate::settings::AddModelDropdownKind::Model => {
                         self.settings_panel.add_model_dialog.model_options()
                     }

@@ -5,6 +5,7 @@ use super::piece_table::Piece;
 
 /// 基于Piece Table快照的高效Undo/Redo
 /// 不是保存文本内容，而是保存piece表的元数据状态
+#[derive(Clone, Debug)]
 pub struct History {
     /// 操作记录栈 — CORE-M02: 使用 VecDeque 替代 Vec，O(1) 淘汰而非 O(n) remove(0)
     undos: VecDeque<EditRecord>,

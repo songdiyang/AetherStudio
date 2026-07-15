@@ -450,6 +450,32 @@ impl TextLayoutCache {
     pub fn clear(&mut self) {
         self.layouts.clear();
     }
+
+    /// 创建带省略号的文本布局（用于侧边栏文件树等长文本截断场景）
+    pub fn create_ellipsis_layout(
+        &self,
+        text: &str,
+        format: &IDWriteTextFormat,
+        max_width: f32,
+        max_height: f32,
+    ) -> Result<IDWriteTextLayout> {
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let layout = unsafe {
+            self.dwrite_factory
+                .CreateTextLayout(&wide, format, max_width, max_height)?
+        };
+        // 设置截断方式为省略号
+        let trimming = windows::Win32::Graphics::DirectWrite::DWRITE_TRIMMING {
+            granularity:
+                windows::Win32::Graphics::DirectWrite::DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+            delimiter: 0,
+            delimiterCount: 0,
+        };
+        unsafe {
+            layout.SetTrimming(&trimming, None)?;
+        }
+        Ok(layout)
+    }
 }
 
 /// 将颜色转换为缓存键

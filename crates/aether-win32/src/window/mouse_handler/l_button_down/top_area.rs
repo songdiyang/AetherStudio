@@ -477,14 +477,14 @@ pub(super) unsafe fn lbd_tab_context_menu(
             }
             crate::tab_context_menu::TabContextMenuCommand::CopyPath => {
                 if let Some(idx) = tab_idx {
-                    if let Some(path) = st.tabs.get(idx).and_then(|t| t.content.file_path.clone()) {
+                    if let Some(path) = st.tabs.get(idx).and_then(|t| t.file_path().cloned()) {
                         st.copy_text_to_clipboard(&path.to_string_lossy());
                     }
                 }
             }
             crate::tab_context_menu::TabContextMenuCommand::RevealInExplorer => {
                 if let Some(idx) = tab_idx {
-                    if let Some(path) = st.tabs.get(idx).and_then(|t| t.content.file_path.clone()) {
+                    if let Some(path) = st.tabs.get(idx).and_then(|t| t.file_path().cloned()) {
                         let _ = std::process::Command::new("explorer.exe")
                             .args(["/select,", &path.to_string_lossy()])
                             .spawn();

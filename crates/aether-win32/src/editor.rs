@@ -577,6 +577,16 @@ impl EditorState {
         !self.tabs.is_empty() && !self.active_tab_is_welcome()
     }
 
+    /// 是否显示欢迎页
+    // pub fn show_welcome(&self) -> bool {
+    //     self.tabs.is_empty() || self.active_tab_is_welcome()
+    // }
+
+    /// 是否显示空占位页（tabs 为空时的默认状态）
+    pub fn show_empty_placeholder(&self) -> bool {
+        self.tabs.is_empty()
+    }
+
     /// 当前活动标签页是否是文件 tab
     pub fn active_tab_is_file(&self) -> bool {
         self.tabs

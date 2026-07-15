@@ -135,6 +135,10 @@ pub const MAX_SIDEBAR_WIDTH: f32 = 500.0;
 pub const MIN_BOTTOM_PANEL_HEIGHT: f32 = 100.0;
 /// 右侧面板最小宽度
 pub const MIN_RIGHT_PANEL_WIDTH: f32 = 150.0;
+/// 侧边栏调整手柄半宽（鼠标悬停检测范围）
+pub const SIDEBAR_RESIZE_GRAB: f32 = 4.0;
+/// 活动栏按钮尺寸
+pub const ACTIVITY_BAR_BUTTON_SIZE: f32 = 40.0;
 
 /// 布局管理器 - 计算和管理所有 UI 区域的几何布局
 #[derive(Clone, Debug)]
@@ -159,6 +163,7 @@ pub struct LayoutManager {
     pub status_bar_visible: bool,
     pub right_panel_resizing: bool,
     pub bottom_panel_resizing: bool,
+    pub sidebar_resizing: bool,
 }
 
 impl LayoutManager {
@@ -182,6 +187,7 @@ impl LayoutManager {
             status_bar_visible: true,
             right_panel_resizing: false,
             bottom_panel_resizing: false,
+            sidebar_resizing: false,
         }
     }
 
@@ -393,6 +399,11 @@ impl LayoutManager {
     /// 切换侧边栏可见性
     pub fn toggle_sidebar(&mut self) {
         self.sidebar_visible = !self.sidebar_visible;
+    }
+
+    /// 显式设置侧边栏可见性
+    pub fn show_sidebar(&mut self) {
+        self.sidebar_visible = true;
     }
 
     /// 切换活动栏可见性

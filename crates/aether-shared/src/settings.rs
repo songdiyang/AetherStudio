@@ -157,6 +157,11 @@ pub struct RemoteSettings {
 }
 
 impl AppSettings {
+    /// 返回 AI 设置副本（供 AI 面板调用）
+    pub fn active_ai_settings(&self) -> AiSettings {
+        self.ai.clone()
+    }
+
     pub fn settings_path() -> PathBuf {
         let config_dir = dirs::config_dir().unwrap_or_else(std::env::temp_dir);
         let aether_dir = config_dir.join("Aether");

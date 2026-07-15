@@ -10,6 +10,7 @@ use super::text_buffer::{BufferState, EditResult, TextBuffer, TextBufferSnapshot
 
 /// Piece Table — 高性能文本缓冲区
 /// 支持O(1)插入/删除，零拷贝大文件打开
+#[derive(Debug)]
 pub struct PieceTable {
     /// 原始文件内容（只读，内存映射，Arc共享避免快照拷贝）
     original: Option<Arc<Mmap>>,
@@ -33,6 +34,24 @@ pub struct PieceTable {
     coalesce_threshold: usize,
 }
 
+impl Clone for PieceTable {
+    fn clone(&self) -> Self {
+        Self {
+            original: self.original.clone(),
+            add_buffer: self.add_buffer.clone(),
+            pieces: self.pieces.clone(),
+            line_index: LineIndex {
+                line_starts: self.line_index.line_starts.clone(),
+            },
+            piece_offset_cache: self.piece_offset_cache.clone(),
+            len_chars: self.len_chars,
+            len_lines: self.len_lines,
+            edit_count: self.edit_count,
+            coalesce_threshold: self.coalesce_threshold,
+        }
+    }
+}
+
 /// 一个连续片段：要么指向original，要么指向add_buffer
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Piece {
@@ -50,6 +69,7 @@ pub enum Source {
 
 /// 行索引：每行起始字节位置
 /// 支持 O(1) 行号到字节偏移转换
+#[derive(Debug)]
 pub struct LineIndex {
     /// 每行起始的全局字节偏移
     line_starts: Vec<usize>,

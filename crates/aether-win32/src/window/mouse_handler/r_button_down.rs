@@ -46,13 +46,9 @@ pub(crate) unsafe fn on_r_button_down(
     let show_tab_bar = st.show_tab_bar();
     let tab_region = st.layout.tab_bar_region(show_tab_bar);
     if show_tab_bar && tab_region.contains(mouse_x, mouse_y) {
-        if let Some(tab_idx) = st.tab_body_hit_test(mouse_x, mouse_y, tab_region.x) {
+        if let Some(tab_idx) = st.tab_body_hit_test(mouse_x, mouse_y, tab_region.x, tab_region.y) {
             // 获取该标签的 file_path（用于判断 has_path 和复制路径）
-            let has_path = st
-                .tabs
-                .get(tab_idx)
-                .and_then(|t| t.content.file_path.as_ref())
-                .is_some();
+            let has_path = st.tabs.get(tab_idx).and_then(|t| t.file_path()).is_some();
             let mut menu = TabContextMenuState::build_for_tab(tab_idx, has_path);
             menu.open_at(mouse_x, mouse_y, window_w, window_h);
             st.tab_context_menu = menu;
