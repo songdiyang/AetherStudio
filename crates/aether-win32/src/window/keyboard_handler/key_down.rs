@@ -512,6 +512,7 @@ unsafe fn okd_completion_nav(hwnd: HWND, vk: VIRTUAL_KEY, ctrl: bool) -> Option<
 
 /// Settings field active - intercept keyboard input
 unsafe fn okd_settings_field(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool) -> Option<LRESULT> {
+    let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
     let active = EDITOR_STATE.with(|s| {
         s.borrow()
             .as_ref()
@@ -568,6 +569,18 @@ unsafe fn okd_settings_field(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool) -> Option
                         state.borrow_mut().settings_panel.next_field();
                     }
                     invalidate_window(hwnd);
+                }
+            });
+            Some(LRESULT(0))
+        }
+        VK_V if ctrl => {
+            // 设置面板字段支持 Ctrl+V 粘贴
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    if let Some(text) = crate::editor::EditorState::get_clipboard_text() {
+                        state.borrow_mut().settings_panel.paste_text(&text);
+                        invalidate_window(hwnd);
+                    }
                 }
             });
             Some(LRESULT(0))

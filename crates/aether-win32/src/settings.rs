@@ -1,4 +1,5 @@
 use aether_shared::settings::{AiSettings, AppSettings};
+use std::sync::{Arc, Mutex};
 
 /// 设置面板字段标识
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,11 +55,13 @@ impl SettingsTab {
         }
     }
 
-    pub const ALL: [SettingsTab; 4] = [
+    pub const ALL: [SettingsTab; 6] = [
         SettingsTab::General,
         SettingsTab::Ai,
         SettingsTab::Appearance,
         SettingsTab::Remote,
+        SettingsTab::Account,
+        SettingsTab::Models,
     ];
 }
 
@@ -67,8 +70,7 @@ impl SettingsTab {
 pub enum ProviderTemplateButton {
     DeepSeek,
     Kimi,
-    Claude,
-    CustomOpenAi,
+    Custom,
 }
 
 /// 设置下拉类型
@@ -195,8 +197,7 @@ impl AddModelDialog {
             .map(|b| match b {
                 ProviderTemplateButton::DeepSeek => "DeepSeek".to_string(),
                 ProviderTemplateButton::Kimi => "Kimi".to_string(),
-                ProviderTemplateButton::Claude => "Claude".to_string(),
-                ProviderTemplateButton::CustomOpenAi => "OpenAI".to_string(),
+                ProviderTemplateButton::Custom => "自定义".to_string(),
             })
             .unwrap_or_else(|| "请选择".to_string())
     }
@@ -224,6 +225,8 @@ pub struct SettingsPanel {
     pub hover_button: Option<SettingsButton>,
     pub test_status: String,
     pub is_testing: bool,
+    /// 后台测试连接结果（Some(Ok)=成功，Some(Err)=失败，None=未完成）
+    pub test_result: Arc<Mutex<Option<Result<String, String>>>>,
     // Cached layout for hit testing
     pub field_regions: Vec<(SettingsField, f32, f32, f32, f32)>,
     pub button_regions: Vec<(SettingsButton, f32, f32, f32, f32)>,
@@ -259,10 +262,10 @@ pub struct SettingsPanel {
 impl SettingsPanel {
     pub fn new() -> Self {
         Self {
-            provider: "openai".to_string(),
+            provider: "deepseek".to_string(),
             api_key: String::new(),
-            base_url: String::new(),
-            model: "gpt-4".to_string(),
+            base_url: "https://api.deepseek.com/v1".to_string(),
+            model: "deepseek-v4-pro".to_string(),
             temperature: "0.7".to_string(),
             max_tokens: "2048".to_string(),
             system_prompt: String::new(),
@@ -270,6 +273,7 @@ impl SettingsPanel {
             hover_button: None,
             test_status: String::new(),
             is_testing: false,
+            test_result: Arc::new(Mutex::new(None)),
             field_regions: Vec::new(),
             button_regions: Vec::new(),
             active_tab: SettingsTab::Ai,
@@ -315,6 +319,7 @@ impl SettingsPanel {
             hover_button: None,
             test_status: String::new(),
             is_testing: false,
+            test_result: Arc::new(Mutex::new(None)),
             field_regions: Vec::new(),
             button_regions: Vec::new(),
             active_tab: SettingsTab::Ai,
@@ -383,6 +388,8 @@ impl SettingsPanel {
         self.tab_regions.clear();
         self.model_button_regions.clear();
         self.model_item_regions.clear();
+        self.dropdown_trigger_regions.clear();
+        self.dropdown_item_regions.clear();
     }
 
     pub fn add_field_region(&mut self, field: SettingsField, x: f32, y: f32, w: f32, h: f32) {
@@ -435,6 +442,22 @@ impl SettingsPanel {
                 SettingsField::Temperature => self.temperature.push(ch),
                 SettingsField::MaxTokens => self.max_tokens.push(ch),
                 SettingsField::SystemPrompt => self.system_prompt.push(ch),
+                _ => {}
+            }
+        }
+    }
+
+    /// 粘贴文本到当前活动字段
+    pub fn paste_text(&mut self, text: &str) {
+        if let Some(field) = self.active_field {
+            match field {
+                SettingsField::Provider => self.provider.push_str(text),
+                SettingsField::ApiKey => self.api_key.push_str(text),
+                SettingsField::BaseUrl => self.base_url.push_str(text),
+                SettingsField::Model => self.model.push_str(text),
+                SettingsField::Temperature => self.temperature.push_str(text),
+                SettingsField::MaxTokens => self.max_tokens.push_str(text),
+                SettingsField::SystemPrompt => self.system_prompt.push_str(text),
                 _ => {}
             }
         }
@@ -532,20 +555,16 @@ impl SettingsPanel {
 
     pub fn provider_display_label(&self) -> String {
         match self.provider.as_str() {
-            "openai" => "OpenAI".to_string(),
             "kimi" => "Kimi".to_string(),
             "deepseek" => "DeepSeek".to_string(),
-            "claude" => "Claude".to_string(),
             _ => self.provider.clone(),
         }
     }
 
     pub fn provider_dropdown_options() -> Vec<(&'static str, &'static str)> {
         vec![
-            ("openai", "OpenAI"),
-            ("kimi", "Kimi"),
             ("deepseek", "DeepSeek"),
-            ("claude", "Claude"),
+            ("kimi", "Kimi"),
             ("custom", "自定义"),
         ]
     }
@@ -553,37 +572,109 @@ impl SettingsPanel {
     pub fn model_dropdown_options(&self) -> Vec<(String, String)> {
         // 返回当前服务商的模型列表
         match self.provider.as_str() {
-            "openai" => vec![
-                ("gpt-4".to_string(), "GPT-4".to_string()),
-                ("gpt-4-turbo".to_string(), "GPT-4 Turbo".to_string()),
-                ("gpt-3.5-turbo".to_string(), "GPT-3.5 Turbo".to_string()),
-            ],
-            "kimi" => vec![
-                ("moonshot-v1-8k".to_string(), "Moonshot 8K".to_string()),
-                ("moonshot-v1-32k".to_string(), "Moonshot 32K".to_string()),
-                ("moonshot-v1-128k".to_string(), "Moonshot 128K".to_string()),
-            ],
-            "deepseek" => vec![
-                ("deepseek-chat".to_string(), "DeepSeek Chat".to_string()),
-                ("deepseek-coder".to_string(), "DeepSeek Coder".to_string()),
-            ],
-            "claude" => vec![
-                ("claude-3-opus".to_string(), "Claude 3 Opus".to_string()),
-                ("claude-3-sonnet".to_string(), "Claude 3 Sonnet".to_string()),
-                ("claude-3-haiku".to_string(), "Claude 3 Haiku".to_string()),
-            ],
+            "kimi" => vec![("kimi-code".to_string(), "kimi-code".to_string())],
+            "deepseek" => vec![("deepseek-v4-pro".to_string(), "deepseek-v4-pro".to_string())],
             _ => vec![(self.model.clone(), self.model.clone())],
         }
     }
 
     pub fn poll_test_result(&mut self) -> bool {
-        // 模拟测试连接结果轮询
+        if !self.is_testing {
+            return false;
+        }
+        let outcome = self
+            .test_result
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        match outcome {
+            Some(Ok(reply)) => {
+                let snippet: String = reply.chars().take(60).collect();
+                self.test_status = format!("✓ 连接成功：{}", snippet.trim());
+                self.is_testing = false;
+                true
+            }
+            Some(Err(e)) => {
+                self.test_status = format!("✗ 连接失败：{}", e);
+                self.is_testing = false;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 启动后台测试连接（非阻塞，HTTP 请求在后台线程执行）
+    pub fn start_test_connection(&mut self, ai: AiSettings) {
         if self.is_testing {
-            self.is_testing = false;
-            self.test_status = "连接成功".to_string();
-            true
-        } else {
-            false
+            return;
+        }
+        if ai.api_key.trim().is_empty() {
+            self.test_status = "✗ 请先填写 API 密钥".to_string();
+            return;
+        }
+        self.is_testing = true;
+        self.test_status = "正在测试连接…".to_string();
+        if let Ok(mut slot) = self.test_result.lock() {
+            *slot = None;
+        }
+        let result = Arc::clone(&self.test_result);
+        std::thread::spawn(move || {
+            let client = aether_ai::AiClient::new(&ai);
+            let r = client.test_connection_safe();
+            if let Ok(mut slot) = result.lock() {
+                *slot = Some(r);
+            }
+        });
+    }
+
+    /// 命中检测：下拉触发区
+    pub fn hit_test_dropdown_trigger(&self, x: f32, y: f32) -> Option<SettingsDropdownKind> {
+        for (kind, tx, ty, tw, th) in &self.dropdown_trigger_regions {
+            if x >= *tx && x < tx + tw && y >= *ty && y < ty + th {
+                return Some(*kind);
+            }
+        }
+        None
+    }
+
+    /// 命中检测：下拉选项（返回类型与索引）
+    pub fn hit_test_dropdown_item(&self, x: f32, y: f32) -> Option<(SettingsDropdownKind, usize)> {
+        for (kind, idx, ix, iy, iw, ih) in &self.dropdown_item_regions {
+            if x >= *ix && x < ix + iw && y >= *iy && y < iy + ih {
+                return Some((*kind, *idx));
+            }
+        }
+        None
+    }
+
+    /// 按下拉索引选择服务商，并将模型重置为该服务商的第一个预置模型
+    pub fn select_provider_by_index(&mut self, idx: usize) {
+        let opts = Self::provider_dropdown_options();
+        if let Some((id, _)) = opts.get(idx) {
+            self.provider = id.to_string();
+            // 根据选择的厂商自动设置 base_url
+            match *id {
+                "deepseek" => {
+                    self.base_url = "https://api.deepseek.com/v1".to_string();
+                }
+                "kimi" => {
+                    self.base_url = "https://api.moonshot.cn/v1".to_string();
+                }
+                _ => {
+                    self.base_url = String::new();
+                }
+            }
+            if let Some((mid, _)) = self.model_dropdown_options().first() {
+                self.model = mid.clone();
+            }
+        }
+    }
+
+    /// 按下拉索引选择模型
+    pub fn select_model_by_index(&mut self, idx: usize) {
+        let opts = self.model_dropdown_options();
+        if let Some((mid, _)) = opts.get(idx) {
+            self.model = mid.clone();
         }
     }
 
@@ -613,8 +704,6 @@ impl SettingsPanel {
         match self.provider.as_str() {
             "deepseek" => Some(ProviderTemplateButton::DeepSeek),
             "kimi" => Some(ProviderTemplateButton::Kimi),
-            "claude" => Some(ProviderTemplateButton::Claude),
-            "openai" => Some(ProviderTemplateButton::CustomOpenAi),
             _ => None,
         }
     }

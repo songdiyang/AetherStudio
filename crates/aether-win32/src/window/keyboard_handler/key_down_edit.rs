@@ -5,10 +5,11 @@
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
+use windows::Win32::UI::WindowsAndMessaging::SetTimer;
 
 use crate::editor::EditorState;
 
-use super::super::{invalidate_window, EDITOR_STATE};
+use super::super::{invalidate_window, AI_REFRESH_MS, AI_TIMER_ID, EDITOR_STATE};
 
 /// 非 Ctrl 按键总分发
 pub(crate) unsafe fn okd_edit_dispatch(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool) {
@@ -182,6 +183,8 @@ unsafe fn okd_edit_return(hwnd: HWND) {
                     .borrow_mut()
                     .ai_panel
                     .send_message_with_prepared_context(&settings, context, mode);
+                // 启动后台刷新定时器，使流式回复逐字平滑显示，完成后自动停止
+                let _ = SetTimer(hwnd, AI_TIMER_ID, AI_REFRESH_MS, None);
                 invalidate_window(hwnd);
             }
         });

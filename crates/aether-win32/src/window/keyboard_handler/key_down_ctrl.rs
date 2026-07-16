@@ -200,17 +200,12 @@ unsafe fn okd_ctrl_view(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool) {
 /// Task 13: Ctrl+,/J/Shift+E：设置、底部面板、资源管理器视图
 unsafe fn okd_ctrl_view_shortcuts(hwnd: HWND, vk: VIRTUAL_KEY, shift: bool) {
     match vk {
-        // SubTask 13.1: Ctrl+, 打开设置面板（临时实现：显示状态消息并打开右侧面板）
+        // SubTask 13.1: Ctrl+, 打开设置标签页
         VK_OEM_COMMA => {
             EDITOR_STATE.with(|s| {
                 if let Some(state) = s.borrow().as_ref() {
                     let mut st = state.borrow_mut();
-                    st.status_message = "设置面板（待实现）".to_string();
-                    st.status_bar.update_status("设置面板（待实现）");
-                    st.layout.right_panel_visible = true;
-                    if st.layout.right_panel_width < 1.0 {
-                        st.layout.right_panel_width = 320.0;
-                    }
+                    st.open_settings_tab();
                     drop(st);
                     invalidate_window(hwnd);
                 }

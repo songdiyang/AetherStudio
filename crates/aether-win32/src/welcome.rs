@@ -118,14 +118,121 @@ impl EditorState {
 
     pub(crate) fn render_empty_placeholder(
         &mut self,
-        _target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
-        _x: f32,
-        _y: f32,
-        _width: f32,
-        _height: f32,
+        target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
     ) {
-        // 空占位页 stub：仅清除区域背景，不绘制内容
-        // 实际实现可在此居中显示 logo 或提示文字
+        // 确保矢量图标几何已创建
+        self.icons.ensure_created_from_target(target);
+        // 优先加载 PNG 位图（需要 &mut self，在获取 dwrite 不可变引用之前完成）
+        self.ensure_logo_bitmap(target);
+        let dwrite = self.text_renderer.dwrite_factory();
+
+        unsafe {
+            let bg_brush = target
+                .CreateSolidColorBrush(&color_f(0.09, 0.09, 0.09, 1.0), None)
+                .unwrap_or_else(|e| {
+                    eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
+                    panic!("D2D device lost")
+                });
+            let title_brush = target
+                .CreateSolidColorBrush(&color_f(0.9, 0.9, 0.9, 1.0), None)
+                .unwrap_or_else(|e| {
+                    eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
+                    panic!("D2D device lost")
+                });
+            let _subtitle_brush = target
+                .CreateSolidColorBrush(&color_f(0.6, 0.6, 0.6, 1.0), None)
+                .unwrap_or_else(|e| {
+                    eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
+                    panic!("D2D device lost")
+                });
+
+            // 背景填充
+            let full_bg = D2D_RECT_F {
+                left: x,
+                top: y,
+                right: x + width,
+                bottom: y + height,
+            };
+            target.FillRectangle(&full_bg, &bg_brush);
+
+            // 居中显示 logo 和提示文字
+            let logo_size = 80.0f32;
+            let center_x = x + width * 0.5;
+            let center_y = y + height * 0.5;
+            let logo_x = center_x - logo_size * 0.5;
+            // 文字在图片正下方，整体以图片+文字组合垂直居中
+            let text_h = 28.0f32;
+            let gap = 20.0f32;
+            let total_h = logo_size + gap + text_h;
+            let logo_y = center_y - total_h * 0.5;
+            // 使用 PNG 位图，加载失败时回退到矢量图标
+            if let Some(ref bitmap) = self.logo_bitmap {
+                let dest_rect = D2D_RECT_F {
+                    left: logo_x,
+                    top: logo_y,
+                    right: logo_x + logo_size,
+                    bottom: logo_y + logo_size,
+                };
+                target.DrawBitmap(
+                    bitmap,
+                    Some(&dest_rect),
+                    1.0,
+                    windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                    None,
+                );
+            } else {
+                self.icons.draw(
+                    target,
+                    crate::icons::IconKind::EmojiSheep,
+                    logo_x,
+                    logo_y,
+                    logo_size,
+                    logo_size,
+                    &title_brush,
+                );
+            }
+
+            let title_format = dwrite
+                .CreateTextFormat(
+                    windows::core::w!("Segoe UI"),
+                    None,
+                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_BOLD,
+                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_NORMAL,
+                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STRETCH_NORMAL,
+                    20.0,
+                    windows::core::w!("zh-CN"),
+                )
+                .unwrap_or_else(|e| {
+                    eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
+                    panic!("D2D device lost")
+                });
+            // 设置文字居中对齐
+            let _ = title_format.SetTextAlignment(
+                windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT_CENTER,
+            );
+            let _ = title_format.SetParagraphAlignment(
+                windows::Win32::Graphics::DirectWrite::DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+            );
+            let title: Vec<u16> = "你好，世界".encode_utf16().chain(Some(0)).collect();
+            let title_rect = D2D_RECT_F {
+                left: x,
+                top: logo_y + logo_size + 16.0,
+                right: x + width,
+                bottom: logo_y + logo_size + 50.0,
+            };
+            target.DrawText(
+                &title,
+                &title_format,
+                &title_rect,
+                &title_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
+            );
+        }
     }
 
     fn welcome_actions() -> [WelcomeActionItem; 4] {
@@ -222,6 +329,8 @@ impl EditorState {
     ) {
         // 确保矢量图标几何已创建（懒加载，仅首次调用时执行）
         self.icons.ensure_created_from_target(target);
+        // 优先加载 PNG 位图（需要 &mut self，在获取 dwrite 不可变引用之前完成）
+        self.ensure_logo_bitmap(target);
         let dwrite = self.text_renderer.dwrite_factory();
         let actions = Self::welcome_actions();
         let recent_projects = self.recent_projects.list();
@@ -306,19 +415,35 @@ impl EditorState {
             };
             target.FillRectangle(&full_bg, &bg_brush);
 
-            // UI-UX: 使用矢量 EmojiSheep 图标替代 emoji 字符，保持视觉一致性
+            // UI-UX: 使用 PNG 位图替代矢量图标，保持视觉一致性
             let logo_size = 60.0f32;
             let logo_x = layout.left_col_x;
             let logo_y = y + layout.top_margin;
-            self.icons.draw(
-                target,
-                crate::icons::IconKind::EmojiSheep,
-                logo_x,
-                logo_y,
-                logo_size,
-                logo_size,
-                &title_brush,
-            );
+            if let Some(ref bitmap) = self.logo_bitmap {
+                let dest_rect = D2D_RECT_F {
+                    left: logo_x,
+                    top: logo_y,
+                    right: logo_x + logo_size,
+                    bottom: logo_y + logo_size,
+                };
+                target.DrawBitmap(
+                    bitmap,
+                    Some(&dest_rect),
+                    1.0,
+                    windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                    None,
+                );
+            } else {
+                self.icons.draw(
+                    target,
+                    crate::icons::IconKind::EmojiSheep,
+                    logo_x,
+                    logo_y,
+                    logo_size,
+                    logo_size,
+                    &title_brush,
+                );
+            }
 
             let brand_title_format = dwrite
                 .CreateTextFormat(

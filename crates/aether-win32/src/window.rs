@@ -41,10 +41,14 @@ pub(crate) const TERM_TIMER_ID: usize = 0xA002;
 pub(crate) const HOVER_TIMER_ID: usize = 0xA003;
 /// 新建项目对话框输入框光标闪烁定时器 ID
 pub const CARET_TIMER_ID: usize = 0xA004;
+/// AI 后台刷新定时器 ID（流式生成 / 测试连接期间周期性重绘，完成后自动停止）
+pub(crate) const AI_TIMER_ID: usize = 0xA005;
 /// 长按阈值（毫秒）
 pub(crate) const LP_THRESHOLD_MS: u32 = 500;
 /// 终端刷新间隔（毫秒），约 20fps 足以实时显示 shell 输出
 pub(crate) const TERM_REFRESH_MS: u32 = 50;
+/// AI 后台刷新间隔（毫秒），用于流式生成与测试连接期间的平滑重绘
+pub(crate) const AI_REFRESH_MS: u32 = 80;
 /// P3.4: Hover tooltip 触发延迟（毫秒）
 pub(crate) const HOVER_DELAY_MS: u32 = 500;
 /// 长按期间允许的鼠标移动容差（逻辑像素，超过则取消长按检测）

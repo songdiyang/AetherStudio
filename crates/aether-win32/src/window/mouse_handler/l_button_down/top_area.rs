@@ -220,9 +220,8 @@ unsafe fn lbd_titlebar_controls(
         invalidate_window(hwnd);
         return Some(LRESULT(0));
     } else if mouse_x >= settings_btn_x {
-        // 设置：打开用户菜单中的 EditorSettings（临时行为）
-        st.sidebar_content = crate::layout::SidebarContent::RemoteManagerPanel;
-        st.status_message = "设置（待实现）".to_string();
+        // 设置：打开设置标签页
+        st.open_settings_tab();
         drop(st);
         invalidate_window(hwnd);
         return Some(LRESULT(0));
@@ -340,7 +339,7 @@ pub(super) unsafe fn lbd_user_menu(
     match item {
         crate::user_menu::UserMenuItem::EditorSettings => {
             st.user_menu.close();
-            st.sidebar_content = crate::layout::SidebarContent::RemoteManagerPanel;
+            st.open_settings_tab();
             drop(st);
             invalidate_window(hwnd);
             Some(LRESULT(0))

@@ -69,7 +69,10 @@ impl EditorState {
         crate::hit_test::clear_hit_regions();
 
         // AI-H01: 轮询后台 AI 请求结果，不阻塞 UI 线程
-        self.ai_panel.check_background_result();
+        // 传入工作区目录，供 Edit/Agent 模式解析编辑相对路径生成正确 diff
+        let ai_current_folder = self.current_folder.clone();
+        self.ai_panel
+            .check_background_result(ai_current_folder.as_deref());
 
         // 设置面板：轮询测试连接结果
         if self.settings_panel.poll_test_result() {
@@ -1094,12 +1097,12 @@ impl EditorState {
                     DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
                 )
                 .unwrap();
-            // 章节标题：12px 加粗，与"源代码管理"侧栏保持一致
+            // 章节标题：11px 加粗，与"源代码管理"侧栏保持一致
             let header_format = self
                 .render_ctx
                 .text_format_cache
                 .get_format(
-                    12.0 * s,
+                    11.0 * s,
                     DWRITE_FONT_WEIGHT_BOLD.0 as u32,
                     DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
                     DWRITE_PARAGRAPH_ALIGNMENT_CENTER.0 as u32,
@@ -1109,7 +1112,7 @@ impl EditorState {
                 .render_ctx
                 .text_format_cache
                 .get_format(
-                    11.0 * s,
+                    10.0 * s,
                     DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
                     DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
                     DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
@@ -2118,7 +2121,7 @@ impl EditorState {
             );
 
             if let Some(tree) = &self.remote_file_tree {
-                let node_height = 18.0_f32 * s;
+                let node_height = 16.0_f32 * s;
                 let mut current_y = y + 40.0 * s - self.remote_scroll_y;
                 let hover = self.hover_remote_node.as_ref();
                 let selected = self.selected_remote_node.as_ref();
@@ -4735,75 +4738,6 @@ impl EditorState {
             // 清空命中区域（每帧重建）
             self.ai_panel.clear_hit_regions();
 
-            // ===== 附件 chips =====
-            if !self.ai_panel.attachments.is_empty() {
-                let mut chip_x = x + margin;
-                let chip_y = cy;
-                let chip_h = 20.0f32;
-                for (idx, att) in self.ai_panel.attachments.iter().enumerate() {
-                    let label = att.short_label();
-                    let chip_w = (label.chars().count() as f32 * 8.0 + 24.0).min(120.0);
-                    if chip_x + chip_w > x + width - margin {
-                        // 单行不够就不再换行，保持简单
-                        break;
-                    }
-                    let is_hover = self.ai_panel.hover_attachment == Some(idx);
-                    let chip_color = if is_hover {
-                        color_f(0.15, 0.35, 0.55, 1.0)
-                    } else {
-                        color_f(0.15, 0.20, 0.28, 1.0)
-                    };
-                    let chip_brush =
-                        match self.render_ctx.brush_cache.get_brush(target, &chip_color) {
-                            Ok(b) => b,
-                            Err(_) => continue,
-                        };
-                    let chip_rect = D2D_RECT_F {
-                        left: chip_x,
-                        top: chip_y,
-                        right: chip_x + chip_w,
-                        bottom: chip_y + chip_h,
-                    };
-                    target.FillRectangle(&chip_rect, &chip_brush);
-                    let chip_text: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
-                    let chip_text_rect = D2D_RECT_F {
-                        left: chip_x + 6.0,
-                        top: chip_y + 3.0,
-                        right: chip_x + chip_w - 6.0,
-                        bottom: chip_y + chip_h - 2.0,
-                    };
-                    target.DrawText(
-                        &chip_text,
-                        &small_format,
-                        &chip_text_rect,
-                        &white_brush,
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        DWRITE_MEASURING_MODE_NATURAL,
-                    );
-                    // 删除标记 ×
-                    let x_text: Vec<u16> = "×".encode_utf16().chain(Some(0)).collect();
-                    let x_rect = D2D_RECT_F {
-                        left: chip_x + chip_w - 16.0,
-                        top: chip_y + 3.0,
-                        right: chip_x + chip_w - 4.0,
-                        bottom: chip_y + chip_h - 2.0,
-                    };
-                    target.DrawText(
-                        &x_text,
-                        &small_format,
-                        &x_rect,
-                        &dim_brush,
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        DWRITE_MEASURING_MODE_NATURAL,
-                    );
-                    self.ai_panel
-                        .attachment_chip_regions
-                        .push((idx, chip_x, chip_y, chip_w, chip_h));
-                    chip_x += chip_w + 4.0;
-                }
-                cy += chip_h + 8.0;
-            }
-
             // ===== 欢迎页/空工作区提示 =====
             let has_workspace = self.current_folder.is_some() || self.content.file_path.is_some();
             if !has_workspace {
@@ -5105,8 +5039,26 @@ impl EditorState {
 
             // ===== 变更列表 + Diff 预览（Edit/Agent 模式） =====
             if self.ai_panel.show_diff_view && !self.ai_panel.diff_view.is_empty() {
-                let changes_y = y + height - 200.0;
+                let input_top = y + height - 44.0;
+                let changes_y = (y + height - 340.0).max(chat_top + 4.0);
                 let changes_h = 150.0f32;
+
+                // 面板背景，避免与聊天内容视觉重叠
+                let panel_bg_brush = match self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &color_f(0.10, 0.10, 0.12, 1.0))
+                {
+                    Ok(b) => b,
+                    Err(_) => return,
+                };
+                let panel_bg_rect = D2D_RECT_F {
+                    left: x + margin - 2.0,
+                    top: changes_y - 4.0,
+                    right: x + width - margin + 2.0,
+                    bottom: input_top - 6.0,
+                };
+                target.FillRectangle(&panel_bg_rect, &panel_bg_brush);
 
                 // 标题
                 let ch_title: Vec<u16> = "待确认变更".encode_utf16().chain(Some(0)).collect();
@@ -5125,7 +5077,7 @@ impl EditorState {
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
 
-                // "全部接受" / "全部拒绝" 按钮
+                // "全部接受" / "全部拒绝" 按钮（idx = usize::MAX 表示批量操作）
                 let accept_all_w = 60.0f32;
                 let reject_all_w = 60.0f32;
                 let btn_h2 = 20.0f32;
@@ -5191,13 +5143,54 @@ impl EditorState {
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
+                self.ai_panel.change_action_regions.push((
+                    usize::MAX,
+                    1,
+                    accept_x,
+                    changes_y,
+                    accept_all_w,
+                    btn_h2,
+                ));
+                self.ai_panel.change_action_regions.push((
+                    usize::MAX,
+                    2,
+                    reject_x,
+                    changes_y,
+                    reject_all_w,
+                    btn_h2,
+                ));
 
-                // 文件列表
+                // 文件列表（最多显示 4 个）
                 let list_y = changes_y + 24.0;
                 let mut item_y = list_y;
-                for (idx, file) in self.ai_panel.diff_view.files.iter().enumerate() {
+                let selected_idx = self.ai_panel.diff_view.selected_index;
+                let max_files_shown = 4usize;
+                for (idx, file) in self
+                    .ai_panel
+                    .diff_view
+                    .files
+                    .iter()
+                    .enumerate()
+                    .take(max_files_shown)
+                {
                     if item_y + 20.0 > changes_y + changes_h {
                         break;
+                    }
+                    // 选中行高亮
+                    if idx == selected_idx {
+                        let sel_rect = D2D_RECT_F {
+                            left: x + margin,
+                            top: item_y - 1.0,
+                            right: x + width - margin,
+                            bottom: item_y + 17.0,
+                        };
+                        if let Ok(sel_brush) = self
+                            .render_ctx
+                            .brush_cache
+                            .get_brush(target, &color_f(0.18, 0.20, 0.26, 1.0))
+                        {
+                            target.FillRectangle(&sel_rect, &sel_brush);
+                        }
                     }
                     let (del, ins) = file.change_count();
                     let file_name = file
@@ -5277,6 +5270,97 @@ impl EditorState {
                             .push((idx, ai as u8, ax, item_y, act_w, 16.0));
                     }
                     item_y += 18.0;
+                }
+                if self.ai_panel.diff_view.files.len() > max_files_shown {
+                    let more = format!(
+                        "… 其余 {} 个文件",
+                        self.ai_panel.diff_view.files.len() - max_files_shown
+                    );
+                    let more_wide: Vec<u16> = more.encode_utf16().chain(Some(0)).collect();
+                    let more_rect = D2D_RECT_F {
+                        left: x + margin + 4.0,
+                        top: item_y,
+                        right: x + width - margin,
+                        bottom: item_y + 16.0,
+                    };
+                    target.DrawText(
+                        &more_wide,
+                        &small_format,
+                        &more_rect,
+                        &dim_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                    item_y += 18.0;
+                }
+
+                // ===== 选中文件的 Diff 预览行 =====
+                let preview_top = item_y + 4.0;
+                let preview_bottom = input_top - 8.0;
+                if preview_bottom - preview_top > 16.0 {
+                    if let Some(file) = self.ai_panel.diff_view.files.get(selected_idx) {
+                        let dl_h = 13.0f32;
+                        let mut ly = preview_top;
+                        for dline in &file.lines {
+                            if ly + dl_h > preview_bottom {
+                                break;
+                            }
+                            let (bg_color, fg_color, prefix) = match dline.kind {
+                                crate::diff_view::DiffLineKind::Delete => (
+                                    Some(color_f(0.32, 0.12, 0.12, 1.0)),
+                                    color_f(0.95, 0.6, 0.6, 1.0),
+                                    "-",
+                                ),
+                                crate::diff_view::DiffLineKind::Insert => (
+                                    Some(color_f(0.10, 0.30, 0.14, 1.0)),
+                                    color_f(0.7, 0.95, 0.7, 1.0),
+                                    "+",
+                                ),
+                                crate::diff_view::DiffLineKind::Context => {
+                                    (None, color_f(0.6, 0.6, 0.6, 1.0), " ")
+                                }
+                            };
+                            if let Some(bc) = bg_color {
+                                if let Ok(lb) = self.render_ctx.brush_cache.get_brush(target, &bc) {
+                                    let lr = D2D_RECT_F {
+                                        left: x + margin,
+                                        top: ly,
+                                        right: x + width - margin,
+                                        bottom: ly + dl_h,
+                                    };
+                                    target.FillRectangle(&lr, &lb);
+                                }
+                            }
+                            let fg_brush =
+                                match self.render_ctx.brush_cache.get_brush(target, &fg_color) {
+                                    Ok(b) => b,
+                                    Err(_) => break,
+                                };
+                            let raw = dline.text.trim_end_matches(['\n', '\r']);
+                            let shown: String = if raw.chars().count() > 120 {
+                                raw.chars().take(120).collect()
+                            } else {
+                                raw.to_string()
+                            };
+                            let dtext = format!("{}{}", prefix, shown);
+                            let dwide: Vec<u16> = dtext.encode_utf16().chain(Some(0)).collect();
+                            let dr = D2D_RECT_F {
+                                left: x + margin + 4.0,
+                                top: ly,
+                                right: x + width - margin - 2.0,
+                                bottom: ly + dl_h,
+                            };
+                            target.DrawText(
+                                &dwide,
+                                &small_format,
+                                &dr,
+                                &fg_brush,
+                                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                DWRITE_MEASURING_MODE_NATURAL,
+                            );
+                            ly += dl_h;
+                        }
+                    }
                 }
             }
 
@@ -6526,6 +6610,24 @@ impl EditorState {
                         );
                     }
                 }
+                crate::settings::SettingsTab::Ai => {
+                    let input_w = page_w.min(460.0);
+                    self.render_ai_settings_fields(
+                        target,
+                        page_x,
+                        page_w,
+                        page_y,
+                        0.0,
+                        input_w,
+                        20.0,
+                        32.0,
+                        12.0,
+                        label_format,
+                        input_format,
+                        button_format,
+                        text_brush,
+                    );
+                }
                 _ => {}
             }
         }
@@ -6592,7 +6694,7 @@ impl EditorState {
                 label_h,
                 input_h,
                 gap,
-                "选择厂商",
+                "厂商",
                 &provider_label_text,
                 true,
                 crate::settings::SettingsDropdownKind::Provider,
@@ -6601,109 +6703,6 @@ impl EditorState {
                 &input_format,
                 text_brush,
             );
-
-            // Provider
-            let provider_label: Vec<u16> =
-                "服务提供商 (openai / kimi / deepseek / claude / custom)"
-                    .encode_utf16()
-                    .chain(Some(0))
-                    .collect();
-            let provider_label_rect = D2D_RECT_F {
-                left: x + margin,
-                top: cy,
-                right: x + width - margin,
-                bottom: cy + label_h,
-            };
-            target.DrawText(
-                &provider_label,
-                &label_format,
-                &provider_label_rect,
-                text_brush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-            cy += label_h;
-            let provider_bg = color_f(0.18, 0.18, 0.18, 1.0);
-            let provider_bg_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &provider_bg)
-                .unwrap();
-            let provider_border = if self.settings_panel.active_field
-                == Some(crate::settings::SettingsField::Provider)
-            {
-                color_f(0.0, 0.47, 0.83, 1.0)
-            } else {
-                color_f(0.3, 0.3, 0.3, 1.0)
-            };
-            let provider_border_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &provider_border)
-                .unwrap();
-            let provider_rect = D2D_RECT_F {
-                left: x + margin,
-                top: cy,
-                right: x + margin + input_w,
-                bottom: cy + input_h,
-            };
-            target.FillRectangle(&provider_rect, &provider_bg_brush);
-            let border_top = D2D_RECT_F {
-                left: x + margin,
-                top: cy,
-                right: x + margin + input_w,
-                bottom: cy + 1.0,
-            };
-            let border_bottom = D2D_RECT_F {
-                left: x + margin,
-                top: cy + input_h - 1.0,
-                right: x + margin + input_w,
-                bottom: cy + input_h,
-            };
-            let border_left = D2D_RECT_F {
-                left: x + margin,
-                top: cy,
-                right: x + margin + 1.0,
-                bottom: cy + input_h,
-            };
-            let border_right = D2D_RECT_F {
-                left: x + margin + input_w - 1.0,
-                top: cy,
-                right: x + margin + input_w,
-                bottom: cy + input_h,
-            };
-            target.FillRectangle(&border_top, &provider_border_brush);
-            target.FillRectangle(&border_bottom, &provider_border_brush);
-            target.FillRectangle(&border_left, &provider_border_brush);
-            target.FillRectangle(&border_right, &provider_border_brush);
-            let provider_text: Vec<u16> = self
-                .settings_panel
-                .provider
-                .encode_utf16()
-                .chain(Some(0))
-                .collect();
-            let provider_text_rect = D2D_RECT_F {
-                left: x + margin + 6.0,
-                top: cy,
-                right: x + margin + input_w - 6.0,
-                bottom: cy + input_h,
-            };
-            target.DrawText(
-                &provider_text,
-                &input_format,
-                &provider_text_rect,
-                text_brush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-            self.settings_panel.add_field_region(
-                crate::settings::SettingsField::Provider,
-                x + margin,
-                cy,
-                input_w,
-                input_h,
-            );
-            cy += input_h + gap;
 
             // API Key
             let apikey_label: Vec<u16> = "API 密钥".encode_utf16().chain(Some(0)).collect();
@@ -6800,136 +6799,142 @@ impl EditorState {
             );
             cy += input_h + gap;
 
-            // Base URL
-            let baseurl_label: Vec<u16> =
-                "基础地址（可选）".encode_utf16().chain(Some(0)).collect();
-            let baseurl_label_rect = D2D_RECT_F {
-                left: x + margin,
-                top: cy,
-                right: x + width - margin,
-                bottom: cy + label_h,
-            };
-            target.DrawText(
-                &baseurl_label,
-                &label_format,
-                &baseurl_label_rect,
-                text_brush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-            cy += label_h;
-            let baseurl_bg = color_f(0.18, 0.18, 0.18, 1.0);
-            let baseurl_bg_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &baseurl_bg)
-                .unwrap();
-            let baseurl_border = if self.settings_panel.active_field
-                == Some(crate::settings::SettingsField::BaseUrl)
-            {
-                color_f(0.0, 0.47, 0.83, 1.0)
-            } else {
-                color_f(0.3, 0.3, 0.3, 1.0)
-            };
-            let baseurl_border_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &baseurl_border)
-                .unwrap();
-            let baseurl_rect = D2D_RECT_F {
-                left: x + margin,
-                top: cy,
-                right: x + margin + input_w,
-                bottom: cy + input_h,
-            };
-            target.FillRectangle(&baseurl_rect, &baseurl_bg_brush);
-            let border_top = D2D_RECT_F {
-                left: x + margin,
-                top: cy,
-                right: x + margin + input_w,
-                bottom: cy + 1.0,
-            };
-            let border_bottom = D2D_RECT_F {
-                left: x + margin,
-                top: cy + input_h - 1.0,
-                right: x + margin + input_w,
-                bottom: cy + input_h,
-            };
-            let border_left = D2D_RECT_F {
-                left: x + margin,
-                top: cy,
-                right: x + margin + 1.0,
-                bottom: cy + input_h,
-            };
-            let border_right = D2D_RECT_F {
-                left: x + margin + input_w - 1.0,
-                top: cy,
-                right: x + margin + input_w,
-                bottom: cy + input_h,
-            };
-            target.FillRectangle(&border_top, &baseurl_border_brush);
-            target.FillRectangle(&border_bottom, &baseurl_border_brush);
-            target.FillRectangle(&border_left, &baseurl_border_brush);
-            target.FillRectangle(&border_right, &baseurl_border_brush);
-            let baseurl_text: Vec<u16> = self
-                .settings_panel
-                .base_url
-                .encode_utf16()
-                .chain(Some(0))
-                .collect();
-            let baseurl_text_rect = D2D_RECT_F {
-                left: x + margin + 6.0,
-                top: cy,
-                right: x + margin + input_w - 6.0,
-                bottom: cy + input_h,
-            };
-            target.DrawText(
-                &baseurl_text,
-                &input_format,
-                &baseurl_text_rect,
-                text_brush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-            self.settings_panel.add_field_region(
-                crate::settings::SettingsField::BaseUrl,
-                x + margin,
-                cy,
-                input_w,
-                input_h,
-            );
-            cy += input_h + gap;
+            // 判断是否为自定义模式（预制模式自动填充 base_url 和 model）
+            let is_custom = self.settings_panel.provider == "custom";
 
-            // Model 下拉（按当前选中的服务商动态加载模型列表）
-            let model_value = if self.settings_panel.model.is_empty() {
-                "选择模型".to_string()
-            } else {
-                self.settings_panel.model.clone()
-            };
-            let model_items: Vec<String> = self
-                .settings_panel
-                .model_dropdown_options()
-                .into_iter()
-                .map(|(id, name)| name)
-                .collect();
-            cy = self.render_settings_dropdown(
-                target,
-                x,
-                cy,
-                margin,
-                input_w,
-                label_h,
-                input_h,
-                gap,
-                "模型",
-                &model_value,
-                true,
-                crate::settings::SettingsDropdownKind::Model,
-                model_items,
-                &label_format,
-                &input_format,
-                text_brush,
-            );
+            // Base URL（仅自定义模式显示，预制模式自动填充）
+            if is_custom {
+                let baseurl_label: Vec<u16> = "基础地址".encode_utf16().chain(Some(0)).collect();
+                let baseurl_label_rect = D2D_RECT_F {
+                    left: x + margin,
+                    top: cy,
+                    right: x + width - margin,
+                    bottom: cy + label_h,
+                };
+                target.DrawText(
+                    &baseurl_label,
+                    &label_format,
+                    &baseurl_label_rect,
+                    text_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+                cy += label_h;
+                let baseurl_bg = color_f(0.18, 0.18, 0.18, 1.0);
+                let baseurl_bg_brush = self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &baseurl_bg)
+                    .unwrap();
+                let baseurl_border = if self.settings_panel.active_field
+                    == Some(crate::settings::SettingsField::BaseUrl)
+                {
+                    color_f(0.0, 0.47, 0.83, 1.0)
+                } else {
+                    color_f(0.3, 0.3, 0.3, 1.0)
+                };
+                let baseurl_border_brush = self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &baseurl_border)
+                    .unwrap();
+                let baseurl_rect = D2D_RECT_F {
+                    left: x + margin,
+                    top: cy,
+                    right: x + margin + input_w,
+                    bottom: cy + input_h,
+                };
+                target.FillRectangle(&baseurl_rect, &baseurl_bg_brush);
+                let border_top = D2D_RECT_F {
+                    left: x + margin,
+                    top: cy,
+                    right: x + margin + input_w,
+                    bottom: cy + 1.0,
+                };
+                let border_bottom = D2D_RECT_F {
+                    left: x + margin,
+                    top: cy + input_h - 1.0,
+                    right: x + margin + input_w,
+                    bottom: cy + input_h,
+                };
+                let border_left = D2D_RECT_F {
+                    left: x + margin,
+                    top: cy,
+                    right: x + margin + 1.0,
+                    bottom: cy + input_h,
+                };
+                let border_right = D2D_RECT_F {
+                    left: x + margin + input_w - 1.0,
+                    top: cy,
+                    right: x + margin + input_w,
+                    bottom: cy + input_h,
+                };
+                target.FillRectangle(&border_top, &baseurl_border_brush);
+                target.FillRectangle(&border_bottom, &baseurl_border_brush);
+                target.FillRectangle(&border_left, &baseurl_border_brush);
+                target.FillRectangle(&border_right, &baseurl_border_brush);
+                let baseurl_text: Vec<u16> = self
+                    .settings_panel
+                    .base_url
+                    .encode_utf16()
+                    .chain(Some(0))
+                    .collect();
+                let baseurl_text_rect = D2D_RECT_F {
+                    left: x + margin + 6.0,
+                    top: cy,
+                    right: x + margin + input_w - 6.0,
+                    bottom: cy + input_h,
+                };
+                target.DrawText(
+                    &baseurl_text,
+                    &input_format,
+                    &baseurl_text_rect,
+                    text_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+                self.settings_panel.add_field_region(
+                    crate::settings::SettingsField::BaseUrl,
+                    x + margin,
+                    cy,
+                    input_w,
+                    input_h,
+                );
+                cy += input_h + gap;
+            } // end if is_custom
+
+            // Model 下拉（仅自定义模式显示，预制模式自动填充）
+            if is_custom {
+                let model_value = if self.settings_panel.model.is_empty() {
+                    "选择模型".to_string()
+                } else {
+                    self.settings_panel.model.clone()
+                };
+                let model_items: Vec<String> = self
+                    .settings_panel
+                    .model_dropdown_options()
+                    .into_iter()
+                    .map(|(_id, name)| name)
+                    .collect();
+                cy = self.render_settings_dropdown(
+                    target,
+                    x,
+                    cy,
+                    margin,
+                    input_w,
+                    label_h,
+                    input_h,
+                    gap,
+                    "模型",
+                    &model_value,
+                    true,
+                    crate::settings::SettingsDropdownKind::Model,
+                    model_items,
+                    &label_format,
+                    &input_format,
+                    text_brush,
+                );
+            } // end if is_custom
 
             // Temperature
             let temp_label: Vec<u16> = "温度 (0.0-2.0)".encode_utf16().chain(Some(0)).collect();
@@ -7306,7 +7311,7 @@ impl EditorState {
             if !self.settings_panel.test_status.is_empty() {
                 let status_color = if self.settings_panel.is_testing {
                     color_f(0.8, 0.8, 0.4, 1.0)
-                } else if self.settings_panel.test_status.starts_with("成功") {
+                } else if self.settings_panel.test_status.starts_with('✓') {
                     color_f(0.2, 0.8, 0.2, 1.0)
                 } else {
                     color_f(0.9, 0.3, 0.3, 1.0)
@@ -8107,7 +8112,7 @@ impl EditorState {
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
                 DWRITE_MEASURING_MODE_NATURAL,
             );
-            let mut cy = cy + label_h + 4.0;
+            let cy = cy + label_h + 4.0;
             let input_bg = color_f(0.18, 0.18, 0.18, 1.0);
             let input_bg_brush = self
                 .render_ctx
@@ -8249,7 +8254,7 @@ impl EditorState {
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
                 DWRITE_MEASURING_MODE_NATURAL,
             );
-            let mut cy = cy + label_h + 4.0;
+            let cy = cy + label_h + 4.0;
 
             // 下拉框背景
             let input_bg = color_f(0.18, 0.18, 0.18, 1.0);
@@ -8394,9 +8399,8 @@ impl EditorState {
                                 .selected_provider_button;
                             match (selected, i) {
                                 (Some(ProviderTemplateButton::DeepSeek), 0) => true,
-                                (Some(ProviderTemplateButton::CustomOpenAi), 1) => true,
-                                (Some(ProviderTemplateButton::Kimi), 2) => true,
-                                (Some(ProviderTemplateButton::Claude), 3) => true,
+                                (Some(ProviderTemplateButton::Kimi), 1) => true,
+                                (Some(ProviderTemplateButton::Custom), 2) => true,
                                 _ => false,
                             }
                         }
@@ -8510,7 +8514,7 @@ impl EditorState {
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
                 DWRITE_MEASURING_MODE_NATURAL,
             );
-            let mut cy = cy + label_h + 4.0;
+            let cy = cy + label_h + 4.0;
 
             // 下拉框背景
             let input_bg = color_f(0.18, 0.18, 0.18, 1.0);
@@ -8642,12 +8646,11 @@ impl EditorState {
                         && self.settings_panel.hover_dropdown_index == Some(i);
                     let is_selected = match kind {
                         crate::settings::SettingsDropdownKind::Provider => {
-                            // dropdown_items() 顺序：DeepSeek, OpenAI, Kimi, Claude
+                            // dropdown_items() 顺序：DeepSeek, Kimi, 自定义
                             match (self.settings_panel.current_provider_button(), i) {
                                 (Some(ProviderTemplateButton::DeepSeek), 0) => true,
-                                (Some(ProviderTemplateButton::CustomOpenAi), 1) => true,
-                                (Some(ProviderTemplateButton::Kimi), 2) => true,
-                                (Some(ProviderTemplateButton::Claude), 3) => true,
+                                (Some(ProviderTemplateButton::Kimi), 1) => true,
+                                (Some(ProviderTemplateButton::Custom), 2) => true,
                                 _ => false,
                             }
                         }
@@ -8957,7 +8960,7 @@ impl EditorState {
         margin: f32,
         input_w: f32,
         label_format: &IDWriteTextFormat,
-        text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+        _text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
     ) -> f32 {
         unsafe {
             // 根据当前选中的服务商生成提示文本
@@ -8972,14 +8975,10 @@ impl EditorState {
                         .to_string()
                 }
                 Some(crate::settings::ProviderTemplateButton::Kimi) => {
-                    "moonshot-v1 系列：8K/32K/128K 三种上下文长度，OpenAI 兼容".to_string()
+                    "kimi-code：上下文支持，Moonshot API 兼容".to_string()
                 }
-                Some(crate::settings::ProviderTemplateButton::Claude) => {
-                    "claude-3 系列：opus/sonnet/haiku 三档，Anthropic Messages API".to_string()
-                }
-                Some(crate::settings::ProviderTemplateButton::CustomOpenAi) => {
-                    "自定义 OpenAI 兼容端点，base_url 留空使用官方 https://api.openai.com/v1"
-                        .to_string()
+                Some(crate::settings::ProviderTemplateButton::Custom) => {
+                    "自定义 API 端点，需填写完整 base_url".to_string()
                 }
                 None => "请选择服务商".to_string(),
             };
@@ -9067,7 +9066,7 @@ impl EditorState {
         field: crate::settings::SettingsField,
         value: &str,
         suffix: &str,
-        label_format: &IDWriteTextFormat,
+        _label_format: &IDWriteTextFormat,
         input_format: &IDWriteTextFormat,
         text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
     ) {
@@ -9479,7 +9478,7 @@ impl EditorState {
                 .brush_cache
                 .get_brush(target, &card_bg)
                 .unwrap();
-            let card_radius = 6.0_f32;
+            let _card_radius = 6.0_f32;
             let card_h = 168.0_f32;
             let card_rect = D2D_RECT_F {
                 left: card_x,
@@ -9920,7 +9919,7 @@ impl EditorState {
     ) {
         let s = self.dpi_scale;
         let mut display_buf = String::with_capacity(64);
-        let node_height = 18.0f32 * s;
+        let node_height = 16.0f32 * s;
         let mut child_idx = if parent_idx == u32::MAX {
             tree.first_root_node()
         } else {
@@ -9980,9 +9979,9 @@ impl EditorState {
 
                 let arrow = if node.kind == FileKind::Directory {
                     if node.is_expanded {
-                        "▼ "
+                        "v "
                     } else {
-                        "▶ "
+                        "> "
                     }
                 } else {
                     ""
@@ -10034,8 +10033,8 @@ impl EditorState {
                 };
 
                 let text_left = if vector_icon.is_some() {
-                    // 矢量图标占 16px 宽 + 2px 间距，文字右移避免被图标遮挡
-                    item_left + 18.0 * s
+                    // 矢量图标占 14px 宽 + 2px 间距，文字右移避免被图标遮挡
+                    item_left + 16.0 * s
                 } else {
                     item_left
                 };
@@ -10059,9 +10058,9 @@ impl EditorState {
                     target.DrawTextLayout(point, &layout, brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
                 }
 
-                // 矢量文件图标：在文本前绘制 16x16 矢量图标（命中 .py/.java/.txt）
+                // 矢量文件图标：在文本前绘制 14x14 矢量图标（命中 .py/.java/.txt）
                 if let Some(kind) = vector_icon {
-                    let icon_size = 16.0_f32 * s;
+                    let icon_size = 14.0_f32 * s;
                     let icon_left = item_left;
                     let icon_top = *current_y + (node_height - icon_size) / 2.0;
                     self.icons.draw(
@@ -10098,7 +10097,7 @@ impl EditorState {
 
     fn skip_tree_nodes(&self, tree: &FileTree, parent_idx: u32, current_y: &mut f32) {
         let s = self.dpi_scale;
-        let node_height = 18.0f32 * s;
+        let node_height = 16.0f32 * s;
         let mut child_idx = tree
             .get_node(parent_idx)
             .map(|n| n.first_child)

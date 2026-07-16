@@ -41,6 +41,18 @@ impl AiContextAttachment {
             Self::CustomText(_) => "📝 自定义".to_string(),
         }
     }
+
+    /// 工具栏切换按钮上的紧凑标签（纯文字，无 emoji，适合窄按钮）
+    pub fn toolbar_label(&self) -> &'static str {
+        match self {
+            Self::CurrentFile => "文件",
+            Self::Selection => "选区",
+            Self::OpenFiles => "打开",
+            Self::Diagnostics => "诊断",
+            Self::FileTree => "树",
+            Self::CustomText(_) => "文本",
+        }
+    }
 }
 
 /// 把一个代码片段包装成带路径/语言标记的文本块

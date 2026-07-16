@@ -37,6 +37,7 @@ pub(crate) unsafe fn on_l_button_up(
             // 结束面板拖拽
             st.layout.right_panel_resizing = false;
             st.layout.bottom_panel_resizing = false;
+            st.layout.sidebar_resizing = false;
             // 长按检测状态清理
             st.lbutton_down = false;
             st.lpress_target = None;

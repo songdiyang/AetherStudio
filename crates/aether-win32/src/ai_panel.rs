@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use aether_ai::{AiClient, AiStreamEvent, ChatMessage};
+use aether_ai::{AiClient, AiStreamEvent};
 use aether_shared::settings::AiSettings;
 
 use crate::ai_agent::{parse_edits, AiEdit};
@@ -109,60 +109,6 @@ pub enum AiRole {
     System,
 }
 
-/// AI 快捷操作类型
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AiQuickAction {
-    Explain,
-    Refactor,
-    Fix,
-    Complete,
-    Comment,
-    Optimize,
-    Test,
-    Doc,
-}
-
-impl AiQuickAction {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Explain => "解释代码",
-            Self::Refactor => "重构代码",
-            Self::Fix => "修复问题",
-            Self::Complete => "补全代码",
-            Self::Comment => "添加注释",
-            Self::Optimize => "优化性能",
-            Self::Test => "生成测试",
-            Self::Doc => "生成文档",
-        }
-    }
-
-    pub fn icon(&self) -> &'static str {
-        match self {
-            Self::Explain => "💡",
-            Self::Refactor => "🔧",
-            Self::Fix => "🩹",
-            Self::Complete => "✨",
-            Self::Comment => "📝",
-            Self::Optimize => "🚀",
-            Self::Test => "🧪",
-            Self::Doc => "📚",
-        }
-    }
-
-    pub fn build_prompt(&self, code: &str) -> String {
-        match self {
-            Self::Explain => format!("请解释以下代码的功能和工作原理，用中文回答：\n\n```\n{}\n```", code),
-            Self::Refactor => format!("请重构以下代码，提高可读性和可维护性，保持功能不变，用中文简要说明修改：\n\n```\n{}\n```", code),
-            Self::Fix => format!("以下代码可能有问题，请分析并修复，用中文说明问题：\n\n```\n{}\n```", code),
-            Self::Complete => format!("请补全以下代码（继续编写后续逻辑）：\n\n```\n{}\n```", code),
-            Self::Comment => format!("请为以下代码添加清晰的中文注释：\n\n```\n{}\n```", code),
-            Self::Optimize => format!("请优化以下代码的性能，用中文说明优化点：\n\n```\n{}\n```", code),
-            Self::Test => format!("请为以下代码生成单元测试（使用适当的测试框架），用中文说明：\n\n```\n{}\n```", code),
-            Self::Doc => format!("请为以下代码生成文档说明（函数文档、参数说明等），用中文：\n\n```\n{}\n```", code),
-        }
-    }
-}
-
 /// 流式响应的共享状态
 #[derive(Clone, Debug, Default)]
 pub struct AiStreamState {
@@ -187,14 +133,8 @@ pub struct AiPanel {
     pub is_generating: bool,
     /// 滚动偏移
     pub scroll_y: f32,
-    /// 选中的快捷操作
-    pub selected_action: Option<AiQuickAction>,
-    /// 悬停的快捷操作
-    pub hover_action: Option<AiQuickAction>,
     /// Apply 按钮悬停状态
     pub hover_apply_button: bool,
-    /// 快捷操作行数（用于滚动计算）
-    pub action_rows: usize,
     /// AI-H01: 后台线程流式状态，UI 渲染时轮询此字段
     pub stream_state: Arc<Mutex<AiStreamState>>,
     /// C-10: 输入框是否聚焦。仅当聚焦时才拦截键盘输入，避免面板可见即劫持编辑器
@@ -232,10 +172,7 @@ impl AiPanel {
             input: String::new(),
             is_generating: false,
             scroll_y: 0.0,
-            selected_action: None,
-            hover_action: None,
             hover_apply_button: false,
-            action_rows: 2,
             stream_state: Arc::new(Mutex::new(AiStreamState::default())),
             input_focused: false,
             mode: AiMode::Ask,
@@ -265,20 +202,6 @@ impl AiPanel {
             role: AiRole::Assistant,
             content,
         });
-    }
-
-    /// 获取所有快捷操作
-    pub fn quick_actions() -> &'static [AiQuickAction] {
-        &[
-            AiQuickAction::Explain,
-            AiQuickAction::Refactor,
-            AiQuickAction::Fix,
-            AiQuickAction::Complete,
-            AiQuickAction::Comment,
-            AiQuickAction::Optimize,
-            AiQuickAction::Test,
-            AiQuickAction::Doc,
-        ]
     }
 
     /// 发送消息（AI-H01: 非阻塞 — HTTP 调用在后台线程执行，结果通过 stream_state 流式返回）
@@ -408,86 +331,6 @@ impl AiPanel {
         Ok("请求已提交".to_string())
     }
 
-    /// 使用快捷操作发送代码（AI-H01: 非阻塞流式版本）
-    pub fn send_quick_action(
-        &mut self,
-        action: AiQuickAction,
-        code: &str,
-        settings: &AiSettings,
-    ) -> Result<String, String> {
-        if code.trim().is_empty() {
-            let msg = "请先打开文件或输入代码，再使用 AI 快捷操作。".to_string();
-            self.add_assistant_message(msg.clone());
-            return Ok(msg);
-        }
-
-        // H-17: 限制并发线程数 — 正在生成时拒绝新请求，防止无限制 spawn 线程
-        if self.is_generating {
-            return Err("正在等待上一次回复，请稍后再试".to_string());
-        }
-
-        // 限制代码长度（M-03）
-        const MAX_CODE_LEN: usize = 50000;
-        let code = if code.len() > MAX_CODE_LEN {
-            let safe_len = code.floor_char_boundary(MAX_CODE_LEN);
-            &code[..safe_len]
-        } else {
-            code
-        };
-
-        let prompt = action.build_prompt(code);
-        self.add_user_message(format!("[{}]\n{}", action.label(), code));
-        self.is_generating = true;
-        self.clear_pending_changes();
-        if let Ok(mut s) = self.stream_state.lock() {
-            *s = AiStreamState::default();
-        }
-
-        let settings = settings.clone();
-        let messages = vec![ChatMessage::user(prompt)];
-        let stream_state = Arc::clone(&self.stream_state);
-
-        std::thread::spawn(move || {
-            let client = AiClient::new(&settings);
-            match client.chat_completion_stream(&messages) {
-                Ok(rx) => {
-                    while let Ok(event) = rx.recv() {
-                        match event {
-                            AiStreamEvent::Token(token) => {
-                                if let Ok(mut s) = stream_state.lock() {
-                                    s.partial.push_str(&token);
-                                }
-                            }
-                            AiStreamEvent::Done => {
-                                if let Ok(mut s) = stream_state.lock() {
-                                    s.done = true;
-                                }
-                                break;
-                            }
-                            AiStreamEvent::Error(err) => {
-                                if let Ok(mut s) = stream_state.lock() {
-                                    s.error = Some(format!("请求失败: {}", sanitize_error(&err)));
-                                    s.done = true;
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
-                // H-21: 使用 safe_display() 替代 sanitize_error(&Display)，
-                // 不包含已截断但仍可能有敏感信息的 API 响应体
-                Err(e) => {
-                    if let Ok(mut s) = stream_state.lock() {
-                        s.error = Some(format!("请求失败: {}", e.safe_display()));
-                        s.done = true;
-                    }
-                }
-            }
-        });
-
-        Ok("请求已提交".to_string())
-    }
-
     /// 输入字符
     pub fn input_char(&mut self, ch: char) {
         self.input.push(ch);
@@ -518,7 +361,9 @@ impl AiPanel {
     }
 
     /// AI-H01: 轮询后台线程结果，应在渲染循环中调用
-    pub fn check_background_result(&mut self) {
+    ///
+    /// `current_folder` 用于 Edit/Agent 模式解析编辑相对路径，生成正确的 diff 预览。
+    pub fn check_background_result(&mut self, current_folder: Option<&Path>) {
         if !self.is_generating {
             return;
         }
@@ -555,20 +400,26 @@ impl AiPanel {
             if done {
                 self.is_generating = false;
                 if matches!(self.mode, AiMode::Edit | AiMode::Agent) {
-                    self.parse_pending_edits(None);
+                    self.parse_pending_edits(None, current_folder);
                 }
             }
         }
     }
 
     /// 解析最后一条助手消息中的编辑标记，生成 diff 预览
-    pub fn parse_pending_edits(&mut self, default_path: Option<&Path>) {
+    ///
+    /// `current_folder` 用于将相对路径解析为工作区绝对路径，以正确读取原文件内容。
+    pub fn parse_pending_edits(
+        &mut self,
+        default_path: Option<&Path>,
+        current_folder: Option<&Path>,
+    ) {
         let Some(text) = self.last_assistant_text() else {
             return;
         };
         let default = default_path.map(|p| p.to_string_lossy().to_string());
         self.pending_edits = parse_edits(&text, default.as_deref());
-        self.diff_view = DiffView::from_edits(&self.pending_edits, None);
+        self.diff_view = DiffView::from_edits(&self.pending_edits, current_folder);
         self.show_diff_view = !self.pending_edits.is_empty();
     }
 
@@ -692,6 +543,24 @@ impl AiPanel {
     /// 清除所有上下文附件
     pub fn clear_attachments(&mut self) {
         self.attachments.clear();
+    }
+
+    /// 可通过工具栏切换的 5 种上下文附件（不含 CustomText）
+    pub fn toggleable_attachments() -> [AiContextAttachment; 5] {
+        [
+            AiContextAttachment::CurrentFile,
+            AiContextAttachment::Selection,
+            AiContextAttachment::OpenFiles,
+            AiContextAttachment::Diagnostics,
+            AiContextAttachment::FileTree,
+        ]
+    }
+
+    /// 判断某类附件是否已附加（按变体判断，忽略 CustomText 内部内容）
+    pub fn has_attachment(&self, att: &AiContextAttachment) -> bool {
+        self.attachments
+            .iter()
+            .any(|a| std::mem::discriminant(a) == std::mem::discriminant(att))
     }
 
     /// 当前已附加的上下文文本摘要（用于 UI 展示）

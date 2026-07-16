@@ -12,7 +12,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::{
     compute_cursor_for_pos, create_editor_window, get_and_set_state, invalidate_window,
-    CARET_TIMER_ID, EDITOR_STATE, HOVER_TIMER_ID, LP_THRESHOLD_MS, LP_TIMER_ID, TERM_TIMER_ID,
+    AI_TIMER_ID, CARET_TIMER_ID, EDITOR_STATE, HOVER_TIMER_ID, LP_THRESHOLD_MS, LP_TIMER_ID,
+    TERM_TIMER_ID,
 };
 use crate::auto_save::{AUTOSAVE_DEBOUNCE_TIMER_ID, AUTOSAVE_PERIODIC_TIMER_ID};
 
@@ -26,6 +27,9 @@ pub(crate) unsafe fn on_timer(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LP
     }
     if wparam.0 == CARET_TIMER_ID {
         return on_timer_caret(hwnd);
+    }
+    if wparam.0 == AI_TIMER_ID {
+        return on_timer_ai_refresh(hwnd);
     }
     if wparam.0 == LP_TIMER_ID {
         return on_timer_long_press(hwnd);
@@ -74,6 +78,25 @@ unsafe fn on_timer_term_refresh(hwnd: HWND) -> LRESULT {
         let _ = KillTimer(hwnd, TERM_TIMER_ID);
     } else if get_and_set_state(hwnd).is_some() {
         invalidate_window(hwnd);
+    }
+    LRESULT(0)
+}
+
+/// AI 后台刷新：流式生成或测试连接期间周期性重绘，两者均结束后自动停止。
+unsafe fn on_timer_ai_refresh(hwnd: HWND) -> LRESULT {
+    let active = EDITOR_STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|state| {
+                let st = state.borrow();
+                st.ai_panel.is_generating || st.settings_panel.is_testing
+            })
+            .unwrap_or(false)
+    });
+    if active {
+        invalidate_window(hwnd);
+    } else {
+        let _ = KillTimer(hwnd, AI_TIMER_ID);
     }
     LRESULT(0)
 }

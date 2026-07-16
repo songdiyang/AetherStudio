@@ -16,6 +16,7 @@ pub mod ai_context;
 pub mod ai_panel;
 pub mod ai_prompt;
 pub mod auto_save;
+pub mod bitmap_loader;
 pub mod command_palette;
 pub mod context_menu;
 pub mod cursor;
