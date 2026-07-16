@@ -11,8 +11,16 @@
 - [crates/aether-render/src/theme.rs](file://crates/aether-render/src/theme.rs)
 - [crates/aether-win32/src/render_context.rs](file://crates/aether-win32/src/render_context.rs)
 - [crates/aether-win32/src/render.rs](file://crates/aether-win32/src/render.rs)
+- [crates/aether-win32/src/welcome.rs](file://crates/aether-win32/src/welcome.rs)
 - [crates/aether-core/src/char_width.rs](file://crates/aether-core/src/char_width.rs)
 </cite>
+
+## 更新摘要
+**变更内容**   
+- 新增 TextLayoutCache.create_ellipsis_layout() 方法文档，支持文本省略号截断功能
+- 更新侧边栏文件树渲染流程，说明长文件名处理机制
+- 增强文本布局缓存系统的功能描述
+- 补充 UI 元素渲染优化策略
 
 ## 目录
 1. [简介](#简介)
@@ -60,6 +68,7 @@ end
 subgraph "Win32层(aether-win32)"
 RCX["render_context.rs"]
 RENDER["render.rs"]
+WELCOME["welcome.rs"]
 end
 subgraph "核心库(aether-core)"
 CWIDTH["char_width.rs"]
@@ -77,6 +86,7 @@ RENDER --> RCX
 RENDER --> THEME
 RENDER --> GLASS
 RENDER --> CWIDTH
+WELCOME --> RENDER
 ```
 
 图表来源
@@ -102,7 +112,7 @@ RENDER --> CWIDTH
 - 画刷与文本缓存
   - BrushCache：预存常用纯色画刷 + HashMap 回退，避免每帧创建 COM 对象
   - TextFormatCache：预存常用文本格式（左对齐/右对齐/居中），按 key 复用
-  - TextLayoutCache：缓存 IDWriteTextLayout，减少频繁创建开销
+  - TextLayoutCache：缓存 IDWriteTextLayout，减少频繁创建开销，支持省略号截断
 - 文本渲染器
   - TextRenderer：基于 DirectWrite 的文本测量与绘制，支持 DPI 缩放与字体大小调整
 - 玻璃效果
@@ -122,7 +132,7 @@ RENDER --> CWIDTH
 - [crates/aether-win32/src/render_context.rs:6-31](file://crates/aether-win32/src/render_context.rs#L6-L31)
 
 ## 架构总览
-Direct2D/DirectWrite 渲染管线由“工厂—渲染目标—缓存—绘制”四层组成。顶层渲染循环在 aether-win32 中编排，底层资源在 aether-render 中封装。
+Direct2D/DirectWrite 渲染管线由"工厂—渲染目标—缓存—绘制"四层组成。顶层渲染循环在 aether-win32 中编排，底层资源在 aether-render 中封装。
 
 ```mermaid
 sequenceDiagram
@@ -342,6 +352,38 @@ D --> F["返回半角字符个数"]
 章节来源
 - [crates/aether-render/src/d2d/glass.rs:12-154](file://crates/aether-render/src/d2d/glass.rs#L12-L154)
 
+### 文本省略号截断功能
+
+**新增** TextLayoutCache 现支持 create_ellipsis_layout() 方法，专门用于处理长文本的省略号截断场景。
+
+#### 功能特性
+- **字符级省略号**：使用 DirectWrite 的原生 DWRITE_TRIMMING 机制，在字符边界处插入省略号
+- **自适应宽度**：根据指定的 max_width 自动截断文本，确保不超过容器宽度
+- **UI 优化**：专为侧边栏文件树、欢迎页面路径显示等 UI 元素设计
+
+#### 实现原理
+```mermaid
+flowchart TD
+Input["输入文本"] --> Encode["UTF-16 编码"]
+Encode --> Create["CreateTextLayout(max_width, max_height)"]
+Create --> SetTrimming["SetTrimming(DWRITE_TRIMMING_GRANULARITY_CHARACTER)"]
+SetTrimming --> Layout["生成带省略号的布局"]
+Layout --> Output["返回 IDWriteTextLayout"]
+```
+
+图表来源
+- [crates/aether-render/src/d2d/brush_cache.rs:454-478](file://crates/aether-render/src/d2d/brush_cache.rs#L454-L478)
+
+#### 应用场景
+- **侧边栏文件树**：处理超长文件名，避免文本重叠和换行问题
+- **欢迎页面路径**：智能折叠长路径，保留关键目录信息
+- **其他 UI 元素**：任何需要限制文本显示宽度的界面组件
+
+章节来源
+- [crates/aether-render/src/d2d/brush_cache.rs:454-478](file://crates/aether-render/src/d2d/brush_cache.rs#L454-L478)
+- [crates/aether-win32/src/render.rs:10043-10060](file://crates/aether-win32/src/render.rs#L10043-L10060)
+- [crates/aether-win32/src/welcome.rs:1261-1336](file://crates/aether-win32/src/welcome.rs#L1261-L1336)
+
 ## 依赖关系分析
 - aether-render 内部耦合
   - factory 被 render_context 与上层渲染循环使用
@@ -359,6 +401,7 @@ TXT["text.rs"] --> RCX
 GLS["glass.rs"] --> RCX
 THE["theme.rs"] --> RCX
 RCX --> REN["render.rs"]
+REN --> WEL["welcome.rs"]
 ```
 
 图表来源
@@ -383,10 +426,14 @@ RCX --> REN["render.rs"]
   - 检测 EndDraw 错误码，重建渲染目标并重新预热缓存
 - 字体与 DPI
   - DPI 变化时重建文本格式并重新测量字符宽度，保证布局一致
+- **文本省略号优化**
+  - create_ellipsis_layout 每次重绘创建新布局，避免缓存滞后问题
+  - 适用于节点数量较少的侧边栏场景，牺牲少量性能换取即时响应
 - 建议
   - 合理设置 MAX_BRUSH_CACHE_ENTRIES 与 MAX_TEXT_LAYOUT_CACHE_ENTRIES，依据主题与 UI 复杂度调优
-  - 在高频重复文本（关键字、标识符）较多的场景下，TextLayoutCache 命中率极高，收益显著
+  - 在高频重复文本（关键字、标识符等）较多的场景下，TextLayoutCache 命中率极高，收益显著
   - 对于复杂 UI 面板，优先使用多矩形裁剪而非全窗口清除
+  - 长文本截断场景使用 create_ellipsis_layout 而非手动字符串处理，提升渲染一致性
 
 [本节为通用指导，不直接分析具体文件]
 
@@ -396,13 +443,17 @@ RCX --> REN["render.rs"]
   - 处理：清理渲染目标与缓存，重建渲染目标并重新初始化常用资源
 - 文本错位或光标位置偏差
   - 可能原因：TextLayout 创建时附加了 null 终止符导致额外进位宽度
-  - 处理：确保 UTF-16 切片不含 U+0000，与 measure_monospace_width 保持一致
+  - 处理：确保 UTF-16 切片不含 U+0000，与 measure_monospace_width (text.rs) 保持一致
 - 多矩形裁剪无效或重绘面积过大
   - 检查是否误用单矩形快路径标志，确保 push/pop 配对正确
   - 确认 rects 列表为空或非正尺寸时的分支逻辑
 - 字体不可见或异常
   - 确认 Consolas 可用且语言区域 zh-CN 有效
   - 检查 DPI 缩放后是否重建了文本格式
+- **文本省略号显示异常**
+  - 现象：文件名截断不正确或省略号位置错误
+  - 处理：检查 max_width 计算是否正确，确认文本布局高度足够容纳省略号
+  - 验证：确保使用 DWRITE_TRIMMING_GRANULARITY_CHARACTER 而非 WORD 级别截断
 
 章节来源
 - [crates/aether-win32/src/render.rs:704-746](file://crates/aether-win32/src/render.rs#L704-L746)
@@ -410,7 +461,7 @@ RCX --> REN["render.rs"]
 - [crates/aether-render/src/d2d/factory.rs:255-271](file://crates/aether-render/src/d2d/factory.rs#L255-L271)
 
 ## 结论
-该 Direct2D 渲染管线通过工厂模式统一管理图形对象生命周期，结合多层缓存显著降低 COM 对象分配与 GPU 资源压力。文本渲染流程基于 DirectWrite，兼顾精度与性能；多矩形裁剪与脏矩形机制提升局部重绘效率；主题与玻璃效果增强视觉体验。整体架构清晰、可扩展性强，适合大型编辑器的持续演进。
+该 Direct2D 渲染管线通过工厂模式统一管理图形对象生命周期，结合多层缓存显著降低 COM 对象分配与 GPU 资源压力。文本渲染流程基于 DirectWrite，兼顾精度与性能；多矩形裁剪与脏矩形机制提升局部重绘效率；主题与玻璃效果增强视觉体验。**新增的文本省略号截断功能进一步增强了 UI 元素的渲染能力，特别是在侧边栏文件树等长文本场景中提供了更好的用户体验**。整体架构清晰、可扩展性强，适合大型编辑器的持续演进。
 
 [本节为总结性内容，不直接分析具体文件]
 
@@ -420,7 +471,7 @@ RCX --> REN["render.rs"]
   - RenderTarget：BeginDraw/EndDraw/Clear/Resize/SetDpi/Clip/Layer
   - BrushCache：纯色画刷缓存
   - TextFormatCache：文本格式缓存与测量
-  - TextLayoutCache：文本布局缓存
+  - TextLayoutCache：文本布局缓存，**新增 create_ellipsis_layout 支持省略号截断**
   - TextRenderer：文本测量与绘制
   - glass：玻璃效果绘制工具
   - Theme：主题与语法高亮颜色
@@ -431,6 +482,7 @@ RCX --> REN["render.rs"]
 - [crates/aether-render/src/d2d/brush_cache.rs:25-106](file://crates/aether-render/src/d2d/brush_cache.rs#L25-L106)
 - [crates/aether-render/src/d2d/brush_cache.rs:108-314](file://crates/aether-render/src/d2d/brush_cache.rs#L108-L314)
 - [crates/aether-render/src/d2d/brush_cache.rs:376-477](file://crates/aether-render/src/d2d/brush_cache.rs#L376-L477)
+- [crates/aether-render/src/d2d/brush_cache.rs:454-478](file://crates/aether-render/src/d2d/brush_cache.rs#L454-L478)
 - [crates/aether-render/src/d2d/text.rs:14-102](file://crates/aether-render/src/d2d/text.rs#L14-L102)
 - [crates/aether-render/src/d2d/glass.rs:12-154](file://crates/aether-render/src/d2d/glass.rs#L12-L154)
 - [crates/aether-render/src/theme.rs:8-86](file://crates/aether-render/src/theme.rs#L8-L86)
