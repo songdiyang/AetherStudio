@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Rust file icon (flat)">
+  <title>Rust File (Flat)</title>
+  <path d="M5 3 L14 3 L20 9 L20 20 L4 20 Z" fill="#DEA584"/>
+  <path d="M14 3 L20 9 L14 9 Z" fill="#FFFFFF" fill-opacity="0.5"/>
+  <rect x="8.5" y="11" width="2" height="8.5" fill="#FFFFFF"/>
+  <path d="M10.5 11 C16 11 16 15.5 13 15.5 L10.5 15.5 Z" fill="#FFFFFF"/>
+  <polygon points="12.5,15.5 14.5,15.5 16,19.5 14,19.5" fill="#FFFFFF"/>
+</svg>

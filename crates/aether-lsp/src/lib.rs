@@ -10,3 +10,6 @@ pub use client::LspClient;
 pub use incremental_sync::*;
 pub use semantic_tokens::*;
 pub use types::*;
+
+// 重新导出 lsp-types 供下游 crate 使用
+pub use lsp_types;

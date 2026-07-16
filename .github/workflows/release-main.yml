@@ -1,0 +1,128 @@
+name: Release on Main
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: aether-release
+
+      - name: Generate version
+        id: version
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const date = new Date();
+            const dateStr = `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, '0')}.${String(date.getDate()).padStart(2, '0')}`;
+            const sha = context.sha.substring(0, 7);
+
+            // 检查当天已有的 release，递增 build 号
+            const { data: releases } = await github.rest.repos.listReleases({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+
+            const prefix = `v${dateStr}-`;
+            let build = 1;
+            for (const r of releases) {
+              if (r.tag_name.startsWith(prefix)) {
+                const num = parseInt(r.tag_name.replace(prefix, ''), 10);
+                if (!isNaN(num) && num >= build) {
+                  build = num + 1;
+                }
+              }
+            }
+
+            const version = `${prefix}${build}`;
+            const dateIso = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+
+            core.setOutput('version', version);
+            core.setOutput('date', dateIso);
+            core.setOutput('sha', sha);
+            console.log(`Generated version: ${version}`);
+
+      - name: Build Release EXE
+        run: |
+          cargo build --release --bin aether-app
+
+      - name: Prepare release asset
+        run: |
+          New-Item -ItemType Directory -Force -Path release
+          Copy-Item target\x86_64-pc-windows-msvc\release\aether-app.exe release\aether-app.exe
+
+      - name: Create GitHub Release and Upload EXE
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DATE: ${{ steps.version.outputs.date }}
+          SHA: ${{ steps.version.outputs.sha }}
+        with:
+          script: |
+            const version = process.env.VERSION;
+            const date = process.env.DATE;
+            const sha = process.env.SHA;
+
+            const body = `## Aether Editor ${version}
+
+**构建日期**: ${date}
+**提交**: ${sha}
+
+### 下载
+- [aether-app.exe](https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${version}/aether-app.exe)
+
+---
+*此版本由 main 分支自动构建发布。*`;
+
+            // 创建 release
+            const { data: release } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: version,
+              name: `Aether Editor ${version}`,
+              body: body,
+              draft: false,
+              prerelease: false
+            });
+
+            console.log(`Created release: ${release.html_url}`);
+
+            // 上传 exe 文件
+            const fs = require('fs');
+            const path = require('path');
+            const exePath = path.join(process.cwd(), 'release', 'aether-app.exe');
+            const exeData = fs.readFileSync(exePath);
+
+            await github.rest.repos.uploadReleaseAsset({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release.id,
+              name: 'aether-app.exe',
+              data: exeData,
+              headers: {
+                'content-type': 'application/octet-stream',
+                'content-length': exeData.length
+              }
+            });
+
+            console.log('Uploaded aether-app.exe');

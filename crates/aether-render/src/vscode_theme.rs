@@ -343,6 +343,13 @@ impl SyntaxColors {
 mod tests {
     use super::*;
 
+    fn color_eq(a: D2D1_COLOR_F, b: D2D1_COLOR_F, eps: f32) -> bool {
+        (a.r - b.r).abs() < eps
+            && (a.g - b.g).abs() < eps
+            && (a.b - b.b).abs() < eps
+            && (a.a - b.a).abs() < eps
+    }
+
     #[test]
     fn test_parse_hex_color() {
         let c = parse_hex_color("#FF5733").unwrap();
@@ -364,6 +371,66 @@ mod tests {
     fn test_parse_hex_color_rgba() {
         let c = parse_hex_color("#FF573380").unwrap();
         assert!((c.a - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_hex_color_without_hash() {
+        let c = parse_hex_color("FF5733").unwrap();
+        assert!((c.r - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_hex_color_whitespace_trimmed() {
+        let c = parse_hex_color("  #FF5733  ").unwrap();
+        assert!((c.r - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_hex_color_errors() {
+        // 空字符串
+        assert!(matches!(
+            parse_hex_color(""),
+            Err(ThemeError::InvalidColor(_))
+        ));
+        // 长度错误
+        assert!(matches!(
+            parse_hex_color("#FF573"),
+            Err(ThemeError::InvalidColor(_))
+        ));
+        assert!(matches!(
+            parse_hex_color("#FF57333FF"),
+            Err(ThemeError::InvalidColor(_))
+        ));
+        // 非法字符
+        assert!(matches!(
+            parse_hex_color("#GGGGGG"),
+            Err(ThemeError::InvalidColor(_))
+        ));
+    }
+
+    #[test]
+    fn test_theme_error_display() {
+        assert_eq!(
+            format!("{}", ThemeError::Io("denied".to_string())),
+            "IO error: denied"
+        );
+        assert_eq!(
+            format!("{}", ThemeError::Parse("bad".to_string())),
+            "Parse error: bad"
+        );
+        assert_eq!(
+            format!("{}", ThemeError::InvalidColor("red".to_string())),
+            "Invalid color: red"
+        );
+    }
+
+    #[test]
+    fn test_token_scope_as_list() {
+        let single = TokenScope::Single("keyword".to_string());
+        assert_eq!(single.as_list(), vec!["keyword"]);
+
+        let multi = TokenScope::Multiple(vec!["string".to_string(), "comment".to_string()]);
+        assert_eq!(multi.as_list(), vec!["string", "comment"]);
     }
 
     #[test]
@@ -408,5 +475,145 @@ mod tests {
         assert!((theme.editor_bg.r - 0.118).abs() < 0.01);
         assert!((theme.syntax.keyword.r - 0.337).abs() < 0.01);
         assert!((theme.syntax.string.r - 0.808).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_vscode_theme_fallback_to_dark_defaults() {
+        let vscode = VsCodeThemeJson::default();
+        let theme = Theme::from_vscode(&vscode);
+        let dark = Theme::dark();
+        let dark_syntax = SyntaxColors::dark_default();
+        assert!(color_eq(theme.editor_bg, dark.editor_bg, 0.001));
+        assert!(color_eq(theme.text_default, dark.text_default, 0.001));
+        assert!(color_eq(theme.syntax.keyword, dark_syntax.keyword, 0.001));
+    }
+
+    #[test]
+    fn test_vscode_theme_invalid_color_keeps_default() {
+        use std::collections::HashMap;
+        let mut colors = HashMap::new();
+        colors.insert("editor.background".to_string(), "not-a-color".to_string());
+
+        let vscode = VsCodeThemeJson {
+            colors,
+            ..Default::default()
+        };
+
+        let theme = Theme::from_vscode(&vscode);
+        let dark = Theme::dark();
+        assert!(color_eq(theme.editor_bg, dark.editor_bg, 0.001));
+    }
+
+    #[test]
+    fn test_parse_syntax_colors_skips_invalid_and_unknown() {
+        let rules = vec![
+            TokenColorRule {
+                name: "BadColor".to_string(),
+                scope: TokenScope::Single("keyword".to_string()),
+                settings: TokenSettings {
+                    foreground: Some("#GGGGGG".to_string()),
+                    background: None,
+                    font_style: None,
+                },
+            },
+            TokenColorRule {
+                name: "NoForeground".to_string(),
+                scope: TokenScope::Single("string".to_string()),
+                settings: TokenSettings {
+                    foreground: None,
+                    background: None,
+                    font_style: None,
+                },
+            },
+            TokenColorRule {
+                name: "UnknownScope".to_string(),
+                scope: TokenScope::Single("unknown.scope".to_string()),
+                settings: TokenSettings {
+                    foreground: Some("#FF0000".to_string()),
+                    background: None,
+                    font_style: None,
+                },
+            },
+            TokenColorRule {
+                name: "Comment".to_string(),
+                scope: TokenScope::Single("comment.line".to_string()),
+                settings: TokenSettings {
+                    foreground: Some("#00FF00".to_string()),
+                    background: None,
+                    font_style: None,
+                },
+            },
+        ];
+
+        let colors = parse_syntax_colors(&rules);
+        let expected = parse_hex_color("#00FF00").unwrap();
+        assert!(color_eq(colors.comment, expected, 0.001));
+        // keyword 不应被非法颜色覆盖（保持 SyntaxColors::dark_default 默认值）
+        let dark_syntax = SyntaxColors::dark_default();
+        assert!(color_eq(colors.keyword, dark_syntax.keyword, 0.001));
+    }
+
+    #[test]
+    fn test_vscode_theme_json_str_roundtrip() {
+        let json = r##"{
+            "name": "Inline",
+            "type": "dark",
+            "colors": {
+                "editor.background": "#1e1e1e",
+                "editor.foreground": "#d4d4d4"
+            },
+            "tokenColors": [
+                {
+                    "name": "Keyword",
+                    "scope": "keyword",
+                    "settings": { "foreground": "#569cd6" }
+                }
+            ]
+        }"##;
+
+        let theme = Theme::from_vscode_json_str(json).unwrap();
+        assert!((theme.editor_bg.r - 0.118).abs() < 0.01);
+        assert!((theme.syntax.keyword.r - 0.337).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_vscode_theme_json_str_parse_error() {
+        let result = Theme::from_vscode_json_str("{ broken json");
+        assert!(matches!(result, Err(ThemeError::Parse(_))));
+    }
+
+    #[test]
+    fn test_vscode_theme_json_file_not_found() {
+        let path = std::path::Path::new("/this/path/does/not/exist/theme.json");
+        let result = Theme::from_vscode_json(path);
+        assert!(matches!(result, Err(ThemeError::Io(_))));
+    }
+
+    #[test]
+    fn test_vscode_theme_json_file_load() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!(
+            "aether-theme-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos().to_string())
+                .unwrap_or_else(|_| "0".to_string())
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("theme.json");
+        std::fs::write(
+            &path,
+            r##"{
+                "name": "File",
+                "colors": { "editor.background": "#000000" },
+                "tokenColors": []
+            }"##,
+        )
+        .unwrap();
+
+        let theme = Theme::from_vscode_json(&path).unwrap();
+        assert!(theme.editor_bg.r < 0.01);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

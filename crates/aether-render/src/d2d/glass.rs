@@ -1,13 +1,13 @@
+//! Glass effect drawing helpers
+//!
+//! Provides functions for drawing translucent panels, soft borders,
+//! glow effects, and shadow layers to create an Acrylic/Glass UI.
+
 use windows::core::Result;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_RECT_F};
 use windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget;
 
 use crate::d2d::brush_cache::BrushCache;
-
-/// Glass effect drawing helpers
-///
-/// Provides functions for drawing translucent panels, soft borders,
-/// glow effects, and shadow layers to create an Acrylic/Glass UI.
 
 /// Draw a glass panel with background fill and optional soft border
 pub fn draw_glass_panel(
@@ -151,4 +151,10 @@ pub fn draw_rounded_panel(
         target.FillRectangle(&corner_rect, &corner_brush);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    // 本模块所有公开函数均依赖 ID2D1HwndRenderTarget 与 BrushCache 中的真实 COM 画刷，
+    // 无法在不创建渲染目标/窗口的情况下进行单元测试。相关逻辑可在集成测试或 GUI 测试中覆盖。
 }

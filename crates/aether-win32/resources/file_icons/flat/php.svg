@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="PHP file icon (flat)">
+  <title>PHP File (Flat)</title>
+  <path d="M5 3 L14 3 L20 9 L20 20 L4 20 Z" fill="#777BB4"/>
+  <path d="M14 3 L20 9 L14 9 Z" fill="#FFFFFF" fill-opacity="0.5"/>
+  <path d="M8 11 L11.5 11 C15 11 15 15 11.5 15 L10 15 L10 19.5 L8 19.5 Z M10 12.5 L10 13.5 L11.5 13.5 C12.5 13.5 12.5 12.5 11.5 12.5 Z" fill="#FFFFFF"/>
+</svg>

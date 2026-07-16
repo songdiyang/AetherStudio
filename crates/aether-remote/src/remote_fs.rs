@@ -38,30 +38,99 @@ pub trait RemoteFs: Send + Sync {
     /// 监听文件变更（如果后端支持）
     fn watch(&self, path: &str) -> Result<mpsc::Receiver<FsEvent>>;
 
-    /// 在远程执行命令
-    fn exec(&self, command: &str) -> Result<(String, String)>;
+    /// 在远程执行命令（默认实现，要求后端覆盖以提供审计和限制）
+    fn exec(&self, _command: &str) -> Result<(String, String)> {
+        Err("exec 未在此后端实现".to_string())
+    }
+
+    /// 执行受限命令（白名单机制）
+    /// SEC-R01: 严格命令白名单 + shell 元字符过滤，防止远程命令注入
+    /// 注意：仅靠前缀匹配是不安全的（如 "git ; rm -rf /" 会绕过），因此
+    ///   1) 提取命令名（首个 token）做精确匹配；
+    ///   2) 拒绝任何 shell 元字符以阻断命令串联/替换/重定向。
+    fn exec_restricted(&self, command: &str) -> Result<(String, String)> {
+        let trimmed = command.trim();
+        if trimmed.is_empty() {
+            return Err("命令为空".to_string());
+        }
+
+        // H-05: 拒绝 shell 元字符，防止命令注入
+        // 这些字符允许攻击者串联任意命令、做命令替换或重定向输入输出
+        // 扩展过滤列表：补充 ( ) \ ' " * ? [ ] { } ~ # ! 等危险字符
+        const SHELL_METACHARS: &[char] = &[
+            ';', '|', '&', '`', '$', '>', '<', '\n', '\r', '(', ')', '\\', '\'', '"', '*', '?',
+            '[', ']', '{', '}', '~', '#', '!',
+        ];
+        if trimmed.chars().any(|c| SHELL_METACHARS.contains(&c)) {
+            return Err(format!("命令包含禁止的 shell 元字符: {}", command));
+        }
+
+        // SEC-R03: 最小化命令白名单
+        // 移除所有 shell（bash/sh/zsh 等）、可执行任意代码的解释器（python/node 等）、
+        // 容器/编排工具（docker/kubectl 等）、网络工具（curl/wget/ssh 等）、
+        // 以及所有 C 库函数名（fork/execve/system/popen 等，它们并非真实 shell 命令）。
+        const ALLOWED_COMMANDS: &[&str] = &[
+            // 只读文件系统操作
+            "ls", "cat", "pwd", "echo", "find", "grep", "head", "tail", "wc", "stat", "file",
+            "which", "diff", "sort", "uniq", "tr", "less", "more",
+            // 系统信息（只读）
+            "uname", "whoami", "id", "ps", "df", "du",
+            // 文件操作（必要但需审计）
+            "mkdir", "touch", "cp", "mv", "rm", "chmod", "chown",
+            // Git 读取操作（专用入口 git_exec 已存在，此处保留基础访问）
+            "git", // 压缩/归档
+            "tar", "gzip", "gunzip",
+        ];
+
+        // 提取命令名（第一个空白分隔的 token），严格匹配白名单
+        let cmd_name = trimmed.split_whitespace().next().unwrap_or("");
+        if !ALLOWED_COMMANDS.contains(&cmd_name) {
+            return Err(format!("命令被拒绝（不在白名单中）: {}", command));
+        }
+
+        // 记录审计日志
+        eprintln!("[AUDIT] exec_restricted: {}", command);
+        self.exec(command)
+    }
 
     /// 检查路径是否存在
     fn exists(&self, path: &str) -> Result<bool> {
-        match self.read_file(path) {
+        // H-41: 使用 list_dir 检查路径存在性，避免读取整个文件
+        match self.list_dir(path) {
             Ok(_) => Ok(true),
-            Err(_) => Ok(false),
+            Err(_) => {
+                // 如果是文件，尝试 list_dir 其父目录
+                if let Some(parent) = std::path::Path::new(path).parent() {
+                    if let Ok(entries) = self.list_dir(parent.to_str().unwrap_or(".")) {
+                        let file_name = std::path::Path::new(path)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(path);
+                        return Ok(entries.iter().any(|e| e.name == file_name));
+                    }
+                }
+                Ok(false)
+            }
         }
     }
 
     /// 检查路径是否是 Git 仓库
     fn is_git_repo(&self, path: &str) -> Result<bool> {
-        // 通过检查 .git 目录或文件来判断
-        match self.exec(&format!("test -d {}/.git", path)) {
-            Ok((_, _)) => Ok(true),
+        // 使用 SFTP 检查 .git 目录是否存在，避免 shell 注入
+        let git_dir = format!("{}/.git", path.trim_end_matches('/'));
+        match self.list_dir(&git_dir) {
+            Ok(_) => Ok(true),
             Err(_) => Ok(false),
         }
     }
 
     /// 获取远程 Git 仓库信息
     fn get_git_info(&self, path: &str) -> Result<GitRemoteInfo> {
-        // 获取远程 URL
-        let (stdout, _) = self.exec(&format!("cd {} && git remote -v", path))?;
+        // H-06: 使用 exec_restricted 而非 exec，确保通过命令白名单和元字符过滤
+        // 使用 `git -C {path}` 替代 `cd {path} && git`，避免 shell 命令组合
+        // 路径不使用 shell_escape，而是通过 exec_restricted 的元字符过滤保障安全
+        let safe_path = validate_git_path(path)?;
+        let (stdout, _) = self.exec_restricted(&format!("git -C {} remote -v", safe_path))?;
         let mut remote_url = String::new();
         for line in stdout.lines() {
             if line.contains("origin") && line.contains("(fetch)") {
@@ -74,11 +143,13 @@ pub trait RemoteFs: Send + Sync {
         }
 
         // 获取当前分支
-        let (stdout, _) = self.exec(&format!("cd {} && git branch --show-current", path))?;
+        let (stdout, _) =
+            self.exec_restricted(&format!("git -C {} branch --show-current", safe_path))?;
         let branch = stdout.trim().to_string();
 
         // 检查状态
-        let (stdout, _) = self.exec(&format!("cd {} && git status --porcelain", path))?;
+        let (stdout, _) =
+            self.exec_restricted(&format!("git -C {} status --porcelain", safe_path))?;
         let has_changes = !stdout.trim().is_empty();
 
         Ok(GitRemoteInfo {
@@ -90,8 +161,27 @@ pub trait RemoteFs: Send + Sync {
 
     /// 执行 Git 命令
     fn git_exec(&self, path: &str, git_args: &[&str]) -> Result<(String, String)> {
-        let cmd = format!("cd {} && git {}", path, git_args.join(" "));
-        self.exec(&cmd)
+        // H-06: 使用 exec_restricted 而非 exec，确保通过命令白名单和元字符过滤
+        let safe_path = validate_git_path(path)?;
+        // H-06: 校验 git 参数
+        // 1) 不以 '-' 开头，防止标志注入
+        // 2) 不含 '..'、不以 '/' 开头、不含 './'/'~/'，防止路径遍历
+        for arg in git_args {
+            if arg.starts_with('-') {
+                return Err(format!("非法 git 参数（不应以 '-' 开头）: {}", arg));
+            }
+            if arg.contains("..") {
+                return Err(format!("非法 git 参数（含路径遍历 '..'）: {}", arg));
+            }
+            if arg.starts_with('/') {
+                return Err(format!("非法 git 参数（不应为绝对路径）: {}", arg));
+            }
+            if arg.contains("./") || arg.contains("~/") {
+                return Err(format!("非法 git 参数（含相对路径前缀）: {}", arg));
+            }
+        }
+        let cmd = format!("git -C {} {}", safe_path, git_args.join(" "));
+        self.exec_restricted(&cmd)
     }
 }
 
@@ -101,6 +191,28 @@ pub struct GitRemoteInfo {
     pub remote_url: String,
     pub current_branch: String,
     pub has_uncommitted_changes: bool,
+}
+
+/// H-06: 校验 git 路径安全性的辅助函数。
+/// exec_restricted 会再次过滤元字符，此处提前校验提供更清晰的错误信息。
+fn validate_git_path(path: &str) -> Result<&str> {
+    if path.is_empty() {
+        return Err("git 路径为空".to_string());
+    }
+    if path.starts_with('-') {
+        return Err(format!("非法 git 路径（不应以 '-' 开头）: {}", path));
+    }
+    // H-06: 阻止路径遍历与绝对路径
+    if path.contains("..") {
+        return Err(format!("非法 git 路径（含路径遍历 '..'）: {}", path));
+    }
+    if path.starts_with('/') {
+        return Err(format!("非法 git 路径（不应为绝对路径）: {}", path));
+    }
+    if path.contains("./") || path.contains("~/") {
+        return Err(format!("非法 git 路径（含相对路径前缀）: {}", path));
+    }
+    Ok(path)
 }
 
 /// 通过 SSH 访问的 Git 仓库

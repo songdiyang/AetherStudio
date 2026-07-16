@@ -1,3 +1,4 @@
+use super::common::{skip_quoted, skip_whitespace};
 use super::{LexemeSpan, Lexer, TokenKind};
 
 /// TOML 词法分析器
@@ -84,7 +85,7 @@ impl TomlLexer {
                 )
             }
             b'"' => {
-                let end = skip_string(bytes, pos);
+                let end = skip_quoted(bytes, pos, b'"');
                 (
                     LexemeSpan {
                         start: pos,
@@ -107,7 +108,7 @@ impl TomlLexer {
                     end,
                 )
             }
-            b'0'..=b'9' | b'+' | b'-' => {
+            b'0'..=b'9' => {
                 let end = skip_number_or_date(bytes, pos);
                 (
                     LexemeSpan {
@@ -118,6 +119,32 @@ impl TomlLexer {
                     },
                     end,
                 )
+            }
+            b'+' | b'-' => {
+                // H-11: `+`/`-` 仅在后跟数字时才作为数字起始，
+                // 否则作为标点符号（如数组中的 `-` 表项、或二元运算符）。
+                if pos + 1 < bytes.len() && bytes[pos + 1].is_ascii_digit() {
+                    let end = skip_number_or_date(bytes, pos);
+                    (
+                        LexemeSpan {
+                            start: pos,
+                            len: end - pos,
+                            kind: TokenKind::NumberLiteral,
+                            flags: 0,
+                        },
+                        end,
+                    )
+                } else {
+                    (
+                        LexemeSpan {
+                            start: pos,
+                            len: 1,
+                            kind: TokenKind::Punctuation,
+                            flags: 0,
+                        },
+                        pos + 1,
+                    )
+                }
             }
             b't' | b'f' => {
                 let end = skip_bool(bytes, pos);
@@ -139,19 +166,12 @@ impl TomlLexer {
             }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 let end = skip_identifier(bytes, pos);
-                let _text = std::str::from_utf8(&bytes[pos..end]).unwrap_or("");
-                // 检测是否为键（后面跟着 =）
-                let is_key = is_toml_key(bytes, end);
-                let kind = if is_key {
-                    TokenKind::JsonKey
-                } else {
-                    TokenKind::Identifier
-                };
+                // CORE-L01: TOML 键统一使用 Identifier 替代 JsonKey
                 (
                     LexemeSpan {
                         start: pos,
                         len: end - pos,
-                        kind,
+                        kind: TokenKind::Identifier,
                         flags: 0,
                     },
                     end,
@@ -175,22 +195,25 @@ impl TomlLexer {
                 },
                 pos + 1,
             ),
-            _ => (
-                LexemeSpan {
-                    start: pos,
-                    len: 1,
-                    kind: TokenKind::Unknown,
-                    flags: 0,
-                },
-                pos + 1,
-            ),
+            _ => {
+                let len = crate::lexer::utf8_char_len(bytes[pos]);
+                (
+                    LexemeSpan {
+                        start: pos,
+                        len,
+                        kind: TokenKind::Unknown,
+                        flags: 0,
+                    },
+                    pos + len,
+                )
+            }
         }
     }
 }
 
 impl Lexer for TomlLexer {
     fn lex_full(&self, text: &str) -> Vec<LexemeSpan> {
-        let mut tokens = Vec::new();
+        let mut tokens = Vec::with_capacity(text.len() / 4 + 1);
         let bytes = text.as_bytes();
         let mut pos = 0;
 
@@ -210,42 +233,12 @@ impl Default for TomlLexer {
     }
 }
 
-fn is_toml_key(bytes: &[u8], after_ident: usize) -> bool {
-    let mut i = after_ident;
-    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
-        i += 1;
-    }
-    i < bytes.len() && bytes[i] == b'='
-}
-
-fn skip_whitespace(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos;
-    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r') {
-        i += 1;
-    }
-    i
-}
-
 fn skip_line_comment(bytes: &[u8], pos: usize) -> usize {
     let mut i = pos + 1;
     while i < bytes.len() && bytes[i] != b'\n' {
         i += 1;
     }
     i
-}
-
-fn skip_string(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos + 1;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' {
-            i += 2;
-        } else if bytes[i] == b'"' {
-            return i + 1;
-        } else {
-            i += 1;
-        }
-    }
-    bytes.len()
 }
 
 fn skip_literal_string(bytes: &[u8], pos: usize) -> usize {
@@ -314,11 +307,12 @@ mod tests {
     fn test_toml_keys() {
         let lexer = TomlLexer::new();
         let tokens = lexer.lex_full("name = \"test\"\nversion = \"1.0\"");
-        let key_count = tokens
+        // CORE-L01: TOML 键使用 Identifier 替代 JsonKey
+        let id_count = tokens
             .iter()
-            .filter(|t| t.kind == TokenKind::JsonKey)
+            .filter(|t| t.kind == TokenKind::Identifier)
             .count();
-        assert_eq!(key_count, 2);
+        assert_eq!(id_count, 2);
     }
 
     #[test]
@@ -326,5 +320,54 @@ mod tests {
         let lexer = TomlLexer::new();
         let tokens = lexer.lex_full("# This is a comment\nkey = \"value\"");
         assert!(tokens.iter().any(|t| t.kind == TokenKind::LineComment));
+    }
+
+    #[test]
+    fn test_toml_empty() {
+        assert!(TomlLexer::new().lex_full("").is_empty());
+    }
+
+    #[test]
+    fn test_toml_array_table() {
+        let tokens = TomlLexer::new().lex_full("[[array]]\nkey = 1");
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::TomlTable));
+    }
+
+    #[test]
+    fn test_toml_strings() {
+        let tokens = TomlLexer::new().lex_full(r#""double" 'single'"#);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::StringLiteral)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn test_toml_numbers_and_bools() {
+        let tokens =
+            TomlLexer::new().lex_full("key = -123.45\nflag = true\ndate = 1979-05-27T07:32:00Z");
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::NumberLiteral));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Keyword));
+    }
+
+    #[test]
+    fn test_toml_punctuation() {
+        let tokens = TomlLexer::new().lex_full("{ a = 1, b = 2 }");
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Punctuation));
+    }
+
+    #[test]
+    fn test_toml_unknown() {
+        let tokens = TomlLexer::new().lex_full("@");
+        assert_eq!(tokens[0].kind, TokenKind::Unknown);
+    }
+
+    #[test]
+    fn test_toml_unclosed_table() {
+        let tokens = TomlLexer::new().lex_full("[table");
+        assert_eq!(tokens[0].kind, TokenKind::TomlTable);
     }
 }

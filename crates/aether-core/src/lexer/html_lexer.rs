@@ -9,7 +9,7 @@ impl HtmlLexer {
 
 impl super::Lexer for HtmlLexer {
     fn lex_full(&self, text: &str) -> Vec<super::LexemeSpan> {
-        let mut spans = Vec::new();
+        let mut spans = Vec::with_capacity(text.len() / 4 + 1);
         let bytes = text.as_bytes();
         let mut i = 0;
 
@@ -223,5 +223,87 @@ impl super::Lexer for HtmlLexer {
 impl Default for HtmlLexer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Lexer, TokenKind};
+    use super::HtmlLexer;
+
+    fn kinds(text: &str) -> Vec<TokenKind> {
+        HtmlLexer::new()
+            .lex_full(text)
+            .into_iter()
+            .map(|s| s.kind)
+            .collect()
+    }
+
+    #[test]
+    fn test_html_empty() {
+        assert!(HtmlLexer::new().lex_full("").is_empty());
+    }
+
+    #[test]
+    fn test_html_comment() {
+        let tokens = HtmlLexer::new().lex_full("<!-- comment -->");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].kind, TokenKind::BlockComment);
+    }
+
+    #[test]
+    fn test_html_tag_open_close() {
+        let _tokens = HtmlLexer::new().lex_full("<div></div>");
+        let ks = kinds("<div></div>");
+        assert!(ks.contains(&TokenKind::Keyword));
+        assert!(ks.contains(&TokenKind::Punctuation));
+    }
+
+    #[test]
+    fn test_html_tag_with_attributes() {
+        let _tokens = HtmlLexer::new().lex_full(r#"<a href="url" class='x'>text</a>"#);
+        let ks = kinds(r#"<a href="url" class='x'>text</a>"#);
+        assert!(ks.contains(&TokenKind::Attribute));
+        assert!(ks.contains(&TokenKind::StringLiteral));
+        assert!(ks.contains(&TokenKind::Operator)); // =
+    }
+
+    #[test]
+    fn test_html_self_closing() {
+        let tokens = HtmlLexer::new().lex_full("<br/>");
+        // <br 作为 Keyword，/ 和 > 各为 Punctuation
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].kind, TokenKind::Keyword);
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Punctuation));
+    }
+
+    #[test]
+    fn test_html_entity() {
+        let tokens = HtmlLexer::new().lex_full("&amp; &lt;");
+        assert_eq!(tokens.len(), 3); // entity, ws, entity
+        assert_eq!(tokens[0].kind, TokenKind::Identifier);
+        assert_eq!(tokens[2].kind, TokenKind::Identifier);
+    }
+
+    #[test]
+    fn test_html_text_and_comment() {
+        let tokens = HtmlLexer::new().lex_full("text<!-- c -->more");
+        assert_eq!(tokens[0].kind, TokenKind::Unknown);
+        assert_eq!(tokens[1].kind, TokenKind::BlockComment);
+        assert_eq!(tokens[2].kind, TokenKind::Unknown);
+    }
+
+    #[test]
+    fn test_html_unclosed_tag() {
+        let tokens = HtmlLexer::new().lex_full("<div");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].kind, TokenKind::Keyword);
+    }
+
+    #[test]
+    fn test_html_bare_less_than() {
+        let tokens = HtmlLexer::new().lex_full("3 < 4");
+        assert_eq!(tokens[1].kind, TokenKind::Punctuation);
+        assert_eq!(tokens[1].len, 1);
     }
 }

@@ -38,8 +38,10 @@ pub enum CommandId {
     None,
     // 文件
     FileNew,
+    FileNewWindow,
     FileOpen,
     FileOpenFolder,
+    FileCloseWorkspace,
     FileSave,
     FileSaveAs,
     FileExit,
@@ -52,8 +54,7 @@ pub enum CommandId {
     EditFind,
     EditReplace,
     EditSelectAll,
-    // 选择
-    SelectAll,
+    // REQ-P3-01: 合并原 SelectAll 到 EditSelectAll（重复定义）
     // 查看
     ViewToggleSidebar,
     ViewToggleActivityBar,
@@ -68,6 +69,10 @@ pub enum CommandId {
     RunDebug,
     // 终端
     TerminalNew,
+    // 搜索
+    SearchGlobal,
+    // AI
+    AiFixDiagnostics,
     // 帮助
     HelpAbout,
 }
@@ -76,9 +81,11 @@ impl CommandId {
     pub fn label(&self) -> &'static str {
         match self {
             CommandId::None => "",
-            CommandId::FileNew => "新建文件",
+            CommandId::FileNew => "新建项目",
+            CommandId::FileNewWindow => "新建窗口",
             CommandId::FileOpen => "打开文件",
             CommandId::FileOpenFolder => "打开文件夹",
+            CommandId::FileCloseWorkspace => "关闭工作区",
             CommandId::FileSave => "保存",
             CommandId::FileSaveAs => "另存为",
             CommandId::FileExit => "退出",
@@ -90,7 +97,6 @@ impl CommandId {
             CommandId::EditFind => "查找",
             CommandId::EditReplace => "替换",
             CommandId::EditSelectAll => "全选",
-            CommandId::SelectAll => "全选",
             CommandId::ViewToggleSidebar => "切换侧边栏",
             CommandId::ViewToggleActivityBar => "切换活动栏",
             CommandId::ViewToggleStatusBar => "切换状态栏",
@@ -101,6 +107,8 @@ impl CommandId {
             CommandId::RunStart => "启动",
             CommandId::RunDebug => "调试",
             CommandId::TerminalNew => "新建终端",
+            CommandId::SearchGlobal => "全局搜索",
+            CommandId::AiFixDiagnostics => "AI 修复当前诊断",
             CommandId::HelpAbout => "关于",
         }
     }
@@ -112,6 +120,8 @@ pub struct MenuBarItem {
     pub label: String,
     pub items: Vec<MenuItem>,
     pub expanded: bool,
+    /// REQ-P3-02: 子菜单宽度缓存（由 render_submenu 测量后更新，hit_test 时使用）
+    pub submenu_width: f32,
 }
 
 impl MenuBarItem {
@@ -120,7 +130,19 @@ impl MenuBarItem {
             label: label.to_string(),
             items,
             expanded: false,
+            // 默认 220.0 兼容历史行为，render_submenu 会按内容测量更新
+            submenu_width: 220.0,
         }
+    }
+
+    /// 持久化键：去除 "(F)" 等助记符后的纯文本（如 "文件(F)" → "文件"）
+    pub fn key(&self) -> String {
+        self.label
+            .split('(')
+            .next()
+            .unwrap_or(&self.label)
+            .trim()
+            .to_string()
     }
 }
 
@@ -135,6 +157,12 @@ pub struct MenuBar {
     pub item_x_positions: Vec<f32>,
     /// 布局是否需要重建（菜单项或 DPI 变化时设为 true）
     pub layout_dirty: bool,
+    /// 自定义模式（长按进入）
+    pub customize_mode: bool,
+    /// 正在拖拽的项索引
+    pub drag_index: Option<usize>,
+    /// 拖拽放置目标索引
+    pub drop_index: Option<usize>,
 }
 
 impl MenuBar {
@@ -144,10 +172,13 @@ impl MenuBar {
                 MenuBarItem::new(
                     "文件(F)",
                     vec![
-                        MenuItem::new("新建文件", CommandId::FileNew).with_shortcut("Ctrl+N"),
+                        MenuItem::new("新建项目", CommandId::FileNew).with_shortcut("Ctrl+N"),
+                        MenuItem::new("新建窗口", CommandId::FileNewWindow)
+                            .with_shortcut("Ctrl+Shift+N"),
                         MenuItem::new("打开文件...", CommandId::FileOpen).with_shortcut("Ctrl+O"),
                         MenuItem::new("打开文件夹...", CommandId::FileOpenFolder)
                             .with_shortcut("Ctrl+K"),
+                        MenuItem::new("关闭工作区", CommandId::FileCloseWorkspace),
                         MenuItem::separator(),
                         MenuItem::new("保存", CommandId::FileSave).with_shortcut("Ctrl+S"),
                         MenuItem::new("另存为...", CommandId::FileSaveAs)
@@ -174,7 +205,8 @@ impl MenuBar {
                 ),
                 MenuBarItem::new(
                     "选择(S)",
-                    vec![MenuItem::new("全选", CommandId::SelectAll).with_shortcut("Ctrl+A")],
+                    // REQ-P3-01: 统一使用 EditSelectAll
+                    vec![MenuItem::new("全选", CommandId::EditSelectAll).with_shortcut("Ctrl+A")],
                 ),
                 MenuBarItem::new(
                     "查看(V)",
@@ -214,6 +246,9 @@ impl MenuBar {
             item_widths: Vec::new(),
             item_x_positions: Vec::new(),
             layout_dirty: true,
+            customize_mode: false,
+            drag_index: None,
+            drop_index: None,
         }
     }
 
@@ -269,10 +304,16 @@ impl MenuBar {
             if !item.expanded {
                 return regions;
             }
+            // REQ-P3-02: 使用测得的 submenu_width 而非硬编码 200.0
+            let width = if item.submenu_width > 0.0 {
+                item.submenu_width
+            } else {
+                200.0
+            };
             let mut item_y = y + 8.0;
             for (i, menu_item) in item.items.iter().enumerate() {
                 let height = if menu_item.label == "-" { 8.0 } else { 26.0 };
-                regions.push((x, item_y, 200.0, height, i));
+                regions.push((x, item_y, width, height, i));
                 item_y += height;
             }
         }
@@ -295,5 +336,297 @@ impl MenuBar {
             }
         }
         None
+    }
+
+    /// 进入自定义模式并开始拖拽指定项
+    pub fn begin_drag(&mut self, index: usize) {
+        self.customize_mode = true;
+        // 进入自定义模式时关闭所有展开的子菜单
+        self.close_all();
+        self.drag_index = Some(index);
+        self.drop_index = Some(index);
+    }
+
+    /// 退出自定义模式
+    pub fn exit_customize(&mut self) {
+        self.customize_mode = false;
+        self.drag_index = None;
+        self.drop_index = None;
+    }
+
+    /// 根据鼠标 x 计算放置目标索引（0..=items.len()）
+    pub fn drop_index_at(&self, x: f32) -> usize {
+        let mut current_x = 0.0;
+        for (i, width) in self.item_widths.iter().enumerate() {
+            let mid = current_x + width / 2.0;
+            if x < mid {
+                return i;
+            }
+            current_x += width;
+        }
+        self.items.len()
+    }
+
+    /// 执行重排：将 drag_index 移到 drop_index 位置
+    pub fn reorder(&mut self) {
+        if let (Some(from), Some(to)) = (self.drag_index, self.drop_index) {
+            if from < self.items.len() && to <= self.items.len() && from != to {
+                let item = self.items.remove(from);
+                let insert_at = if to > from { to - 1 } else { to };
+                let insert_at = insert_at.min(self.items.len());
+                self.items.insert(insert_at, item);
+                // active_index 跟随移动
+                if self.active_index == Some(from) {
+                    self.active_index = Some(insert_at);
+                } else if let Some(ai) = self.active_index {
+                    if from < ai && to >= ai {
+                        self.active_index = Some(ai - 1);
+                    } else if from > ai && to <= ai {
+                        self.active_index = Some(ai + 1);
+                    }
+                }
+                self.layout_dirty = true;
+            }
+        }
+    }
+
+    /// 当前顺序的键列表（用于持久化）
+    pub fn order_keys(&self) -> Vec<String> {
+        self.items.iter().map(|i| i.key()).collect()
+    }
+
+    /// 应用持久化的顺序（保留默认项中存在但配置缺失的项）
+    pub fn apply_order(&mut self, keys: &[String]) {
+        let mut new_items: Vec<MenuBarItem> = Vec::new();
+        let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for k in keys {
+            if let Some(item) = self.items.iter().find(|i| i.key() == *k).cloned() {
+                if used.insert(k.clone()) {
+                    new_items.push(item);
+                }
+            }
+        }
+        // 补充默认顺序中未被配置覆盖的项
+        for item in &self.items {
+            let k = item.key();
+            if !used.contains(&k) {
+                new_items.push(item.clone());
+            }
+        }
+        if !new_items.is_empty() {
+            // 重排后强制关闭所有展开状态
+            for item in &mut new_items {
+                item.expanded = false;
+            }
+            self.items = new_items;
+            self.active_index = None;
+            self.layout_dirty = true;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_command_id_label() {
+        assert_eq!(CommandId::FileNew.label(), "新建项目");
+        assert_eq!(CommandId::EditUndo.label(), "撤销");
+        assert_eq!(CommandId::None.label(), "");
+    }
+
+    #[test]
+    fn test_menu_item_builder() {
+        let item = MenuItem::new("保存", CommandId::FileSave).with_shortcut("Ctrl+S");
+        assert_eq!(item.label, "保存");
+        assert_eq!(item.shortcut, Some("Ctrl+S".to_string()));
+        assert_eq!(item.command_id, CommandId::FileSave);
+        assert!(item.enabled);
+
+        let sep = MenuItem::separator();
+        assert_eq!(sep.label, "-");
+        assert_eq!(sep.command_id, CommandId::None);
+    }
+
+    #[test]
+    fn test_menu_bar_item_key() {
+        let item = MenuBarItem::new("文件(F)", vec![]);
+        assert_eq!(item.key(), "文件");
+    }
+
+    #[test]
+    fn test_menu_bar_hit_test() {
+        let mut bar = MenuBar::new();
+        bar.item_widths = vec![50.0, 60.0, 70.0];
+        assert_eq!(bar.hit_test(30.0, 20.0, 30.0), Some(0));
+        assert_eq!(bar.hit_test(55.0, 20.0, 30.0), Some(1));
+        assert_eq!(bar.hit_test(200.0, 20.0, 30.0), None);
+        assert_eq!(bar.hit_test(30.0, 35.0, 30.0), None);
+    }
+
+    #[test]
+    fn test_menu_bar_expand_and_close() {
+        let mut bar = MenuBar::new();
+        bar.expand(1);
+        assert_eq!(bar.active_index, Some(1));
+        assert!(bar.items[1].expanded);
+        assert!(!bar.items[0].expanded);
+
+        bar.close_all();
+        assert_eq!(bar.active_index, None);
+        assert!(!bar.items.iter().any(|i| i.expanded));
+    }
+
+    #[test]
+    fn test_menu_bar_drop_index_at() {
+        let mut bar = MenuBar::new();
+        let count = bar.items.len();
+        bar.item_widths = vec![50.0; count];
+        assert_eq!(bar.drop_index_at(20.0), 0);
+        assert_eq!(bar.drop_index_at(55.0), 1);
+        assert_eq!(bar.drop_index_at(count as f32 * 50.0 + 10.0), count);
+    }
+
+    #[test]
+    fn test_menu_bar_reorder() {
+        let mut bar = MenuBar::new();
+        bar.begin_drag(0);
+        bar.drop_index = Some(2);
+        let first_key = bar.items[0].key();
+        bar.reorder();
+        assert_eq!(bar.items[1].key(), first_key);
+    }
+
+    #[test]
+    fn test_menu_bar_apply_order() {
+        let mut bar = MenuBar::new();
+        let keys = vec!["编辑".to_string(), "文件".to_string()];
+        bar.apply_order(&keys);
+        assert_eq!(bar.items[0].key(), "编辑");
+        assert_eq!(bar.items[1].key(), "文件");
+        // 未被指定的项应保留在后面
+        assert!(bar.items.len() > 2);
+    }
+
+    #[test]
+    fn test_menu_bar_item_x() {
+        let mut bar = MenuBar::new();
+        bar.item_widths = vec![30.0, 40.0, 50.0];
+        assert_eq!(bar.item_x(0), 0.0);
+        assert_eq!(bar.item_x(1), 30.0);
+        assert_eq!(bar.item_x(2), 70.0);
+        assert_eq!(bar.item_x(5), 120.0); // 超出长度返回累计
+    }
+
+    #[test]
+    fn test_menu_bar_submenu_hit_test() {
+        let mut bar = MenuBar::new();
+        bar.expand(0);
+        bar.item_widths = vec![50.0; bar.items.len()];
+        let regions = bar.submenu_region(0, 10.0, 30.0);
+        assert!(!regions.is_empty());
+        let first = regions[0];
+        let hit = bar.hit_test_submenu(0, first.0 + 1.0, first.1 + 1.0, 10.0, 30.0);
+        assert_eq!(hit, Some(0));
+        assert!(bar.hit_test_submenu(0, -1.0, -1.0, 10.0, 30.0).is_none());
+        assert!(bar.submenu_region(1, 0.0, 0.0).is_empty());
+    }
+
+    #[test]
+    fn test_menu_bar_drag_and_customize() {
+        let mut bar = MenuBar::new();
+        bar.begin_drag(1);
+        assert!(bar.customize_mode);
+        assert_eq!(bar.drag_index, Some(1));
+        bar.exit_customize();
+        assert!(!bar.customize_mode);
+        assert!(bar.drag_index.is_none());
+    }
+
+    #[test]
+    fn test_menu_bar_reorder_edge_cases() {
+        let mut bar = MenuBar::new();
+        let keys: Vec<String> = bar.items.iter().map(|i| i.key()).collect();
+        let original_len = bar.items.len();
+
+        // from == to 不变化
+        bar.begin_drag(0);
+        bar.drop_index = Some(0);
+        bar.reorder();
+        assert_eq!(bar.items.len(), original_len);
+
+        // 越界不 panic
+        bar.drag_index = Some(100);
+        bar.drop_index = Some(1);
+        bar.reorder();
+        assert_eq!(bar.items.len(), original_len);
+
+        // 正常重排后恢复
+        bar.items = keys.iter().map(|k| MenuBarItem::new(k, vec![])).collect();
+        bar.begin_drag(0);
+        bar.drop_index = Some(original_len);
+        bar.reorder();
+        assert_eq!(bar.items[original_len - 1].key(), keys[0]);
+    }
+
+    #[test]
+    fn test_menu_bar_apply_order_edge_cases() {
+        let mut bar = MenuBar::new();
+        let original = bar.items.clone();
+        // 空配置保持原顺序
+        bar.apply_order(&[]);
+        assert_eq!(bar.items.len(), original.len());
+        // 重复键只保留第一次出现
+        bar.apply_order(&["文件".to_string(), "文件".to_string()]);
+        assert_eq!(bar.items[0].key(), "文件");
+        assert_eq!(bar.items.iter().filter(|i| i.key() == "文件").count(), 1);
+    }
+
+    #[test]
+    fn test_command_id_all_labels() {
+        use CommandId::*;
+        let ids = [
+            None,
+            FileNew,
+            FileNewWindow,
+            FileOpen,
+            FileOpenFolder,
+            FileCloseWorkspace,
+            FileSave,
+            FileSaveAs,
+            FileExit,
+            EditUndo,
+            EditRedo,
+            EditCut,
+            EditCopy,
+            EditPaste,
+            EditFind,
+            EditReplace,
+            EditSelectAll,
+            ViewToggleSidebar,
+            ViewToggleActivityBar,
+            ViewToggleStatusBar,
+            ViewZoomIn,
+            ViewZoomOut,
+            GotoFile,
+            GotoLine,
+            RunStart,
+            RunDebug,
+            TerminalNew,
+            SearchGlobal,
+            AiFixDiagnostics,
+            HelpAbout,
+        ];
+        for id in &ids {
+            // label() 覆盖所有分支，不应 panic
+            let _ = id.label();
+        }
+    }
+
+    #[test]
+    fn test_menu_item_key_without_mnemonic() {
+        let item = MenuBarItem::new("帮助", vec![]);
+        assert_eq!(item.key(), "帮助");
     }
 }

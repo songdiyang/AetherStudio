@@ -5,6 +5,7 @@ use aether_core::lexer::TokenKind;
 use crate::d2d::factory::{color_f, colors};
 
 /// 主题系统
+#[derive(Clone, Copy)]
 pub struct Theme {
     pub editor_bg: D2D1_COLOR_F,
     pub line_highlight_bg: D2D1_COLOR_F,
@@ -29,6 +30,7 @@ pub struct Theme {
     pub syntax: SyntaxColors,
 }
 
+#[derive(Clone, Copy)]
 pub struct SyntaxColors {
     pub keyword: D2D1_COLOR_F,
     pub string: D2D1_COLOR_F,
@@ -83,6 +85,66 @@ pub struct SyntaxColors {
     pub semantic_abstract: D2D1_COLOR_F,
 }
 
+impl SyntaxColors {
+    /// REQ-P2-08: 提取 dark() 和 glass() 完全相同的 SyntaxColors 共享构造方法
+    /// 两个主题的语法颜色值完全一致，消除 50+ 行重复代码
+    pub fn shared() -> Self {
+        Self {
+            keyword: color_f(0.77, 0.52, 0.75, 1.0),
+            string: color_f(0.81, 0.57, 0.47, 1.0),
+            number: color_f(0.71, 0.81, 0.66, 1.0),
+            comment: color_f(0.42, 0.60, 0.33, 1.0),
+            function: color_f(0.86, 0.86, 0.67, 1.0),
+            type_name: color_f(0.31, 0.79, 0.69, 1.0),
+            operator: color_f(0.83, 0.83, 0.83, 1.0),
+            variable: color_f(0.61, 0.74, 1.0, 1.0),
+            preprocessor: color_f(0.50, 0.50, 0.50, 1.0),
+            attribute: color_f(0.8, 0.6, 0.3, 1.0),
+            macro_color: color_f(0.6, 0.4, 0.8, 1.0),
+            lifetime: color_f(0.5, 0.7, 0.9, 1.0),
+            regex: color_f(0.8, 0.5, 0.3, 1.0),
+            format_string: color_f(0.8, 0.6, 0.4, 1.0),
+            md_heading: color_f(0.3, 0.6, 0.9, 1.0),
+            md_link: color_f(0.3, 0.5, 0.9, 1.0),
+            md_code: color_f(0.7, 0.5, 0.3, 1.0),
+            md_emphasis: color_f(0.9, 0.7, 0.4, 1.0),
+            json_key: color_f(0.6, 0.8, 0.9, 1.0),
+            toml_table: color_f(0.8, 0.5, 0.3, 1.0),
+            find_highlight: color_f(0.8, 0.7, 0.3, 0.6),
+            // Semantic token colors
+            semantic_namespace: color_f(0.5, 0.7, 0.9, 1.0),
+            semantic_type: color_f(0.3, 0.7, 0.9, 1.0),
+            semantic_class: color_f(0.3, 0.6, 0.9, 1.0),
+            semantic_enum: color_f(0.3, 0.6, 0.9, 1.0),
+            semantic_interface: color_f(0.3, 0.7, 0.8, 1.0),
+            semantic_struct: color_f(0.3, 0.6, 0.9, 1.0),
+            semantic_type_parameter: color_f(0.4, 0.7, 0.8, 1.0),
+            semantic_parameter: color_f(0.7, 0.7, 0.7, 1.0),
+            semantic_variable_local: color_f(0.8, 0.8, 0.8, 1.0),
+            semantic_variable_global: color_f(0.7, 0.7, 0.8, 1.0),
+            semantic_property: color_f(0.7, 0.7, 0.8, 1.0),
+            semantic_enum_member: color_f(0.5, 0.7, 0.9, 1.0),
+            semantic_event: color_f(0.7, 0.5, 0.7, 1.0),
+            semantic_function_declaration: color_f(0.8, 0.6, 0.3, 1.0),
+            semantic_function_call: color_f(0.8, 0.6, 0.3, 1.0),
+            semantic_method: color_f(0.8, 0.6, 0.3, 1.0),
+            semantic_macro: color_f(0.6, 0.4, 0.8, 1.0),
+            semantic_keyword_control: color_f(0.5, 0.5, 0.8, 1.0),
+            semantic_modifier: color_f(0.5, 0.5, 0.8, 1.0),
+            semantic_comment_doc: color_f(0.4, 0.6, 0.4, 1.0),
+            semantic_string_format: color_f(0.8, 0.6, 0.4, 1.0),
+            semantic_number_hex: color_f(0.6, 0.8, 0.6, 1.0),
+            semantic_regexp: color_f(0.8, 0.5, 0.3, 1.0),
+            semantic_operator_logical: color_f(0.5, 0.5, 0.8, 1.0),
+            semantic_readonly: color_f(0.5, 0.7, 0.9, 1.0),
+            semantic_deprecated: color_f(0.5, 0.5, 0.5, 0.7),
+            semantic_async: color_f(0.5, 0.5, 0.8, 1.0),
+            semantic_static: color_f(0.7, 0.7, 0.7, 1.0),
+            semantic_abstract: color_f(0.5, 0.7, 0.8, 1.0),
+        }
+    }
+}
+
 impl Theme {
     pub fn dark() -> Self {
         Self {
@@ -106,59 +168,8 @@ impl Theme {
             command_palette_bg: color_f(0.18, 0.18, 0.18, 1.0),
             submenu_bg: color_f(0.18, 0.18, 0.18, 1.0),
             glass_enabled: false,
-            syntax: SyntaxColors {
-                keyword: colors::keyword(),
-                string: colors::string(),
-                number: colors::number(),
-                comment: colors::comment(),
-                function: colors::function(),
-                type_name: colors::type_name(),
-                operator: colors::operator(),
-                variable: colors::variable(),
-                preprocessor: colors::preprocessor(),
-                attribute: color_f(0.8, 0.6, 0.3, 1.0),
-                macro_color: color_f(0.6, 0.4, 0.8, 1.0),
-                lifetime: color_f(0.5, 0.7, 0.9, 1.0),
-                regex: color_f(0.8, 0.5, 0.3, 1.0),
-                format_string: color_f(0.8, 0.6, 0.4, 1.0),
-                md_heading: color_f(0.3, 0.6, 0.9, 1.0),
-                md_link: color_f(0.3, 0.5, 0.9, 1.0),
-                md_code: color_f(0.7, 0.5, 0.3, 1.0),
-                md_emphasis: color_f(0.9, 0.7, 0.4, 1.0),
-                json_key: color_f(0.6, 0.8, 0.9, 1.0),
-                toml_table: color_f(0.8, 0.5, 0.3, 1.0),
-                find_highlight: color_f(0.8, 0.7, 0.3, 0.6),
-                // Semantic token colors (P2) - 默认映射
-                semantic_namespace: color_f(0.5, 0.7, 0.9, 1.0),
-                semantic_type: color_f(0.3, 0.7, 0.9, 1.0),
-                semantic_class: color_f(0.3, 0.6, 0.9, 1.0),
-                semantic_enum: color_f(0.3, 0.6, 0.9, 1.0),
-                semantic_interface: color_f(0.3, 0.7, 0.8, 1.0),
-                semantic_struct: color_f(0.3, 0.6, 0.9, 1.0),
-                semantic_type_parameter: color_f(0.4, 0.7, 0.8, 1.0),
-                semantic_parameter: color_f(0.7, 0.7, 0.7, 1.0),
-                semantic_variable_local: color_f(0.8, 0.8, 0.8, 1.0),
-                semantic_variable_global: color_f(0.7, 0.7, 0.8, 1.0),
-                semantic_property: color_f(0.7, 0.7, 0.8, 1.0),
-                semantic_enum_member: color_f(0.5, 0.7, 0.9, 1.0),
-                semantic_event: color_f(0.7, 0.5, 0.7, 1.0),
-                semantic_function_declaration: color_f(0.8, 0.6, 0.3, 1.0),
-                semantic_function_call: color_f(0.8, 0.6, 0.3, 1.0),
-                semantic_method: color_f(0.8, 0.6, 0.3, 1.0),
-                semantic_macro: color_f(0.6, 0.4, 0.8, 1.0),
-                semantic_keyword_control: color_f(0.5, 0.5, 0.8, 1.0),
-                semantic_modifier: color_f(0.5, 0.5, 0.8, 1.0),
-                semantic_comment_doc: color_f(0.4, 0.6, 0.4, 1.0),
-                semantic_string_format: color_f(0.8, 0.6, 0.4, 1.0),
-                semantic_number_hex: color_f(0.6, 0.8, 0.6, 1.0),
-                semantic_regexp: color_f(0.8, 0.5, 0.3, 1.0),
-                semantic_operator_logical: color_f(0.5, 0.5, 0.8, 1.0),
-                semantic_readonly: color_f(0.5, 0.7, 0.9, 1.0),
-                semantic_deprecated: color_f(0.5, 0.5, 0.5, 0.7),
-                semantic_async: color_f(0.5, 0.5, 0.8, 1.0),
-                semantic_static: color_f(0.7, 0.7, 0.7, 1.0),
-                semantic_abstract: color_f(0.5, 0.7, 0.8, 1.0),
-            },
+            // REQ-P2-08: 使用共享 SyntaxColors 构造方法，消除重复代码
+            syntax: SyntaxColors::shared(),
         }
     }
 
@@ -192,59 +203,8 @@ impl Theme {
             command_palette_bg: color_f(0.18, 0.18, 0.18, 0.92), // 命令面板
             submenu_bg: color_f(0.20, 0.20, 0.20, 0.92),     // 子菜单
             glass_enabled: true,
-            syntax: SyntaxColors {
-                keyword: color_f(0.77, 0.52, 0.75, 1.0),
-                string: color_f(0.81, 0.57, 0.47, 1.0),
-                number: color_f(0.71, 0.81, 0.66, 1.0),
-                comment: color_f(0.42, 0.60, 0.33, 1.0),
-                function: color_f(0.86, 0.86, 0.67, 1.0),
-                type_name: color_f(0.31, 0.79, 0.69, 1.0),
-                operator: color_f(0.83, 0.83, 0.83, 1.0),
-                variable: color_f(0.61, 0.74, 1.0, 1.0),
-                preprocessor: color_f(0.50, 0.50, 0.50, 1.0),
-                attribute: color_f(0.8, 0.6, 0.3, 1.0),
-                macro_color: color_f(0.6, 0.4, 0.8, 1.0),
-                lifetime: color_f(0.5, 0.7, 0.9, 1.0),
-                regex: color_f(0.8, 0.5, 0.3, 1.0),
-                format_string: color_f(0.8, 0.6, 0.4, 1.0),
-                md_heading: color_f(0.3, 0.6, 0.9, 1.0),
-                md_link: color_f(0.3, 0.5, 0.9, 1.0),
-                md_code: color_f(0.7, 0.5, 0.3, 1.0),
-                md_emphasis: color_f(0.9, 0.7, 0.4, 1.0),
-                json_key: color_f(0.6, 0.8, 0.9, 1.0),
-                toml_table: color_f(0.8, 0.5, 0.3, 1.0),
-                find_highlight: color_f(0.8, 0.7, 0.3, 0.6),
-                // Semantic token colors — same as dark, text stays opaque
-                semantic_namespace: color_f(0.5, 0.7, 0.9, 1.0),
-                semantic_type: color_f(0.3, 0.7, 0.9, 1.0),
-                semantic_class: color_f(0.3, 0.6, 0.9, 1.0),
-                semantic_enum: color_f(0.3, 0.6, 0.9, 1.0),
-                semantic_interface: color_f(0.3, 0.7, 0.8, 1.0),
-                semantic_struct: color_f(0.3, 0.6, 0.9, 1.0),
-                semantic_type_parameter: color_f(0.4, 0.7, 0.8, 1.0),
-                semantic_parameter: color_f(0.7, 0.7, 0.7, 1.0),
-                semantic_variable_local: color_f(0.8, 0.8, 0.8, 1.0),
-                semantic_variable_global: color_f(0.7, 0.7, 0.8, 1.0),
-                semantic_property: color_f(0.7, 0.7, 0.8, 1.0),
-                semantic_enum_member: color_f(0.5, 0.7, 0.9, 1.0),
-                semantic_event: color_f(0.7, 0.5, 0.7, 1.0),
-                semantic_function_declaration: color_f(0.8, 0.6, 0.3, 1.0),
-                semantic_function_call: color_f(0.8, 0.6, 0.3, 1.0),
-                semantic_method: color_f(0.8, 0.6, 0.3, 1.0),
-                semantic_macro: color_f(0.6, 0.4, 0.8, 1.0),
-                semantic_keyword_control: color_f(0.5, 0.5, 0.8, 1.0),
-                semantic_modifier: color_f(0.5, 0.5, 0.8, 1.0),
-                semantic_comment_doc: color_f(0.4, 0.6, 0.4, 1.0),
-                semantic_string_format: color_f(0.8, 0.6, 0.4, 1.0),
-                semantic_number_hex: color_f(0.6, 0.8, 0.6, 1.0),
-                semantic_regexp: color_f(0.8, 0.5, 0.3, 1.0),
-                semantic_operator_logical: color_f(0.5, 0.5, 0.8, 1.0),
-                semantic_readonly: color_f(0.5, 0.7, 0.9, 1.0),
-                semantic_deprecated: color_f(0.5, 0.5, 0.5, 0.7),
-                semantic_async: color_f(0.5, 0.5, 0.8, 1.0),
-                semantic_static: color_f(0.7, 0.7, 0.7, 1.0),
-                semantic_abstract: color_f(0.5, 0.7, 0.8, 1.0),
-            },
+            // REQ-P2-08: 使用共享 SyntaxColors 构造方法，消除重复代码
+            syntax: SyntaxColors::shared(),
         }
     }
 
@@ -319,5 +279,206 @@ impl Theme {
 impl Default for Theme {
     fn default() -> Self {
         Self::glass()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn color_eq(a: D2D1_COLOR_F, b: D2D1_COLOR_F, eps: f32) -> bool {
+        (a.r - b.r).abs() < eps
+            && (a.g - b.g).abs() < eps
+            && (a.b - b.b).abs() < eps
+            && (a.a - b.a).abs() < eps
+    }
+
+    #[test]
+    fn test_default_theme_is_glass() {
+        let default = Theme::default();
+        let glass = Theme::glass();
+        assert!(default.glass_enabled);
+        assert!(color_eq(default.editor_bg, glass.editor_bg, 0.001));
+    }
+
+    #[test]
+    fn test_dark_and_glass_differ_in_glass_enabled() {
+        let dark = Theme::dark();
+        let glass = Theme::glass();
+        assert!(!dark.glass_enabled);
+        assert!(glass.glass_enabled);
+        // glass 编辑器背景有透明度
+        assert!(glass.editor_bg.a < 1.0);
+        assert!(dark.editor_bg.a >= 1.0);
+    }
+
+    #[test]
+    fn test_color_for_token_mappings() {
+        let theme = Theme::dark();
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Keyword),
+            theme.syntax.keyword,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Identifier),
+            theme.syntax.variable,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::StringLiteral),
+            theme.syntax.string,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::CharLiteral),
+            theme.syntax.string,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::NumberLiteral),
+            theme.syntax.number,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::LineComment),
+            theme.syntax.comment,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::BlockComment),
+            theme.syntax.comment,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::DocComment),
+            theme.syntax.comment,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Operator),
+            theme.syntax.operator,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Punctuation),
+            theme.syntax.operator,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Preprocessor),
+            theme.syntax.preprocessor,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Attribute),
+            theme.syntax.attribute,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::TypeName),
+            theme.syntax.type_name,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Function),
+            theme.syntax.function,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Macro),
+            theme.syntax.macro_color,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Lifetime),
+            theme.syntax.lifetime,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Generic),
+            theme.syntax.type_name,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::RegexLiteral),
+            theme.syntax.regex,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::FormatString),
+            theme.syntax.format_string,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::MdHeading),
+            theme.syntax.md_heading,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::MdLink),
+            theme.syntax.md_link,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::MdCode),
+            theme.syntax.md_code,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::MdEmphasis),
+            theme.syntax.md_emphasis,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::JsonKey),
+            theme.syntax.json_key,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::TomlTable),
+            theme.syntax.toml_table,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Whitespace),
+            theme.text_default,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Newline),
+            theme.text_default,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::Unknown),
+            theme.text_default,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_token(TokenKind::EOF),
+            theme.text_default,
+            0.001
+        ));
+    }
+
+    #[test]
+    fn test_color_for_semantic_token_index() {
+        let theme = Theme::dark();
+        assert!(color_eq(
+            theme.color_for_semantic_token_index(0, 0),
+            theme.syntax.semantic_namespace,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_semantic_token_index(21, 0),
+            theme.syntax.semantic_operator_logical,
+            0.001
+        ));
+        assert!(color_eq(
+            theme.color_for_semantic_token_index(99, 0),
+            theme.text_default,
+            0.001
+        ));
     }
 }

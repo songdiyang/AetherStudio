@@ -45,9 +45,15 @@ impl IncrementalChangeCalculator {
 
         for edit in edits.into_iter().skip(1) {
             if let (Some(current_range), Some(next_range)) = (current.range, edit.range) {
-                // 检查是否可以合并（相邻或重叠）
-                if next_range.start.line <= current_range.end.line + 1 {
-                    // 合并两个范围
+                // H-22: 仅合并真正相邻的编辑（next.start == current.end），
+                // 避免合并非相邻编辑时丢失两次编辑之间的原始文本。
+                // 原代码使用 next.start.line <= current.end.line + 1 过于宽松，
+                // 会将相邻行但不相邻位置的编辑合并，导致中间文本丢失。
+                let is_adjacent = next_range.start.line == current_range.end.line
+                    && next_range.start.character == current_range.end.character;
+                if is_adjacent {
+                    // 相邻编辑可以安全合并：[current.start, current.end) + [next.start, next.end)
+                    // → [current.start, next.end)，替换文本为 current.text + next.text
                     let merged_text = current.text + &edit.text;
                     current = TextDocumentContentChangeEvent {
                         range: Some(Range {
@@ -89,15 +95,18 @@ pub trait LineIndexProvider {
 
 /// 高效的行索引实现
 ///
-/// 基于预计算的行起始位置数组，支持O(1)转换
+/// 基于预计算的行起始位置数组，支持 O(log n) 行查找；character 按 LSP 标准使用 UTF-16 码元计数。
 pub struct FastLineIndex {
+    /// 保存完整文本，用于在行内计算 UTF-16 码元偏移
+    text: String,
     line_starts: Vec<usize>,
     total_bytes: usize,
 }
 
 impl FastLineIndex {
-    pub fn new(line_starts: Vec<usize>, total_bytes: usize) -> Self {
+    pub fn new(text: String, line_starts: Vec<usize>, total_bytes: usize) -> Self {
         Self {
+            text,
             line_starts,
             total_bytes,
         }
@@ -105,13 +114,15 @@ impl FastLineIndex {
 
     /// 从文本创建行索引
     pub fn from_text(text: &str) -> Self {
+        let owned = text.to_string();
         let mut line_starts = vec![0];
-        for (i, byte) in text.bytes().enumerate() {
+        for (i, byte) in owned.bytes().enumerate() {
             if byte == b'\n' {
                 line_starts.push(i + 1);
             }
         }
         Self {
+            text: owned,
             line_starts,
             total_bytes: text.len(),
         }
@@ -131,10 +142,20 @@ impl LineIndexProvider for FastLineIndex {
             Err(line) => {
                 let line = line.saturating_sub(1);
                 let line_start = self.line_starts.get(line).copied().unwrap_or(0);
-                let character = byte_offset - line_start;
+                let col_byte = byte_offset - line_start;
+                // LSP 标准位置使用 UTF-16 码元计数
+                let line_end = self
+                    .line_starts
+                    .get(line + 1)
+                    .copied()
+                    .unwrap_or(self.total_bytes);
+                let line_text = &self.text[line_start..line_end.min(self.total_bytes)];
+                let character = line_text[..col_byte.min(line_text.len())]
+                    .encode_utf16()
+                    .count() as u32;
                 Position {
                     line: line as u32,
-                    character: character as u32,
+                    character,
                 }
             }
         }
@@ -147,8 +168,24 @@ impl LineIndexProvider for FastLineIndex {
             .get(line)
             .copied()
             .unwrap_or(self.total_bytes);
-        let character = position.character as usize;
-        line_start + character
+        // H-18: 限制 character 不超出本行末尾，避免跨行偏移导致文档模型损坏
+        let line_end = self
+            .line_starts
+            .get(line + 1)
+            .copied()
+            .unwrap_or(self.total_bytes);
+        let line_text = &self.text[line_start..line_end.min(self.total_bytes)];
+        // 将 UTF-16 码元偏移转换为字节偏移
+        let mut utf16_count = 0;
+        let mut byte_offset = 0;
+        for ch in line_text.chars() {
+            if utf16_count >= position.character as usize {
+                break;
+            }
+            utf16_count += ch.len_utf16();
+            byte_offset += ch.len_utf8();
+        }
+        line_start + byte_offset
     }
 }
 
@@ -209,23 +246,24 @@ impl OptimizedDocumentSync {
     }
 
     /// 生成增量变更（从最近一次同步到现在）
+    ///
+    /// `line_index` 必须是当前文档文本对应的行索引，用于将字节偏移转换为 LSP Position。
+    ///
+    /// **注意**：由于多次编辑后旧记录的字节偏移可能已失效，本方法仅在
+    /// 「自上次同步后仅有一次编辑」时保证完全正确。多次编辑场景应改用
+    /// `from_edit_op`（在编辑发生时立即调用）或在每次编辑后重建 line_index。
     pub fn generate_changes_since(
         &self,
         since_version: i32,
+        line_index: &dyn LineIndexProvider,
     ) -> Vec<TextDocumentContentChangeEvent> {
         self.edit_history
             .iter()
             .filter(|r| r.version > since_version)
             .map(|r| TextDocumentContentChangeEvent {
                 range: Some(Range {
-                    start: Position {
-                        line: 0,
-                        character: 0,
-                    },
-                    end: Position {
-                        line: 0,
-                        character: 0,
-                    },
+                    start: line_index.byte_to_position(r.start_byte),
+                    end: line_index.byte_to_position(r.end_byte),
                 }),
                 range_length: Some((r.end_byte - r.start_byte) as u32),
                 text: r.text.clone(),
@@ -352,6 +390,220 @@ mod tests {
 
     #[test]
     fn test_merge_edits() {
+        // H-22: 仅真正相邻的编辑（next.start == current.end）才应合并
+        let edits = vec![
+            TextDocumentContentChangeEvent {
+                range: Some(Range {
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 5,
+                    },
+                }),
+                range_length: None,
+                text: "hello".to_string(),
+            },
+            // 此编辑紧接上一个结尾（line 0, char 5），属于真正相邻
+            TextDocumentContentChangeEvent {
+                range: Some(Range {
+                    start: Position {
+                        line: 0,
+                        character: 5,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 10,
+                    },
+                }),
+                range_length: None,
+                text: "world".to_string(),
+            },
+        ];
+
+        let merged = IncrementalChangeCalculator::merge_edits(edits);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "helloworld");
+    }
+
+    #[test]
+    fn test_optimized_document_sync() {
+        let uri = Url::parse("file:///test.rs").unwrap();
+        let mut sync = OptimizedDocumentSync::new(uri);
+
+        sync.record_edit(0, 0, "fn main() {}".to_string());
+        assert_eq!(sync.version(), 1);
+
+        // 提供行索引用于将字节偏移转换为 LSP Position
+        let line_index = FastLineIndex::from_text("fn main() {}");
+        let changes = sync.generate_changes_since(0, &line_index);
+        assert_eq!(changes.len(), 1);
+        // 验证位置不再是硬编码的 (0,0)
+        let change = &changes[0];
+        assert!(change.range.is_some());
+        let range = change.range.unwrap();
+        assert_eq!(
+            range.start,
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(
+            range.end,
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+    }
+
+    #[test]
+    fn test_large_file_strategy() {
+        let strategy = LargeFileSyncStrategy::new();
+
+        assert!(!strategy.is_large_file(50_000));
+        assert!(strategy.is_large_file(200_000));
+
+        assert!(!strategy.should_send_full(1000, 100));
+        assert!(strategy.should_send_full(1000, 600));
+    }
+
+    #[test]
+    fn test_fast_line_index_empty() {
+        let index = FastLineIndex::from_text("");
+        assert_eq!(
+            index.byte_to_position(0),
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(
+            index.position_to_byte(Position {
+                line: 0,
+                character: 0
+            }),
+            0
+        );
+    }
+
+    #[test]
+    fn test_fast_line_index_utf16_multibyte() {
+        // "中" 在 UTF-16 中占 1 个码元,UTF-8 中占 3 个字节
+        let text = "中a";
+        let index = FastLineIndex::from_text(text);
+        assert_eq!(
+            index.byte_to_position(3),
+            Position {
+                line: 0,
+                character: 1
+            }
+        );
+        assert_eq!(
+            index.byte_to_position(4),
+            Position {
+                line: 0,
+                character: 2
+            }
+        );
+
+        assert_eq!(
+            index.position_to_byte(Position {
+                line: 0,
+                character: 1
+            }),
+            3
+        );
+        assert_eq!(
+            index.position_to_byte(Position {
+                line: 0,
+                character: 2
+            }),
+            4
+        );
+    }
+
+    #[test]
+    fn test_fast_line_index_out_of_bounds() {
+        let index = FastLineIndex::from_text("line1\nline2");
+        assert_eq!(
+            index.byte_to_position(1000),
+            Position {
+                line: 1,
+                character: 5
+            }
+        );
+        assert_eq!(
+            index.position_to_byte(Position {
+                line: 100,
+                character: 0
+            }),
+            index.total_bytes
+        );
+    }
+
+    #[test]
+    fn test_incremental_change_calculator_from_edit_op() {
+        struct DummyIndex;
+        impl LineIndexProvider for DummyIndex {
+            fn byte_to_position(&self, byte_offset: usize) -> Position {
+                Position {
+                    line: byte_offset as u32,
+                    character: 0,
+                }
+            }
+            fn position_to_byte(&self, _position: Position) -> usize {
+                0
+            }
+        }
+
+        let changes =
+            IncrementalChangeCalculator::from_edit_op(EditKind::Replace, 2, 5, "new", &DummyIndex);
+        assert_eq!(changes.len(), 1);
+        let change = &changes[0];
+        assert_eq!(
+            change.range,
+            Some(Range {
+                start: Position {
+                    line: 2,
+                    character: 0
+                },
+                end: Position {
+                    line: 5,
+                    character: 0
+                },
+            })
+        );
+        assert_eq!(change.range_length, Some(3));
+        assert_eq!(change.text, "new");
+    }
+
+    #[test]
+    fn test_merge_edits_empty_and_single() {
+        assert!(IncrementalChangeCalculator::merge_edits(vec![]).is_empty());
+
+        let single = vec![TextDocumentContentChangeEvent {
+            range: Some(Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 5,
+                },
+            }),
+            range_length: None,
+            text: "hello".to_string(),
+        }];
+        assert_eq!(IncrementalChangeCalculator::merge_edits(single).len(), 1);
+    }
+
+    #[test]
+    fn test_merge_edits_non_adjacent() {
         let edits = vec![
             TextDocumentContentChangeEvent {
                 range: Some(Range {
@@ -370,11 +622,11 @@ mod tests {
             TextDocumentContentChangeEvent {
                 range: Some(Range {
                     start: Position {
-                        line: 1,
+                        line: 5,
                         character: 0,
                     },
                     end: Position {
-                        line: 1,
+                        line: 5,
                         character: 5,
                     },
                 }),
@@ -382,31 +634,109 @@ mod tests {
                 text: "world".to_string(),
             },
         ];
-
         let merged = IncrementalChangeCalculator::merge_edits(edits);
-        assert_eq!(merged.len(), 1);
+        assert_eq!(merged.len(), 2);
     }
 
     #[test]
-    fn test_optimized_document_sync() {
+    fn test_merge_edits_with_full_replacement() {
+        // 任一 edit 没有 range 时无法合并
+        let edits = vec![
+            TextDocumentContentChangeEvent {
+                range: Some(Range {
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 5,
+                    },
+                }),
+                range_length: None,
+                text: "hello".to_string(),
+            },
+            TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: "full".to_string(),
+            },
+        ];
+        let merged = IncrementalChangeCalculator::merge_edits(edits);
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn test_optimized_document_sync_queue_and_flush() {
         let uri = Url::parse("file:///test.rs").unwrap();
-        let mut sync = OptimizedDocumentSync::new(uri);
+        let mut sync = OptimizedDocumentSync::new(uri.clone());
 
-        sync.record_edit(0, 0, "fn main() {}".to_string());
-        assert_eq!(sync.version(), 1);
+        assert_eq!(sync.version(), 0);
+        assert!(!sync.should_flush());
 
-        let changes = sync.generate_changes_since(0);
+        sync.queue_change(TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: "a".to_string(),
+        });
+        assert!(!sync.should_flush());
+
+        for _ in 0..5 {
+            sync.queue_change(TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: "x".to_string(),
+            });
+        }
+        assert!(sync.should_flush());
+
+        let flushed = sync.flush_changes();
+        assert_eq!(flushed.len(), 6);
+        assert!(sync.pending_changes.is_empty());
+    }
+
+    #[test]
+    fn test_optimized_document_sync_generate_changes_since() {
+        let uri = Url::parse("file:///test.rs").unwrap();
+        let mut sync = OptimizedDocumentSync::new(uri.clone());
+        sync.record_edit(0, 3, "abc".to_string());
+        sync.record_edit(5, 5, "xyz".to_string());
+
+        let index = FastLineIndex::from_text("___abc___xyz___");
+        let changes = sync.generate_changes_since(0, &index);
+        assert_eq!(changes.len(), 2);
+
+        // 过滤掉过期记录
+        let changes = sync.generate_changes_since(1, &index);
         assert_eq!(changes.len(), 1);
     }
 
     #[test]
-    fn test_large_file_strategy() {
+    fn test_optimized_document_sync_history_limit() {
+        let uri = Url::parse("file:///test.rs").unwrap();
+        let mut sync = OptimizedDocumentSync::new(uri);
+        for i in 0..60 {
+            sync.record_edit(i, i + 1, "x".to_string());
+        }
+        assert_eq!(sync.version(), 60);
+        // max_history = 50,应截断旧记录
+        assert_eq!(sync.edit_history.len(), 50);
+    }
+
+    #[test]
+    fn test_optimized_document_sync_cleanup_old_history() {
+        let uri = Url::parse("file:///test.rs").unwrap();
+        let mut sync = OptimizedDocumentSync::new(uri);
+        sync.record_edit(0, 1, "a".to_string());
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        sync.cleanup_old_history(std::time::Duration::from_millis(5));
+        assert!(sync.edit_history.is_empty());
+    }
+
+    #[test]
+    fn test_large_file_strategy_delay() {
         let strategy = LargeFileSyncStrategy::new();
-
-        assert!(!strategy.is_large_file(50_000));
-        assert!(strategy.is_large_file(200_000));
-
-        assert!(!strategy.should_send_full(1000, 100));
-        assert!(strategy.should_send_full(1000, 600));
+        assert_eq!(strategy.sync_delay_ms(50_000), 0);
+        assert_eq!(strategy.sync_delay_ms(200_000), 500);
     }
 }

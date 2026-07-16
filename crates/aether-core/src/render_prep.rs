@@ -129,3 +129,65 @@ impl Default for RenderCache {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Language;
+
+    #[test]
+    fn test_parallel_render_prep_single_thread_fallback() {
+        let prep = ParallelRenderPrep::new();
+        let lines: Vec<String> = (0..10).map(|i| format!("line {}", i)).collect();
+        let tokens = prep.prepare_tokens_parallel(&lines, Language::Rust);
+        assert_eq!(tokens.len(), 10);
+        // 每行至少有一个 token
+        assert!(tokens.iter().all(|t| !t.is_empty()));
+    }
+
+    #[test]
+    fn test_parallel_render_prep_many_lines_parallel() {
+        let prep = ParallelRenderPrep::new();
+        let lines: Vec<String> = (0..150).map(|i| format!("let x{} = {};", i, i)).collect();
+        let tokens = prep.prepare_tokens_parallel(&lines, Language::Rust);
+        assert_eq!(tokens.len(), 150);
+    }
+
+    #[test]
+    fn test_render_cache_basic() {
+        let mut cache = RenderCache::new();
+        assert!(cache.is_valid(0, 0, 0));
+        assert!(!cache.is_valid(0, 1, 0));
+
+        cache.update(
+            vec!["line1".to_string(), "line2".to_string()],
+            vec![vec![], vec![]],
+            0,
+            2,
+            1,
+        );
+        assert!(cache.is_valid(0, 2, 1));
+        assert!(!cache.is_valid(0, 2, 2));
+
+        cache.clear();
+        assert!(cache.lines.is_empty());
+        assert!(cache.token_lines.is_empty());
+        assert_eq!(cache.version, 0);
+    }
+
+    #[test]
+    fn test_render_cache_default() {
+        let cache = RenderCache::default();
+        assert!(cache.lines.is_empty());
+        assert_eq!(cache.start_line, 0);
+        assert_eq!(cache.end_line, 0);
+    }
+
+    #[test]
+    fn test_parallel_render_prep_default() {
+        let prep = ParallelRenderPrep::default();
+        let lines = vec!["fn main() {}".to_string()];
+        let tokens = prep.prepare_tokens_parallel(&lines, Language::Rust);
+        assert_eq!(tokens.len(), 1);
+    }
+}

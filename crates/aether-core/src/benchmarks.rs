@@ -1,3 +1,5 @@
+#![allow(clippy::items_after_test_module)]
+
 use std::time::{Duration, Instant};
 
 use crate::buffer::piece_table::PieceTable;
@@ -215,7 +217,7 @@ pub fn benchmark_piece_table_edit_throughput() -> BenchmarkResult {
         let pos = pt.len_bytes() / 2;
         pt.insert(pos, &format!("edit{}", counter));
         counter += 1;
-        if counter % 10 == 0 {
+        if counter.is_multiple_of(10) {
             let del_pos = pt.len_bytes() / 3;
             let len = pt.len_bytes();
             if del_pos + 5 < len {
@@ -334,6 +336,64 @@ pub fn benchmark_incremental_vs_full() -> BenchmarkResult {
 // ============================================================================
 // 综合性能测试套件
 // ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_benchmark_result_new() {
+        let times = vec![
+            Duration::from_millis(10),
+            Duration::from_millis(20),
+            Duration::from_millis(30),
+        ];
+        let result = BenchmarkResult::new("test", 3, &times);
+        assert_eq!(result.name, "test");
+        assert_eq!(result.iterations, 3);
+        assert_eq!(result.min_time, Duration::from_millis(10));
+        assert_eq!(result.max_time, Duration::from_millis(30));
+        assert!(
+            result.avg_time >= Duration::from_millis(19)
+                && result.avg_time <= Duration::from_millis(21)
+        );
+        assert!(result.throughput > 0.0);
+    }
+
+    #[test]
+    fn test_benchmark_result_report_format() {
+        let result = BenchmarkResult::new("name", 1, &[Duration::from_millis(1)]);
+        let report = result.report();
+        assert!(report.contains("name"));
+        assert!(report.contains("1"));
+    }
+
+    #[test]
+    fn test_run_benchmark_runs_iterations() {
+        let result = run_benchmark("fast", 5, 1, || {});
+        assert_eq!(result.iterations, 5);
+        // 即使空闭包也可能有极小非零计时
+        assert!(result.total_time <= Duration::from_micros(100));
+    }
+
+    #[test]
+    fn test_run_benchmark_respects_max_time() {
+        let result = run_benchmark("slow", 1000, 1, || {
+            std::thread::sleep(Duration::from_millis(50));
+        });
+        // 1 秒上限、每次 50ms，应无法完成 1000 次
+        assert!(result.iterations < 1000);
+        assert!(result.iterations > 0);
+    }
+
+    #[test]
+    fn test_generate_text_lines() {
+        let text = generate_text_lines(5, 20);
+        assert_eq!(text.lines().count(), 5);
+        assert!(text.starts_with("Line 000000:"));
+        assert!(text.ends_with('\n'));
+    }
+}
 
 /// 运行所有性能测试
 pub fn run_all_benchmarks() -> Vec<BenchmarkResult> {

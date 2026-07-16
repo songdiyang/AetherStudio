@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Java file icon (flat)">
+  <title>Java File (Flat)</title>
+  <!-- File body -->
+  <path d="M5.5 2.5 L14.5 2.5 L20.5 8.5 L20.5 20.5 Q20.5 21.5 19.5 21.5 L5.5 21.5 Q4.5 21.5 4.5 20.5 L4.5 3.5 Q4.5 2.5 5.5 2.5 Z"
+        fill="#E76F00"/>
+  <!-- Corner fold -->
+  <path d="M14.5 2.5 L20.5 8.5 L15.5 8.5 Q14.5 8.5 14.5 7.5 Z"
+        fill="#FFFFFF" fill-opacity="0.35"/>
+  <!-- Coffee cup body -->
+  <path d="M8 13 L16 13 L15.5 19 Q15.4 20 14.4 20 L9.6 20 Q8.6 20 8.5 19 Z"
+        fill="#FFFFFF"/>
+  <!-- Cup handle -->
+  <path d="M15.7 14.2 Q18 14.5 18 16.2 Q18 17.8 15.7 18.1"
+        stroke="#FFFFFF" stroke-width="1.2" fill="none" stroke-linecap="round"/>
+  <!-- Steam wisps -->
+  <path d="M10 9 Q11 8 10 7 Q9 6 10 5"
+        stroke="#FFFFFF" stroke-width="1.1" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M13 9 Q14 8 13 7 Q12 6 13 5"
+        stroke="#FFFFFF" stroke-width="1.1" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -4,15 +4,22 @@ use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget;
 use windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush;
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
+use windows::Win32::Graphics::DirectWrite::IDWriteTextLayout;
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL,
-    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
-    DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
-    DWRITE_TEXT_ALIGNMENT_TRAILING,
+    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_HIT_TEST_METRICS,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING,
 };
 
 /// 预存画笔槽位数量（覆盖最常用的主题颜色）
 const PRECOMPUTED_BRUSH_SLOTS: usize = 16;
+
+/// P4-5: 回退 HashMap 最大条目数，超出时清空重建避免无界增长
+const MAX_BRUSH_CACHE_ENTRIES: usize = 64;
+
+/// P4-5: TextFormatCache 回退 HashMap 最大条目数
+const MAX_TEXT_FORMAT_CACHE_ENTRIES: usize = 64;
 
 /// 画刷缓存 - 避免每帧创建 COM 对象
 ///
@@ -26,12 +33,18 @@ pub struct BrushCache {
     brushes: HashMap<u32, ID2D1SolidColorBrush>,
 }
 
-impl BrushCache {
-    pub fn new() -> Self {
+impl Default for BrushCache {
+    fn default() -> Self {
         Self {
             precomputed: Vec::with_capacity(PRECOMPUTED_BRUSH_SLOTS),
             brushes: HashMap::new(),
         }
+    }
+}
+
+impl BrushCache {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// 预初始化常用颜色画笔（在渲染目标就绪后调用一次）
@@ -74,6 +87,10 @@ impl BrushCache {
         }
 
         // 3. 新建并缓存到 HashMap
+        // P4-5: 超过最大条目数时清空回退缓存（简单 LRU 替代方案）
+        if self.brushes.len() >= MAX_BRUSH_CACHE_ENTRIES {
+            self.brushes.clear();
+        }
         let brush = unsafe { target.CreateSolidColorBrush(color, None)? };
         let result = brush.clone();
         self.brushes.insert(key, brush);
@@ -235,6 +252,10 @@ impl TextFormatCache {
         }
 
         // 3. 新建并缓存到 HashMap
+        // P4-5: 超过最大条目数时清空回退缓存（简单 LRU 替代方案）
+        if self.formats.len() >= MAX_TEXT_FORMAT_CACHE_ENTRIES {
+            self.formats.clear();
+        }
         let format = self.create_format_internal(
             font_size,
             font_weight,
@@ -285,6 +306,176 @@ impl TextFormatCache {
         self.precomputed.clear();
         self.formats.clear();
     }
+
+    /// 获取内部 IDWriteFactory 引用（供其他缓存复用）
+    pub fn dwrite_factory(&self) -> IDWriteFactory {
+        self.dwrite_factory.clone()
+    }
+
+    /// REQ-P3-02: 测量文本宽度（逻辑像素）
+    ///
+    /// 使用 DirectWrite TextLayout 精确测量文本宽度，用于子菜单尺寸自适应。
+    /// 返回值单位为逻辑像素（已扣除 DPI 影响，调用方可按需乘以 dpi_scale）。
+    pub fn measure_text_width(&self, text: &str, font_size: f32, font_weight: u32) -> Option<f32> {
+        unsafe {
+            let format = self
+                .create_format_internal(
+                    font_size,
+                    font_weight,
+                    DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
+                    DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
+                )
+                .ok()?;
+
+            let wide: Vec<u16> = text.encode_utf16().collect();
+            // 使用一个足够大的 maxWidth，让文本自然布局
+            let layout = self
+                .dwrite_factory
+                .CreateTextLayout(&wide, &format, 10000.0, 1000.0)
+                .ok()?;
+
+            let mut metrics = windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_METRICS::default();
+            layout.GetMetrics(&mut metrics).ok()?;
+            Some(metrics.widthIncludingTrailingWhitespace)
+        }
+    }
+
+    /// 测量文本中指定 UTF-16 位置处的 x 坐标（逻辑像素）
+    ///
+    /// 使用 DirectWrite TextLayout::HitTestTextPosition 获取渲染后光标应处的精确位置。
+    pub fn text_position_x(
+        &self,
+        text: &str,
+        position: usize,
+        font_size: f32,
+        font_weight: u32,
+    ) -> Option<f32> {
+        unsafe {
+            let format = self
+                .create_format_internal(
+                    font_size,
+                    font_weight,
+                    DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
+                    DWRITE_PARAGRAPH_ALIGNMENT_NEAR.0 as u32,
+                )
+                .ok()?;
+
+            let wide: Vec<u16> = text.encode_utf16().collect();
+            let layout = self
+                .dwrite_factory
+                .CreateTextLayout(&wide, &format, 10000.0, 1000.0)
+                .ok()?;
+
+            let mut x = 0.0f32;
+            let mut y = 0.0f32;
+            let mut metrics = DWRITE_HIT_TEST_METRICS::default();
+            let pos = position.min(wide.len()) as u32;
+            layout
+                .HitTestTextPosition(pos, false, &mut x, &mut y, &mut metrics)
+                .ok()?;
+            Some(x)
+        }
+    }
+}
+
+/// TextLayout 缓存最大条目数
+const MAX_TEXT_LAYOUT_CACHE_ENTRIES: usize = 512;
+
+/// TextLayout 缓存 — 避免每帧重复创建 IDWriteTextLayout COM 对象
+///
+/// `DrawText` 内部每次调用都会创建临时 TextLayout，
+/// 改用 `DrawTextLayout` + 缓存可显著减少 COM 对象分配开销。
+/// 代码编辑器中相同 token 文本（关键字、标识符等）高频重复，缓存命中率极高。
+pub struct TextLayoutCache {
+    dwrite_factory: IDWriteFactory,
+    /// 缓存：文本内容 → TextLayout
+    layouts: HashMap<String, IDWriteTextLayout>,
+    /// 当前缓存对应的字体大小（变化时清空）
+    font_size: f32,
+}
+
+impl TextLayoutCache {
+    pub fn new(dwrite_factory: IDWriteFactory) -> Self {
+        Self {
+            dwrite_factory,
+            layouts: HashMap::new(),
+            font_size: 0.0,
+        }
+    }
+
+    /// 获取或创建文本布局
+    ///
+    /// 使用 `f32::MAX` 作为最大宽度，避免自动换行（代码编辑器不需要换行）。
+    /// 字体大小变化时自动清空缓存。
+    pub fn get_or_create(
+        &mut self,
+        text: &str,
+        format: &IDWriteTextFormat,
+        max_height: f32,
+        font_size: f32,
+    ) -> Result<IDWriteTextLayout> {
+        // 字体大小变化时清空缓存
+        if (self.font_size - font_size).abs() > 0.01 {
+            self.layouts.clear();
+            self.font_size = font_size;
+        }
+
+        // 查缓存
+        if let Some(layout) = self.layouts.get(text) {
+            return Ok(layout.clone());
+        }
+
+        // 超出上限时清空（简单淘汰策略）
+        if self.layouts.len() >= MAX_TEXT_LAYOUT_CACHE_ENTRIES {
+            self.layouts.clear();
+        }
+
+        // 创建新 layout
+        // 注意：不能带 null 终止符。windows crate 的 CreateTextLayout 接受 &[u16]
+        // 是基于长度的切片，并非 null 终止字符串。若附加 U+0000，某些字体下
+        // 该字符可能贡献非零 advance 宽度，导致文本段实际渲染宽度 >
+        // char_count * char_width，进而与基于 char_width 计算的光标 / 点击位置
+        // 产生偏差。必须与 measure_monospace_width (text.rs) 保持一致：均不含 null。
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let layout = unsafe {
+            self.dwrite_factory
+                .CreateTextLayout(&wide, format, f32::MAX, max_height)?
+        };
+        let result = layout.clone();
+        self.layouts.insert(text.to_string(), layout);
+        Ok(result)
+    }
+
+    /// 清空缓存（设备丢失或字体变化时调用）
+    pub fn clear(&mut self) {
+        self.layouts.clear();
+    }
+
+    /// 创建带省略号的文本布局（用于侧边栏文件树等长文本截断场景）
+    pub fn create_ellipsis_layout(
+        &self,
+        text: &str,
+        format: &IDWriteTextFormat,
+        max_width: f32,
+        max_height: f32,
+    ) -> Result<IDWriteTextLayout> {
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let layout = unsafe {
+            self.dwrite_factory
+                .CreateTextLayout(&wide, format, max_width, max_height)?
+        };
+        // 设置截断方式为省略号
+        let trimming = windows::Win32::Graphics::DirectWrite::DWRITE_TRIMMING {
+            granularity:
+                windows::Win32::Graphics::DirectWrite::DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+            delimiter: 0,
+            delimiterCount: 0,
+        };
+        unsafe {
+            layout.SetTrimming(&trimming, None)?;
+        }
+        Ok(layout)
+    }
 }
 
 /// 将颜色转换为缓存键
@@ -295,4 +486,54 @@ fn color_key(color: &D2D1_COLOR_F) -> u32 {
     let b = (color.b * 255.0).round() as u32;
     let a = (color.a * 255.0).round() as u32;
     (r << 24) | (g << 16) | (b << 8) | a
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_color_key_basic() {
+        let color = D2D1_COLOR_F {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        };
+        assert_eq!(color_key(&color), 0xFF0000FF);
+    }
+
+    #[test]
+    fn test_color_key_uses_rounding() {
+        // 0.47 * 255 = 119.85，round 后为 120（0x78）
+        let color = D2D1_COLOR_F {
+            r: 0.0,
+            g: 0.47,
+            b: 0.0,
+            a: 1.0,
+        };
+        assert_eq!(color_key(&color), 0x007800FF);
+    }
+
+    #[test]
+    fn test_color_key_transparent() {
+        let color = D2D1_COLOR_F {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.5,
+        };
+        assert_eq!(color_key(&color), 0x00000080);
+    }
+
+    #[test]
+    fn test_color_key_components_are_packed() {
+        let color = D2D1_COLOR_F {
+            r: 1.0,
+            g: 0.5,
+            b: 0.25,
+            a: 0.75,
+        };
+        assert_eq!(color_key(&color), 0xFF8040BF);
+    }
 }

@@ -84,6 +84,8 @@ pub enum Language {
     Python,
     JavaScript,
     TypeScript,
+    Go,
+    Java,
     Json,
     Markdown,
     Toml,
@@ -95,19 +97,38 @@ pub enum Language {
 
 impl Language {
     /// 根据文件扩展名检测语言
+    /// 对于没有独立 lexer 的扩展名，尽量归入语义相近的语言（如 vue/wxml 用 HTML lexer），
+    /// 完全未知的扩展名统一归为 PlainText，保证任何文本文件都能被查看。
     pub fn from_extension(ext: &str) -> Self {
         match ext.to_lowercase().as_str() {
-            "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" => Language::C,
+            // C/C++ 家族
+            "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" | "m" | "mm" => Language::C,
+            // Rust
             "rs" => Language::Rust,
-            "py" | "pyw" | "pyi" => Language::Python,
-            "js" | "jsx" | "mjs" | "cjs" => Language::JavaScript,
+            // Python
+            "py" | "pyw" | "pyi" | "pyx" | "pxd" => Language::Python,
+            // JavaScript/TypeScript 及其衍生
+            "js" | "jsx" | "mjs" | "cjs" | "es" | "es6" => Language::JavaScript,
             "ts" | "tsx" | "mts" | "cts" => Language::TypeScript,
-            "json" => Language::Json,
-            "md" | "markdown" => Language::Markdown,
-            "toml" => Language::Toml,
-            "html" | "htm" => Language::Html,
-            "css" => Language::Css,
-            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "svg" => Language::Image,
+            // Go
+            "go" => Language::Go,
+            // Java
+            "java" => Language::Java,
+            // JSON / JSON-like
+            "json" | "jsonc" | "jsonl" => Language::Json,
+            // Markdown / 文档
+            "md" | "markdown" | "mdx" => Language::Markdown,
+            // TOML / INI / 配置
+            "toml" | "ini" | "cfg" | "conf" | "config" => Language::Toml,
+            // HTML / 模板 / 类 XML 标记
+            "html" | "htm" | "xhtml" | "vue" | "svelte" | "wxml" | "axml" | "ftl" | "jinja"
+            | "j2" | "njk" | "mustache" | "handlebars" | "hbs" | "ejs" | "erb" | "haml" | "pug"
+            | "jade" | "liquid" | "razor" | "cshtml" => Language::Html,
+            // CSS / 样式
+            "css" | "scss" | "sass" | "less" | "styl" | "stylus" | "wxss" | "acss" => Language::Css,
+            // 图片（仅用于文件树图标/路由，不用于lexer）
+            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "svg" | "tiff" | "tif"
+            | "raw" | "psd" => Language::Image,
             _ => Language::PlainText,
         }
     }
@@ -127,18 +148,41 @@ impl Language {
             Language::Rust => Box::new(rust_lexer::RustLexer::new()),
             Language::Python => Box::new(python_lexer::PythonLexer::new()),
             Language::JavaScript | Language::TypeScript => Box::new(js_lexer::JsLexer::new()),
+            // Go/Java 无独立 lexer，复用 C 家族 lexer 作为 fallback（仅在 tree-sitter
+            // 不可用时使用，如大文件），可高亮注释、字符串、数字、大括号等公共结构
+            Language::Go | Language::Java => Box::new(c_lexer::CLexer::new()),
             Language::Json => Box::new(json_lexer::JsonLexer::new()),
             Language::Markdown => Box::new(markdown_lexer::MarkdownLexer::new()),
             Language::Toml => Box::new(toml_lexer::TomlLexer::new()),
             Language::Html => Box::new(html_lexer::HtmlLexer::new()),
-            Language::Css => Box::new(PlainTextLexer::new()),
+            // CSS 暂时没有独立 lexer，复用 HTML lexer 至少能高亮注释、字符串、标签等公共结构
+            Language::Css => Box::new(html_lexer::HtmlLexer::new()),
             Language::PlainText => Box::new(PlainTextLexer::new()),
             Language::Image => Box::new(PlainTextLexer::new()),
+        }
+    }
+
+    /// 直接对指定语言的文本进行词法分析，使用静态分发，无 Box 分配与动态分发开销。
+    pub fn lex_full(&self, text: &str) -> Vec<LexemeSpan> {
+        match self {
+            Language::C => c_lexer::CLexer::new().lex_full(text),
+            Language::Rust => rust_lexer::RustLexer::new().lex_full(text),
+            Language::Python => python_lexer::PythonLexer::new().lex_full(text),
+            Language::JavaScript | Language::TypeScript => js_lexer::JsLexer::new().lex_full(text),
+            Language::Go | Language::Java => c_lexer::CLexer::new().lex_full(text),
+            Language::Json => json_lexer::JsonLexer::new().lex_full(text),
+            Language::Markdown => markdown_lexer::MarkdownLexer::new().lex_full(text),
+            Language::Toml => toml_lexer::TomlLexer::new().lex_full(text),
+            Language::Html => html_lexer::HtmlLexer::new().lex_full(text),
+            Language::Css => html_lexer::HtmlLexer::new().lex_full(text),
+            Language::PlainText => PlainTextLexer::new().lex_full(text),
+            Language::Image => PlainTextLexer::new().lex_full(text),
         }
     }
 }
 
 pub mod c_lexer;
+pub mod common;
 pub mod html_lexer;
 pub mod js_lexer;
 pub mod json_lexer;
@@ -173,5 +217,79 @@ impl Lexer for PlainTextLexer {
 impl Default for PlainTextLexer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// 根据 UTF-8 首字节推断字符的字节长度。
+/// 非法或 ASCII 字节返回 1，保证 lexer 至少能前进一步。
+pub(crate) fn utf8_char_len(first_byte: u8) -> usize {
+    match first_byte {
+        0x00..=0x7F => 1,
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF7 => 4,
+        _ => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_language_from_extension() {
+        assert_eq!(Language::from_extension("rs"), Language::Rust);
+        assert_eq!(Language::from_extension("JS"), Language::JavaScript);
+        assert_eq!(Language::from_extension("TSX"), Language::TypeScript);
+        assert_eq!(Language::from_extension("json"), Language::Json);
+        assert_eq!(Language::from_extension("md"), Language::Markdown);
+        assert_eq!(Language::from_extension("toml"), Language::Toml);
+        assert_eq!(Language::from_extension("html"), Language::Html);
+        assert_eq!(Language::from_extension("css"), Language::Css);
+        assert_eq!(Language::from_extension("png"), Language::Image);
+        assert_eq!(Language::from_extension("unknown"), Language::PlainText);
+    }
+
+    #[test]
+    fn test_language_from_path() {
+        let path = std::path::Path::new("src/main.rs");
+        assert_eq!(Language::from_path(path), Language::Rust);
+        let no_ext = std::path::Path::new("Makefile");
+        assert_eq!(Language::from_path(no_ext), Language::PlainText);
+    }
+
+    #[test]
+    fn test_create_lexer() {
+        let lexer = Language::Rust.create_lexer();
+        let tokens = lexer.lex_full("fn main() {}");
+        assert!(!tokens.is_empty());
+    }
+
+    #[test]
+    fn test_lex_full_static_dispatch() {
+        let tokens = Language::Rust.lex_full("let x = 42;");
+        assert!(!tokens.is_empty());
+        let plain = Language::PlainText.lex_full("hello world");
+        assert_eq!(plain.len(), 1);
+        assert_eq!(plain[0].kind, TokenKind::Unknown);
+    }
+
+    #[test]
+    fn test_plain_text_lexer() {
+        let lexer = PlainTextLexer::new();
+        assert!(lexer.lex_full("").is_empty());
+        let tokens = lexer.lex_full("hello");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].kind, TokenKind::Unknown);
+        assert_eq!(tokens[0].len, 5);
+    }
+
+    #[test]
+    fn test_utf8_char_len() {
+        assert_eq!(utf8_char_len(b'a'), 1);
+        assert_eq!(utf8_char_len(0xC0), 2);
+        assert_eq!(utf8_char_len(0xE4), 3);
+        assert_eq!(utf8_char_len(0xF0), 4);
+        assert_eq!(utf8_char_len(0x80), 1); // 非法首字节
     }
 }

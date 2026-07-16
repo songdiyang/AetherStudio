@@ -29,7 +29,7 @@ impl ContainerRemoteFs {
         Self { _config: config }
     }
 
-    fn backend_cmd(&self) -> &'static str {
+    pub(crate) fn backend_cmd(&self) -> &'static str {
         match self._config.backend {
             ContainerBackend::Docker => "docker",
             ContainerBackend::Podman => "podman",
@@ -51,14 +51,68 @@ impl RemoteFs for ContainerRemoteFs {
     }
 
     fn watch(&self, _path: &str) -> Result<mpsc::Receiver<FsEvent>> {
-        let (_tx, rx) = mpsc::channel();
-        Ok(rx)
+        // H-40: 返回错误说明不支持，而非返回永远无事件的 receiver
+        Err("Container 后端不支持文件监视".to_string())
     }
 
     fn exec(&self, command: &str) -> Result<(String, String)> {
-        // 使用 std::process 在容器内执行命令
+        // SEC-R02: 记录审计日志 + 命令白名单校验
+        eprintln!("[AUDIT] container exec: {}", command);
+
+        let trimmed = command.trim();
+        if trimmed.is_empty() {
+            return Err("命令为空".to_string());
+        }
+
+        // H-05: 拒绝 shell 元字符，防止命令注入
+        // 注意：即便 docker/podman exec 使用参数列表传递，命令最终仍由容器内
+        // 的 `sh -c` 解释，因此必须过滤元字符。
+        // 扩展过滤列表：补充 ( ) \ ' " * ? [ ] { } ~ # ! 等危险字符
+        const SHELL_METACHARS: &[char] = &[
+            ';', '|', '&', '`', '$', '>', '<', '\n', '\r', '(', ')', '\\', '\'', '"', '*', '?',
+            '[', ']', '{', '}', '~', '#', '!',
+        ];
+        if trimmed.chars().any(|c| SHELL_METACHARS.contains(&c)) {
+            return Err(format!("命令包含禁止的 shell 元字符: {}", command));
+        }
+
+        // H-05: 拆分只读和写入白名单，对写入操作额外审计
+        // C-04: 从只读白名单移除 git/tar/gzip/gunzip。这些命令虽常被当作
+        // "只读"使用，但实际上可以修改容器文件系统（tar 可解压/执行 checkpoint
+        // action，git 可修改 hooks/状态，gzip -f 可覆盖原文件），沙箱逃逸风险高。
+        const READONLY_COMMANDS: &[&str] = &[
+            "ls", "cat", "pwd", "echo", "find", "grep", "head", "tail", "wc", "stat", "file",
+            "which", "diff", "sort", "uniq", "tr", "less", "more", "uname", "whoami", "id", "ps",
+            "df", "du",
+        ];
+        const WRITE_COMMANDS: &[&str] = &["mkdir", "touch", "cp", "mv", "rm", "chmod", "chown"];
+        let cmd_name = trimmed.split_whitespace().next().unwrap_or("");
+        let is_readonly = READONLY_COMMANDS.contains(&cmd_name);
+        let is_write = WRITE_COMMANDS.contains(&cmd_name);
+        if !is_readonly && !is_write {
+            return Err(format!("命令被拒绝（不在白名单中）: {}", command));
+        }
+        if is_write {
+            eprintln!("[AUDIT] container write exec: {}", command);
+        }
+
+        // 校验容器名仅含字母数字、连字符和下划线（H-13: 防止注入 Docker 标志）
+        let valid_name = self
+            ._config
+            .container_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
+        if !valid_name {
+            return Err(format!("非法容器名: {}", self._config.container_name));
+        }
+
+        // 使用参数列表而非 shell 拼接，避免命令注入
         let output = std::process::Command::new(self.backend_cmd())
-            .args(["exec", &self._config.container_name, "sh", "-c", command])
+            .arg("exec")
+            .arg(&self._config.container_name)
+            .arg("sh")
+            .arg("-c")
+            .arg(command)
             .output()
             .map_err(|e| e.to_string())?;
 

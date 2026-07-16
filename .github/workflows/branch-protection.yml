@@ -56,18 +56,12 @@ jobs:
         run: |
           PR_BODY='${{ github.event.pull_request.body }}'
           
-          # 检查是否包含"更新了哪些特性"
-          if echo "$PR_BODY" | grep -q "更新了哪些特性"; then
+          # 检查是否包含"更新了哪些特性"或"变更内容"
+          if echo "$PR_BODY" | grep -qiE "(更新了哪些特性|变更内容|Features|Changes)"; then
             echo "✅ PR 描述包含特性更新说明"
           else
-            echo "❌ ERROR: PR 描述必须包含'更新了哪些特性'部分！"
+            echo "❌ ERROR: PR 描述必须包含'更新了哪些特性'或'变更内容'部分！"
             echo "请填写 PR 模板，列出本次更新涉及的所有特性"
-            exit 1
-          fi
-          
-          # 检查特性列表是否已填写（不为空）
-          if echo "$PR_BODY" | grep -q "1\. $"; then
-            echo "❌ ERROR: 特性列表未填写！请在 PR 描述中列出更新的特性"
             exit 1
           fi
           

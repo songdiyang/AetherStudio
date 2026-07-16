@@ -26,24 +26,15 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# 构建AI面板前端
-Write-Host "Building AI panel frontend..." -ForegroundColor Yellow
-Set-Location ai-panel
-npm install
-npm run build
-Set-Location ..
-
-# 复制前端产物到输出目录
-$targetDir = if ($Release) { "target\release" } else { "target\debug" }
-$aiPanelDir = "$targetDir\aether-ai-panel"
-
-if (Test-Path $aiPanelDir) {
-    Remove-Item -Recurse -Force $aiPanelDir
+$targetDir = if ($Release) {
+    "target\x86_64-pc-windows-msvc\release"
+} else {
+    "target\x86_64-pc-windows-msvc\debug"
 }
-Copy-Item -Recurse ai-panel\dist $aiPanelDir
 
 Write-Host "Build complete!" -ForegroundColor Green
-Write-Host "Output: $targetDir\aether-app.exe" -ForegroundColor Green
+Write-Host "GUI binary: $targetDir\aether-app.exe" -ForegroundColor Green
+Write-Host "CLI binary: $targetDir\aether.exe" -ForegroundColor Green
 
 if ($Run) {
     & "$targetDir\aether-app.exe"

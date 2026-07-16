@@ -136,6 +136,10 @@ pub struct IncrementalLexerManager {
     current_file: Option<String>,
 }
 
+/// P4-6 补充: 缓存文件最大数量，避免长时间运行后无界增长
+/// （与 TreeSitterHighlighter 的 MAX_HIGHLIGHTER_DOCS 保持一致）
+const MAX_INCREMENTAL_LEXER_FILES: usize = 32;
+
 impl IncrementalLexerManager {
     pub fn new() -> Self {
         Self {
@@ -147,6 +151,10 @@ impl IncrementalLexerManager {
     /// 打开文件，获取或创建增量lexer
     pub fn open_file(&mut self, path: &str, language: Language) -> &mut IncrementalLexer {
         self.current_file = Some(path.to_string());
+        // P4-6 补充: 缓存上限保护，避免打开大量文件后无界增长
+        if self.lexers.len() >= MAX_INCREMENTAL_LEXER_FILES && !self.lexers.contains_key(path) {
+            self.lexers.clear();
+        }
         self.lexers
             .entry(path.to_string())
             .or_insert_with(|| IncrementalLexer::new(language))
@@ -246,5 +254,47 @@ mod tests {
         lexer.update_for_edit(&edit, &new_lines);
 
         assert_eq!(lexer.get_line_tokens(1).unwrap().len(), 9); // 原来的第2行变成第1行: indent, let, ws, y, ws, =, ws, 2, ;
+    }
+
+    #[test]
+    fn test_incremental_empty_lines() {
+        let mut lexer = IncrementalLexer::new(Language::Rust);
+        lexer.update_for_edit(&EditResult::default(), &[]);
+        assert!(lexer.get_all_tokens().is_empty());
+        assert_eq!(lexer.version(), 1);
+    }
+
+    #[test]
+    fn test_incremental_get_line_tokens_bounds() {
+        let mut lexer = IncrementalLexer::new(Language::Rust);
+        let lines = vec!["a".to_string(), "b".to_string()];
+        lexer.analyze_all(&lines);
+        assert!(lexer.get_line_tokens(0).is_some());
+        assert!(lexer.get_line_tokens(2).is_none());
+    }
+
+    #[test]
+    fn test_incremental_lexer_manager() {
+        let mut manager = IncrementalLexerManager::new();
+        let lexer = manager.open_file("a.rs", Language::Rust);
+        lexer.analyze_all(&["fn a() {}".to_string()]);
+        assert!(manager.current_lexer().is_some());
+        manager.switch_file("b.rs");
+        assert!(manager.current_lexer().is_none());
+        manager.close_file("a.rs");
+        manager.clear_all();
+        assert!(manager.current_lexer().is_none());
+    }
+
+    #[test]
+    fn test_incremental_manager_cache_limit() {
+        let mut manager = IncrementalLexerManager::new();
+        for i in 0..35 {
+            let path = format!("{}.rs", i);
+            let lexer = manager.open_file(&path, Language::Rust);
+            lexer.analyze_all(&["fn main() {}".to_string()]);
+        }
+        // 超过缓存上限后会被清空
+        assert!(manager.current_lexer().is_some());
     }
 }

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="C# file icon (flat)">
+  <title>C# File (Flat)</title>
+  <path d="M5 3 L14 3 L20 9 L20 20 L4 20 Z" fill="#68217A"/>
+  <path d="M14 3 L20 9 L14 9 Z" fill="#FFFFFF" fill-opacity="0.5"/>
+  <polygon points="7.5,13.5 15.5,12 15.7,13.5 7.7,15" fill="#FFFFFF"/>
+  <polygon points="8.5,17.5 16.5,16 16.7,17.5 8.7,19" fill="#FFFFFF"/>
+  <polygon points="10.2,11 11.5,11 10.4,19.5 9.1,19.5" fill="#FFFFFF"/>
+  <polygon points="13,10.2 14.3,10.2 13.2,19 11.9,19" fill="#FFFFFF"/>
+</svg>

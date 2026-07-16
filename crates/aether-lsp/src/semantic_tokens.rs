@@ -262,3 +262,296 @@ pub fn map_tokens(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_semantic_tokens_decoder_basic() {
+        // [deltaLine, deltaStartChar, length, tokenType, tokenModifiers]
+        let data = vec![
+            0, 0, 5, 0, 0, // line 0, char 0, length 5, type 0, mods 0
+            0, 6, 4, 1, 0, // line 0, char 6, length 4, type 1
+            1, 0, 3, 2, 0, // line 1, char 0, length 3, type 2
+        ];
+        let tokens = SemanticTokensDecoder::decode(&data);
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].line, 0);
+        assert_eq!(tokens[0].start_char, 0);
+        assert_eq!(tokens[1].start_char, 6);
+        assert_eq!(tokens[2].line, 1);
+        assert_eq!(tokens[2].start_char, 0);
+    }
+
+    #[test]
+    fn test_semantic_tokens_decoder_incomplete_chunk_ignored() {
+        let data = vec![0, 0, 5];
+        let tokens = SemanticTokensDecoder::decode(&data);
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn test_decode_delta_basic() {
+        let previous = vec![
+            SemanticToken {
+                line: 0,
+                start_char: 0,
+                length: 5,
+                token_type: 0,
+                token_modifiers: 0,
+            },
+            SemanticToken {
+                line: 0,
+                start_char: 6,
+                length: 4,
+                token_type: 1,
+                token_modifiers: 0,
+            },
+        ];
+        let delta = SemanticTokensDelta {
+            result_id: Some("1".to_string()),
+            edits: vec![SemanticTokensEdit {
+                start: 1,
+                delete_count: 1,
+                data: Some(vec![lsp_types::SemanticToken {
+                    delta_line: 0,
+                    delta_start: 10,
+                    length: 3,
+                    token_type: 2,
+                    token_modifiers_bitset: 0,
+                }]),
+            }],
+        };
+        let result = SemanticTokensDecoder::decode_delta(&previous, &delta);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[1].length, 3);
+    }
+
+    #[test]
+    fn test_semantic_token_type_kind_from_index() {
+        assert_eq!(
+            SemanticTokenTypeKind::from_index(0).unwrap(),
+            SemanticTokenTypeKind::Namespace
+        );
+        assert_eq!(
+            SemanticTokenTypeKind::from_index(21).unwrap(),
+            SemanticTokenTypeKind::Operator
+        );
+        assert!(SemanticTokenTypeKind::from_index(22).is_none());
+    }
+
+    #[test]
+    fn test_semantic_token_type_kind_as_str() {
+        assert_eq!(SemanticTokenTypeKind::Function.as_str(), "function");
+        assert_eq!(SemanticTokenTypeKind::Keyword.as_str(), "keyword");
+        assert_eq!(
+            SemanticTokenTypeKind::TypeParameter.as_str(),
+            "typeParameter"
+        );
+    }
+
+    #[test]
+    fn test_semantic_token_modifier_kind_bit_and_check() {
+        assert_eq!(SemanticTokenModifierKind::Declaration.bit(), 0);
+        assert_eq!(SemanticTokenModifierKind::Readonly.bit(), 2);
+
+        let modifiers = (1 << 0) | (1 << 2);
+        assert!(SemanticTokenModifierKind::check(modifiers, 0));
+        assert!(SemanticTokenModifierKind::check(modifiers, 2));
+        assert!(!SemanticTokenModifierKind::check(modifiers, 1));
+    }
+
+    #[test]
+    fn test_map_tokens() {
+        let tokens = vec![SemanticToken {
+            line: 0,
+            start_char: 0,
+            length: 4,
+            token_type: 8,                        // Variable
+            token_modifiers: (1 << 0) | (1 << 1), // Declaration + Definition
+        }];
+        let mappings = map_tokens(&tokens, &[], &[]);
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].token_type, SemanticTokenTypeKind::Variable);
+        assert_eq!(mappings[0].modifiers.len(), 2);
+        assert!(mappings[0]
+            .modifiers
+            .contains(&SemanticTokenModifierKind::Declaration));
+        assert!(mappings[0]
+            .modifiers
+            .contains(&SemanticTokenModifierKind::Definition));
+    }
+
+    #[test]
+    fn test_map_tokens_invalid_type_ignored() {
+        let tokens = vec![SemanticToken {
+            line: 0,
+            start_char: 0,
+            length: 1,
+            token_type: 99,
+            token_modifiers: 0,
+        }];
+        let mappings = map_tokens(&tokens, &[], &[]);
+        assert!(mappings.is_empty());
+    }
+
+    #[test]
+    fn test_decode_multiline_and_same_line() {
+        // 行内连续 token: [0,5] 和 [0,9]
+        let data = vec![0, 0, 5, 0, 0, 0, 4, 4, 1, 0, 2, 3, 2, 2, 0];
+        let tokens = SemanticTokensDecoder::decode(&data);
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].start_char, 0);
+        assert_eq!(tokens[1].start_char, 4); // 同行为前一个 char 0 + delta_start 4
+        assert_eq!(tokens[2].line, 2);
+        assert_eq!(tokens[2].start_char, 3);
+    }
+
+    #[test]
+    fn test_decode_empty_data() {
+        assert!(SemanticTokensDecoder::decode(&[]).is_empty());
+        assert!(SemanticTokensDecoder::decode(&[0, 0, 1]).is_empty());
+    }
+
+    #[test]
+    fn test_decode_delta_edge_cases() {
+        let previous = vec![
+            SemanticToken {
+                line: 0,
+                start_char: 0,
+                length: 1,
+                token_type: 0,
+                token_modifiers: 0,
+            },
+            SemanticToken {
+                line: 0,
+                start_char: 2,
+                length: 1,
+                token_type: 1,
+                token_modifiers: 0,
+            },
+            SemanticToken {
+                line: 0,
+                start_char: 4,
+                length: 1,
+                token_type: 2,
+                token_modifiers: 0,
+            },
+        ];
+
+        // start 超出范围: 应被忽略
+        let delta = SemanticTokensDelta {
+            result_id: Some("1".to_string()),
+            edits: vec![SemanticTokensEdit {
+                start: 10,
+                delete_count: 1,
+                data: None,
+            }],
+        };
+        assert_eq!(
+            SemanticTokensDecoder::decode_delta(&previous, &delta).len(),
+            3
+        );
+
+        // delete_count 超过长度
+        let delta = SemanticTokensDelta {
+            result_id: Some("2".to_string()),
+            edits: vec![SemanticTokensEdit {
+                start: 1,
+                delete_count: 100,
+                data: None,
+            }],
+        };
+        let result = SemanticTokensDecoder::decode_delta(&previous, &delta);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].token_type, 0);
+
+        // 多个 edit 按反向顺序应用
+        let delta = SemanticTokensDelta {
+            result_id: Some("3".to_string()),
+            edits: vec![
+                SemanticTokensEdit {
+                    start: 0,
+                    delete_count: 1,
+                    data: Some(vec![lsp_types::SemanticToken {
+                        delta_line: 0,
+                        delta_start: 0,
+                        length: 9,
+                        token_type: 9,
+                        token_modifiers_bitset: 0,
+                    }]),
+                },
+                SemanticTokensEdit {
+                    start: 2,
+                    delete_count: 1,
+                    data: None,
+                },
+            ],
+        };
+        let result = SemanticTokensDecoder::decode_delta(&previous, &delta);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].token_type, 9);
+        assert_eq!(result[1].token_type, 1);
+    }
+
+    #[test]
+    fn test_map_tokens_all_modifiers() {
+        let tokens = vec![SemanticToken {
+            line: 1,
+            start_char: 2,
+            length: 3,
+            token_type: 8,          // Variable
+            token_modifiers: 0x3FF, // 10 位全 1
+        }];
+        let mappings = map_tokens(&tokens, &[], &[]);
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].modifiers.len(), 10);
+    }
+
+    #[test]
+    fn test_token_type_kind_full_coverage() {
+        for i in 0..=21 {
+            assert!(SemanticTokenTypeKind::from_index(i).is_some());
+        }
+        assert!(SemanticTokenTypeKind::from_index(22).is_none());
+
+        let kinds = [
+            SemanticTokenTypeKind::Namespace,
+            SemanticTokenTypeKind::Type,
+            SemanticTokenTypeKind::Class,
+            SemanticTokenTypeKind::Enum,
+            SemanticTokenTypeKind::Interface,
+            SemanticTokenTypeKind::Struct,
+            SemanticTokenTypeKind::TypeParameter,
+            SemanticTokenTypeKind::Parameter,
+            SemanticTokenTypeKind::Variable,
+            SemanticTokenTypeKind::Property,
+            SemanticTokenTypeKind::EnumMember,
+            SemanticTokenTypeKind::Event,
+            SemanticTokenTypeKind::Function,
+            SemanticTokenTypeKind::Method,
+            SemanticTokenTypeKind::Macro,
+            SemanticTokenTypeKind::Keyword,
+            SemanticTokenTypeKind::Modifier,
+            SemanticTokenTypeKind::Comment,
+            SemanticTokenTypeKind::String,
+            SemanticTokenTypeKind::Number,
+            SemanticTokenTypeKind::Regexp,
+            SemanticTokenTypeKind::Operator,
+        ];
+        for kind in &kinds {
+            assert!(!kind.as_str().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_modifier_check_all_bits() {
+        for i in 0..10u8 {
+            assert!(SemanticTokenModifierKind::check(0x3FF, i));
+        }
+        for i in 0..10u8 {
+            assert!(!SemanticTokenModifierKind::check(0u32, i));
+        }
+    }
+}

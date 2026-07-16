@@ -1,3 +1,4 @@
+use super::common::skip_quoted;
 use super::{LexemeSpan, Lexer, TokenKind};
 
 /// JSON 词法分析器
@@ -38,7 +39,7 @@ impl JsonLexer {
             }
             b'"' => {
                 // 检测是否为键（后面跟着 :）
-                let end = skip_string(bytes, pos);
+                let end = skip_quoted(bytes, pos, b'"');
                 let is_key = is_json_key(bytes, end);
                 let kind = if is_key {
                     TokenKind::JsonKey
@@ -93,22 +94,25 @@ impl JsonLexer {
                 },
                 pos + 1,
             ),
-            _ => (
-                LexemeSpan {
-                    start: pos,
-                    len: 1,
-                    kind: TokenKind::Unknown,
-                    flags: 0,
-                },
-                pos + 1,
-            ),
+            _ => {
+                let len = crate::lexer::utf8_char_len(bytes[pos]);
+                (
+                    LexemeSpan {
+                        start: pos,
+                        len,
+                        kind: TokenKind::Unknown,
+                        flags: 0,
+                    },
+                    pos + len,
+                )
+            }
         }
     }
 }
 
 impl Lexer for JsonLexer {
     fn lex_full(&self, text: &str) -> Vec<LexemeSpan> {
-        let mut tokens = Vec::new();
+        let mut tokens = Vec::with_capacity(text.len() / 4 + 1);
         let bytes = text.as_bytes();
         let mut pos = 0;
 
@@ -146,20 +150,6 @@ fn skip_whitespace(bytes: &[u8], pos: usize) -> usize {
         i += 1;
     }
     i
-}
-
-fn skip_string(bytes: &[u8], pos: usize) -> usize {
-    let mut i = pos + 1;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' {
-            i += 2;
-        } else if bytes[i] == b'"' {
-            return i + 1;
-        } else {
-            i += 1;
-        }
-    }
-    bytes.len()
 }
 
 fn skip_number(bytes: &[u8], pos: usize) -> usize {
@@ -220,5 +210,68 @@ mod tests {
             .filter(|t| t.kind == TokenKind::Keyword)
             .count();
         assert_eq!(keyword_count, 3);
+    }
+
+    #[test]
+    fn test_json_empty() {
+        assert!(JsonLexer::new().lex_full("").is_empty());
+    }
+
+    #[test]
+    fn test_json_whitespace() {
+        let tokens = JsonLexer::new().lex_full("  \n\t  ");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].kind, TokenKind::Whitespace);
+    }
+
+    #[test]
+    fn test_json_numbers() {
+        let tokens = JsonLexer::new().lex_full("[-123, 45.6, 7e-2, -8.9E+10]");
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::NumberLiteral)
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn test_json_strings() {
+        let tokens = JsonLexer::new().lex_full(r#"{"key": "value", "other":"x"}"#);
+        let keys = tokens
+            .iter()
+            .filter(|t| t.kind == TokenKind::JsonKey)
+            .count();
+        let strings = tokens
+            .iter()
+            .filter(|t| t.kind == TokenKind::StringLiteral)
+            .count();
+        assert_eq!(keys, 2);
+        assert_eq!(strings, 2);
+    }
+
+    #[test]
+    fn test_json_punctuation() {
+        let tokens = JsonLexer::new().lex_full("{}:");
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::Punctuation)
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn test_json_unknown() {
+        let tokens = JsonLexer::new().lex_full("@");
+        assert_eq!(tokens[0].kind, TokenKind::Unknown);
+    }
+
+    #[test]
+    fn test_json_invalid_literal() {
+        let tokens = JsonLexer::new().lex_full("truish");
+        assert_eq!(tokens[0].kind, TokenKind::Identifier);
     }
 }

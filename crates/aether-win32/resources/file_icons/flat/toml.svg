@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="TOML file icon (flat)">
+  <title>TOML File (Flat)</title>
+  <path d="M5 3 L14 3 L20 9 L20 20 L4 20 Z" fill="#9C4221"/>
+  <path d="M14 3 L20 9 L14 9 Z" fill="#FFFFFF" fill-opacity="0.5"/>
+  <polygon points="7,11 14.5,11 14.5,12.5 11.5,12.5 11.5,19.5 10,19.5 10,12.5 7,12.5" fill="#FFFFFF"/>
+</svg>

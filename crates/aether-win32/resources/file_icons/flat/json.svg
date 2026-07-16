@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="JSON file icon (flat)">
+  <title>JSON File (Flat)</title>
+  <path d="M5 3 L14 3 L20 9 L20 20 L4 20 Z" fill="#5A5A5A"/>
+  <path d="M14 3 L20 9 L14 9 Z" fill="#FFFFFF" fill-opacity="0.5"/>
+  <path d="M8 11 L9.5 11 L8.5 14.5 L9.5 14.5 L9.5 15.5 L8.5 15.5 L9.5 19 L8 19 L7 15 L8 15 L7 11 Z" fill="#FFFFFF"/>
+  <path d="M15.5 11 L16.5 19 L15 19 L14.5 15 L15.5 15 L14.5 11 Z" fill="#FFFFFF"/>
+</svg>

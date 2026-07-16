@@ -4,6 +4,21 @@ pub struct FileTree {
     nodes: Vec<FileNode>,
     /// 字符串池：所有路径名共享存储
     names: StringPool,
+    /// 虚拟根节点的 first_child（所有 parent_idx = u32::MAX 的节点通过 sibling 链连接）
+    root_first_child: u32,
+    /// 虚拟根节点的 last_child（用于 O(1) 尾插入）
+    root_last_child: u32,
+}
+
+impl Default for FileTree {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            names: StringPool::default(),
+            root_first_child: u32::MAX,
+            root_last_child: u32::MAX,
+        }
+    }
 }
 
 /// 单个节点（紧凑内存布局）
@@ -14,9 +29,15 @@ pub struct FileNode {
     pub kind: FileKind,
     pub parent_idx: u32,
     pub first_child: u32,
+    pub last_child: u32,
     pub next_sibling: u32,
     pub depth: u8,
     pub is_expanded: bool,
+    /// 目录的子节点是否已扫描加载（懒加载标记）
+    /// false 表示该目录尚未扫描子节点，展开时需先加载
+    pub is_loaded: bool,
+    /// 目录是否正在后台加载中（防止重复触发加载）
+    pub is_loading: bool,
     pub is_git_tracked: bool,
     pub is_git_modified: bool,
     pub file_size: u64,
@@ -31,21 +52,22 @@ pub enum FileKind {
 }
 
 /// 字符串池
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct StringPool {
     data: String,
 }
 
 impl StringPool {
     pub fn new() -> Self {
-        Self {
-            data: String::new(),
-        }
+        Self::default()
     }
 
     pub fn add(&mut self, s: &str) -> (u32, u16) {
-        let offset = self.data.len() as u32;
-        let len = s.len() as u16;
+        // M-15: 用 try_from 检查溢出，避免静默截断导致后续 get() 返回错误数据
+        let offset = u32::try_from(self.data.len())
+            .expect("M-15: StringPool offset overflow (pool data > 4GB)");
+        let len =
+            u16::try_from(s.len()).expect("M-15: StringPool length overflow (single name > 64KB)");
         self.data.push_str(s);
         (offset, len)
     }
@@ -57,42 +79,81 @@ impl StringPool {
 
 impl FileTree {
     pub fn new() -> Self {
-        Self {
-            nodes: Vec::new(),
-            names: StringPool::new(),
-        }
+        Self::default()
     }
 
     pub fn add_node(&mut self, name: &str, kind: FileKind, parent_idx: u32, depth: u8) -> u32 {
         let (name_offset, name_len) = self.names.add(name);
-        let idx = self.nodes.len() as u32;
+        // M-02: 用 try_from 检查溢出，与 StringPool::add 保持一致，
+        // 避免节点数超过 u32::MAX 时静默截断导致索引错乱
+        let idx = u32::try_from(self.nodes.len())
+            .expect("M-02: FileTree node count overflow (nodes > u32::MAX)");
         self.nodes.push(FileNode {
             name_offset,
             name_len,
             kind,
             parent_idx,
             first_child: u32::MAX,
+            last_child: u32::MAX,
             next_sibling: u32::MAX,
             depth,
-            is_expanded: kind == FileKind::Directory,
+            // 只有第一层目录（depth==0）默认展开，减少打开文件夹时的初始节点数
+            is_expanded: kind == FileKind::Directory && depth == 0,
+            // 新建节点默认未加载子节点；open_folder 会对根层显式标记
+            is_loaded: false,
+            is_loading: false,
             is_git_tracked: false,
             is_git_modified: false,
             file_size: 0,
             modified_time: 0,
         });
 
-        // 更新父节点的first_child链表
+        // 更新父节点的first_child链表 - O(1) 尾指针插入
         if parent_idx != u32::MAX {
-            let parent = &mut self.nodes[parent_idx as usize];
-            if parent.first_child == u32::MAX {
-                parent.first_child = idx;
-            } else {
-                // 找到最后一个兄弟节点
-                let mut sibling = parent.first_child;
-                while self.nodes[sibling as usize].next_sibling != u32::MAX {
-                    sibling = self.nodes[sibling as usize].next_sibling;
+            let parent_idx_usize = parent_idx as usize;
+            if parent_idx_usize < self.nodes.len() {
+                // 先读取 last_child 值，避免同时借用
+                let last_child_opt = {
+                    let parent = &self.nodes[parent_idx_usize];
+                    if parent.first_child == u32::MAX {
+                        None
+                    } else {
+                        Some(parent.last_child)
+                    }
+                };
+
+                if let Some(last) = last_child_opt {
+                    let last_usize = last as usize;
+                    // C-02: 用 split_at_mut 消除 unsafe 指针别名，保证两个可变引用指向不同元素
+                    debug_assert_ne!(
+                        parent_idx_usize, last_usize,
+                        "C-02: parent_idx 与 last_child 相同会导致别名 UB（数据损坏）"
+                    );
+                    if parent_idx_usize < last_usize {
+                        let (left, right) = self.nodes.split_at_mut(last_usize);
+                        left[parent_idx_usize].last_child = idx;
+                        right[0].next_sibling = idx;
+                    } else if parent_idx_usize > last_usize {
+                        let (left, right) = self.nodes.split_at_mut(parent_idx_usize);
+                        left[last_usize].next_sibling = idx;
+                        right[0].last_child = idx;
+                    }
+                    // parent_idx_usize == last_usize 时数据损坏，不修改避免 UB
+                } else {
+                    let parent = &mut self.nodes[parent_idx_usize];
+                    parent.first_child = idx;
+                    parent.last_child = idx;
                 }
-                self.nodes[sibling as usize].next_sibling = idx;
+            }
+        } else {
+            // parent_idx == u32::MAX: 挂到虚拟根节点下
+            if self.root_first_child == u32::MAX {
+                self.root_first_child = idx;
+                self.root_last_child = idx;
+            } else {
+                let last = self.root_last_child;
+                self.nodes[last as usize].next_sibling = idx;
+                self.root_last_child = idx;
             }
         }
 
@@ -113,11 +174,12 @@ impl FileTree {
 
     pub fn iter_children(&self, parent_idx: u32) -> FileTreeIterator<'_> {
         let first = if parent_idx == u32::MAX {
-            // 根节点：找到所有parent为u32::MAX的节点
-            self.nodes
-                .iter()
-                .position(|n| n.parent_idx == u32::MAX)
-                .map(|i| i as u32)
+            // 虚拟根节点：使用 root_first_child
+            if self.root_first_child != u32::MAX {
+                Some(self.root_first_child)
+            } else {
+                None
+            }
         } else {
             self.nodes
                 .get(parent_idx as usize)
@@ -139,11 +201,17 @@ impl FileTree {
         self.nodes.is_empty()
     }
 
+    /// 遍历所有节点（用于懒加载预扫描等）
+    pub fn nodes_iter(&self) -> impl Iterator<Item = &FileNode> {
+        self.nodes.iter()
+    }
+
     pub fn first_root_node(&self) -> Option<u32> {
-        self.nodes
-            .iter()
-            .position(|n| n.parent_idx == u32::MAX)
-            .map(|i| i as u32)
+        if self.root_first_child != u32::MAX {
+            Some(self.root_first_child)
+        } else {
+            None
+        }
     }
 }
 
@@ -182,5 +250,83 @@ mod tests {
 
         let children: Vec<_> = tree.iter_children(root).collect();
         assert_eq!(children.len(), 2);
+    }
+
+    #[test]
+    fn test_file_tree_empty() {
+        let tree = FileTree::new();
+        assert!(tree.is_empty());
+        assert_eq!(tree.len(), 0);
+        assert_eq!(tree.first_root_node(), None);
+        assert_eq!(tree.iter_children(u32::MAX).count(), 0);
+    }
+
+    #[test]
+    fn test_file_tree_root_siblings() {
+        let mut tree = FileTree::new();
+        let a = tree.add_node("a", FileKind::Directory, u32::MAX, 0);
+        let b = tree.add_node("b", FileKind::File, u32::MAX, 0);
+        let c = tree.add_node("c", FileKind::File, u32::MAX, 0);
+
+        let roots: Vec<_> = tree.iter_children(u32::MAX).collect();
+        assert_eq!(roots.len(), 3);
+        assert_eq!(tree.first_root_node(), Some(a));
+        assert_eq!(tree.get_node(a).unwrap().next_sibling, b);
+        assert_eq!(tree.get_node(b).unwrap().next_sibling, c);
+        assert_eq!(tree.get_node(c).unwrap().next_sibling, u32::MAX);
+    }
+
+    #[test]
+    fn test_file_tree_names() {
+        let mut tree = FileTree::new();
+        let dir = tree.add_node("src", FileKind::Directory, u32::MAX, 0);
+        let main = tree.add_node("main.rs", FileKind::File, dir, 1);
+
+        let dir_node = tree.get_node(dir).unwrap();
+        assert_eq!(tree.get_name(dir_node), "src");
+        let main_node = tree.get_node(main).unwrap();
+        assert_eq!(tree.get_name(main_node), "main.rs");
+        assert_eq!(main_node.parent_idx, dir);
+        assert_eq!(main_node.depth, 1);
+    }
+
+    #[test]
+    fn test_file_tree_node_fields() {
+        let mut tree = FileTree::new();
+        let dir = tree.add_node("dir", FileKind::Directory, u32::MAX, 0);
+        let node = tree.get_node(dir).unwrap();
+        assert_eq!(node.kind, FileKind::Directory);
+        assert!(node.is_expanded);
+        assert!(!node.is_loaded);
+
+        let file = tree.add_node("file.txt", FileKind::File, dir, 1);
+        let file_node = tree.get_node(file).unwrap();
+        assert_eq!(file_node.kind, FileKind::File);
+        assert!(!file_node.is_expanded);
+    }
+
+    #[test]
+    fn test_file_tree_nodes_iter() {
+        let mut tree = FileTree::new();
+        let _ = tree.add_node("root", FileKind::Directory, u32::MAX, 0);
+        let _ = tree.add_node("child", FileKind::File, 0, 1);
+        assert_eq!(tree.nodes_iter().count(), 2);
+    }
+
+    #[test]
+    fn test_string_pool() {
+        let mut pool = StringPool::new();
+        let (off, len) = pool.add("hello");
+        assert_eq!(pool.get(off, len), "hello");
+        let (off2, len2) = pool.add("world");
+        assert_eq!(pool.get(off2, len2), "world");
+        assert_ne!(off, off2);
+    }
+
+    #[test]
+    fn test_file_tree_get_node_bounds() {
+        let tree = FileTree::new();
+        assert!(tree.get_node(0).is_none());
+        assert!(tree.get_node(u32::MAX).is_none());
     }
 }

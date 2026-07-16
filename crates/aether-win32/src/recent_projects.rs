@@ -49,6 +49,8 @@ impl RecentProjectsManager {
             max_count: Self::MAX_COUNT,
         };
         manager.load();
+        // 启动时清理已失效（不存在的）项目
+        manager.clean_invalid();
         manager
     }
 
@@ -133,16 +135,21 @@ impl RecentProjectsManager {
     fn to_json(projects: &VecDeque<RecentProject>) -> String {
         let mut json = String::from("[\n");
         for (i, p) in projects.iter().enumerate() {
+            let last_opened_secs = p
+                .last_opened
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
             json.push_str("  {\n");
             json.push_str(&format!(
                 "    \"name\": \"{}\",\n",
                 Self::escape_json(&p.name)
             ));
             json.push_str(&format!(
-                "    \"path\": \"{}\"\n",
+                "    \"path\": \"{}\",\n",
                 Self::escape_json(&p.path)
             ));
-            // last_opened 暂时不序列化，用文件修改时间代替
+            json.push_str(&format!("    \"last_opened\": {}\n", last_opened_secs));
             json.push('}');
             if i < projects.len() - 1 {
                 json.push(',');
@@ -158,6 +165,7 @@ impl RecentProjectsManager {
         let mut projects = VecDeque::new();
         let mut current_name = None;
         let mut current_path = None;
+        let mut current_last_opened = None;
 
         for line in json.lines() {
             let trimmed = line.trim();
@@ -169,12 +177,24 @@ impl RecentProjectsManager {
                 if let Some(val) = Self::extract_json_value(trimmed) {
                     current_path = Some(val);
                 }
+            } else if trimmed.starts_with("\"last_opened\"") {
+                // 解析数值字段
+                let colon_idx = match trimmed.find(':') {
+                    Some(idx) => idx,
+                    None => continue,
+                };
+                let after_colon = trimmed[colon_idx + 1..].trim();
+                if let Ok(secs) = after_colon.trim_end_matches(',').parse::<u64>() {
+                    current_last_opened =
+                        Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs));
+                }
             } else if trimmed == "}" || trimmed == "}," {
                 if let (Some(name), Some(path)) = (current_name.take(), current_path.take()) {
+                    let last_opened = current_last_opened.take().unwrap_or(SystemTime::now());
                     projects.push_back(RecentProject {
                         name,
                         path,
-                        last_opened: SystemTime::now(),
+                        last_opened,
                     });
                 }
             }
@@ -274,5 +294,98 @@ mod tests {
         assert_eq!(manager.len(), 2);
         assert_eq!(manager.list()[0].name, "a");
         assert_eq!(manager.list()[1].name, "b");
+    }
+
+    #[test]
+    fn test_recent_project_from_path() {
+        let p = RecentProject::from_path(Path::new("D:\\Workspace\\MyProject"));
+        assert_eq!(p.name, "MyProject");
+        assert_eq!(p.path, "D:\\Workspace\\MyProject");
+
+        // 根路径没有 file_name，应回退为 "Unknown"
+        let root = RecentProject::from_path(Path::new("/"));
+        assert_eq!(root.name, "Unknown");
+    }
+
+    #[test]
+    fn test_json_escape_and_unescape() {
+        let raw = "line1\nline2\tquote\"slash\\back";
+        let escaped = RecentProjectsManager::escape_json(raw);
+        assert!(escaped.contains("\\n"));
+        assert!(escaped.contains("\\t"));
+        assert!(escaped.contains("\\\""));
+        assert!(escaped.contains("\\\\"));
+        assert_eq!(RecentProjectsManager::unescape_json(&escaped), raw);
+
+        // 未知转义字符保留原字符（x）
+        assert_eq!(
+            RecentProjectsManager::unescape_json("hello\\xworld"),
+            "helloxworld"
+        );
+        assert_eq!(
+            RecentProjectsManager::unescape_json("trailing\\"),
+            "trailing"
+        );
+    }
+
+    #[test]
+    fn test_to_json_empty() {
+        let empty: VecDeque<RecentProject> = VecDeque::new();
+        let json = RecentProjectsManager::to_json(&empty);
+        assert_eq!(json, "[\n]");
+    }
+
+    #[test]
+    fn test_parse_json_malformed_and_incomplete() {
+        let bad = "not json at all";
+        assert!(RecentProjectsManager::parse_json(bad).is_empty());
+
+        // 缺少 last_opened 但有结束大括号：仍能生成项目，last_opened 使用默认值
+        let without_last_opened = r#"{
+  "name": "Project",
+  "path": "/path"
+}"#;
+        let parsed = RecentProjectsManager::parse_json(without_last_opened);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "Project");
+        assert_eq!(parsed[0].path, "/path");
+
+        let with_closing = r#"{
+  "name": "Project2",
+  "path": "/path2",
+  "last_opened": 0
+}"#;
+        let parsed = RecentProjectsManager::parse_json(with_closing);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "Project2");
+        assert_eq!(parsed[0].path, "/path2");
+    }
+
+    #[test]
+    fn test_manager_is_empty_and_len() {
+        let mut manager = RecentProjectsManager {
+            projects: VecDeque::new(),
+            config_dir: PathBuf::from("."),
+            max_count: 5,
+        };
+        assert!(manager.is_empty());
+        assert_eq!(manager.len(), 0);
+        manager.add(Path::new("/path/a"));
+        assert!(!manager.is_empty());
+        assert_eq!(manager.len(), 1);
+    }
+
+    #[test]
+    fn test_clean_invalid_removes_missing_paths() {
+        let mut manager = RecentProjectsManager {
+            projects: VecDeque::new(),
+            config_dir: PathBuf::from("."),
+            max_count: 5,
+        };
+        manager.add(Path::new("/definitely/not/existing/path/abc"));
+        manager.add(Path::new("/another/missing/path"));
+        assert_eq!(manager.len(), 2);
+        manager.clean_invalid();
+        assert!(manager.is_empty());
     }
 }
