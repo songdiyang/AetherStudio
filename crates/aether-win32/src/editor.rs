@@ -6545,6 +6545,18 @@ impl EditorState {
         }
     }
 
+    /// 保存 AI 设置前，先启动测试连接验证密钥有效性。
+    /// 测试成功后会自动调用 save_ai_settings 完成保存。
+    pub fn save_ai_settings_with_test(&mut self) {
+        let ai = self.settings_panel.to_ai_settings();
+        if ai.api_key.trim().is_empty() {
+            self.settings_panel.test_status = "✗ 请先填写 API 密钥".to_string();
+            return;
+        }
+        self.settings_panel.pending_save = true;
+        self.settings_panel.start_test_connection(ai);
+    }
+
     /// 使用设置面板当前配置启动 AI 测试连接（后台线程，不阻塞 UI）
     pub fn start_ai_test_connection(&mut self) {
         let ai = self.settings_panel.to_ai_settings();

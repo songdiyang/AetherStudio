@@ -500,24 +500,61 @@ pub(super) unsafe fn lbd_settings_page(
         return Some(LRESULT(0));
     }
 
-    // 5. 按钮：保存 / 测试连接
-    if let Some(btn) = st.settings_panel.hit_test_button(mouse_x, mouse_y) {
-        let mut started_test = false;
-        match btn {
-            crate::settings::SettingsButton::Save => st.save_ai_settings(),
-            crate::settings::SettingsButton::TestConnection => {
-                st.start_ai_test_connection();
-                started_test = st.settings_panel.is_testing;
+    // 5. 按钮：保存 / 测试连接（仅AI设置页）
+    if st.settings_panel.active_tab == crate::settings::SettingsTab::Ai {
+        if let Some(btn) = st.settings_panel.hit_test_button(mouse_x, mouse_y) {
+            let started_test = match btn {
+                crate::settings::SettingsButton::Save => {
+                    st.save_ai_settings_with_test();
+                    st.settings_panel.is_testing
+                }
+                crate::settings::SettingsButton::TestConnection => {
+                    st.start_ai_test_connection();
+                    st.settings_panel.is_testing
+                }
+            };
+            st.settings_panel.active_field = None;
+            drop(st);
+            // 测试期间启动后台刷新定时器，结果到达后自动停止
+            if started_test {
+                let _ = SetTimer(hwnd, AI_TIMER_ID, AI_REFRESH_MS, None);
             }
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
         }
-        st.settings_panel.active_field = None;
-        drop(st);
-        // 测试期间启动后台刷新定时器，结果到达后自动停止
-        if started_test {
-            let _ = SetTimer(hwnd, AI_TIMER_ID, AI_REFRESH_MS, None);
+    }
+
+    // 5b. 模型管理页：模型按钮点击
+    if st.settings_panel.active_tab == crate::settings::SettingsTab::Models {
+        let rel_x = mouse_x - editor_region.x;
+        let rel_y = mouse_y - editor_region.y;
+        if let Some((btn, model_id)) = st.settings_panel.hit_test_model_button(rel_x, rel_y) {
+            match btn {
+                crate::settings::ModelButton::Add => {
+                    st.settings_panel.add_model_dialog.visible = true;
+                    st.settings_panel.add_model_dialog.reset();
+                }
+                crate::settings::ModelButton::Edit => {
+                    st.settings_panel.edit_model(&model_id);
+                }
+                crate::settings::ModelButton::Delete => {
+                    st.settings_panel.delete_model(&model_id);
+                }
+                crate::settings::ModelButton::ToggleEnabled => {
+                    st.settings_panel.toggle_model_enabled(&model_id);
+                }
+            }
+            drop(st);
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
         }
-        invalidate_window(hwnd);
-        return Some(LRESULT(0));
+        // 点击模型卡片（选择）
+        if let Some(model_id) = st.settings_panel.hit_test_model_item(rel_x, rel_y) {
+            st.settings_panel.selected_model_id = Some(model_id);
+            drop(st);
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        }
     }
 
     // 6. 输入字段聚焦

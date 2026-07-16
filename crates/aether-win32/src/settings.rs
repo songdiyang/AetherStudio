@@ -84,8 +84,9 @@ pub enum SettingsDropdownKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelButton {
     Add,
-    Activate,
+    Edit,
     Delete,
+    ToggleEnabled,
 }
 
 /// 添加模型对话框按钮
@@ -100,6 +101,21 @@ pub enum AddModelDialogButton {
 pub enum AddModelDialogTab {
     Provider,
     Custom,
+}
+
+/// 测试连接轮询结果
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TestPollResult {
+    /// 测试成功，且有待保存的设置
+    SuccessWithPendingSave,
+    /// 测试成功，无待保存操作
+    Success,
+    /// 测试失败，且有待保存的设置
+    FailedWithPendingSave,
+    /// 测试失败，无待保存操作
+    Failed,
+    /// 测试尚未完成
+    Pending,
 }
 
 impl AddModelDialogTab {
@@ -126,7 +142,10 @@ pub enum AddModelDropdownKind {
 pub struct ModelConfig {
     pub id: String,
     pub name: String,
+    pub display_name: String,
     pub provider: String,
+    pub description: String,
+    pub enabled: bool,
 }
 
 /// 添加模型对话框状态
@@ -209,6 +228,34 @@ impl AddModelDialog {
     pub fn model_options(&self) -> Vec<String> {
         vec![]
     }
+
+    pub fn reset(&mut self) {
+        self.active_tab = AddModelDialogTab::Provider;
+        self.hover_tab = None;
+        self.hover_button = None;
+        self.close_region = None;
+        self.open_dropdown = None;
+        self.hover_dropdown = None;
+        self.hover_dropdown_index = None;
+        self.selected_provider_button = None;
+        self.selected_model_id = String::new();
+        self.display_name = String::new();
+        self.context_input = String::new();
+        self.context_output = String::new();
+        self.tool_call_rounds = "3".to_string();
+        self.provider = String::new();
+        self.base_url = String::new();
+        self.model = String::new();
+        self.field_regions.clear();
+        self.button_regions.clear();
+        self.dropdown_trigger_regions.clear();
+        self.dropdown_item_regions.clear();
+        self.provider_template_regions.clear();
+        self.advanced_toggle_region = None;
+        self.advanced_expanded = false;
+        self.tab_regions.clear();
+        self.active_field = None;
+    }
 }
 
 /// AI 设置面板状态
@@ -227,6 +274,8 @@ pub struct SettingsPanel {
     pub is_testing: bool,
     /// 后台测试连接结果（Some(Ok)=成功，Some(Err)=失败，None=未完成）
     pub test_result: Arc<Mutex<Option<Result<String, String>>>>,
+    /// 测试通过后是否自动保存设置
+    pub pending_save: bool,
     // Cached layout for hit testing
     pub field_regions: Vec<(SettingsField, f32, f32, f32, f32)>,
     pub button_regions: Vec<(SettingsButton, f32, f32, f32, f32)>,
@@ -246,6 +295,8 @@ pub struct SettingsPanel {
     pub hover_model_id: Option<String>,
     pub active_model_id: Option<String>,
     pub hover_model_button: Option<ModelButton>,
+    /// 悬停按钮对应的模型ID（用于区分不同模型项上的按钮）
+    pub hover_model_button_id: Option<String>,
     // 添加模型对话框
     pub add_model_dialog: AddModelDialog,
     // 模型按钮/项命中区域
@@ -273,6 +324,7 @@ impl SettingsPanel {
             hover_button: None,
             test_status: String::new(),
             is_testing: false,
+            pending_save: false,
             test_result: Arc::new(Mutex::new(None)),
             field_regions: Vec::new(),
             button_regions: Vec::new(),
@@ -282,11 +334,37 @@ impl SettingsPanel {
             nav_width: 160.0,
             hover_nav_resize: false,
             nav_resizing: false,
-            models: Vec::new(),
+            models: vec![
+                ModelConfig {
+                    id: "kimi-for-coding".to_string(),
+                    name: "kimi-code".to_string(),
+                    display_name: "Kimi-for-coding".to_string(),
+                    provider: "kimi".to_string(),
+                    description: "Coding plan".to_string(),
+                    enabled: true,
+                },
+                ModelConfig {
+                    id: "deepseek-v4-pro".to_string(),
+                    name: "deepseek-v4-pro".to_string(),
+                    display_name: "DeepSeek-V4-Pro".to_string(),
+                    provider: "deepseek".to_string(),
+                    description: "按量付费".to_string(),
+                    enabled: true,
+                },
+                ModelConfig {
+                    id: "deepseek-v4-flash".to_string(),
+                    name: "deepseek-v4-flash".to_string(),
+                    display_name: "DeepSeek-V4-Flash".to_string(),
+                    provider: "deepseek".to_string(),
+                    description: "按量付费".to_string(),
+                    enabled: true,
+                },
+            ],
             selected_model_id: None,
             hover_model_id: None,
             active_model_id: None,
             hover_model_button: None,
+            hover_model_button_id: None,
             add_model_dialog: AddModelDialog::new(),
             model_button_regions: Vec::new(),
             model_item_regions: Vec::new(),
@@ -319,6 +397,7 @@ impl SettingsPanel {
             hover_button: None,
             test_status: String::new(),
             is_testing: false,
+            pending_save: false,
             test_result: Arc::new(Mutex::new(None)),
             field_regions: Vec::new(),
             button_regions: Vec::new(),
@@ -333,6 +412,7 @@ impl SettingsPanel {
             hover_model_id: None,
             active_model_id: None,
             hover_model_button: None,
+            hover_model_button_id: None,
             add_model_dialog: AddModelDialog::new(),
             model_button_regions: Vec::new(),
             model_item_regions: Vec::new(),
@@ -578,9 +658,9 @@ impl SettingsPanel {
         }
     }
 
-    pub fn poll_test_result(&mut self) -> bool {
+    pub fn poll_test_result(&mut self) -> TestPollResult {
         if !self.is_testing {
-            return false;
+            return TestPollResult::Pending;
         }
         let outcome = self
             .test_result
@@ -592,14 +672,24 @@ impl SettingsPanel {
                 let snippet: String = reply.chars().take(60).collect();
                 self.test_status = format!("✓ 连接成功：{}", snippet.trim());
                 self.is_testing = false;
-                true
+                if self.pending_save {
+                    self.pending_save = false;
+                    TestPollResult::SuccessWithPendingSave
+                } else {
+                    TestPollResult::Success
+                }
             }
             Some(Err(e)) => {
                 self.test_status = format!("✗ 连接失败：{}", e);
                 self.is_testing = false;
-                true
+                if self.pending_save {
+                    self.pending_save = false;
+                    TestPollResult::FailedWithPendingSave
+                } else {
+                    TestPollResult::Failed
+                }
             }
-            None => false,
+            None => TestPollResult::Pending,
         }
     }
 
@@ -684,6 +774,67 @@ impl SettingsPanel {
 
     pub fn add_model_item_region(&mut self, id: String, x: f32, y: f32, w: f32, h: f32) {
         self.model_item_regions.push((id, x, y, w, h));
+    }
+
+    /// 命中检测：模型项（返回模型ID）
+    pub fn hit_test_model_item(&self, x: f32, y: f32) -> Option<String> {
+        for (id, ix, iy, iw, ih) in &self.model_item_regions {
+            if x >= *ix && x < ix + iw && y >= *iy && y < iy + ih {
+                return Some(id.clone());
+            }
+        }
+        None
+    }
+
+    /// 命中检测：模型按钮（返回按钮类型和模型ID）
+    pub fn hit_test_model_button(&self, x: f32, y: f32) -> Option<(ModelButton, String)> {
+        for (button, bx, by, bw, bh) in &self.model_button_regions {
+            if x >= *bx && x < bx + bw && y >= *by && y < by + bh {
+                // 找到对应的模型项ID
+                if let Some(model_id) = self.hit_test_model_item(x, y) {
+                    return Some((*button, model_id));
+                }
+                // 如果是添加按钮，没有对应的模型项
+                if *button == ModelButton::Add {
+                    return Some((*button, String::new()));
+                }
+            }
+        }
+        None
+    }
+
+    /// 切换模型启用状态
+    pub fn toggle_model_enabled(&mut self, model_id: &str) {
+        if let Some(model) = self.models.iter_mut().find(|m| m.id == model_id) {
+            model.enabled = !model.enabled;
+        }
+    }
+
+    /// 删除模型
+    pub fn delete_model(&mut self, model_id: &str) {
+        self.models.retain(|m| m.id != model_id);
+        if self.active_model_id.as_deref() == Some(model_id) {
+            self.active_model_id = None;
+        }
+        if self.selected_model_id.as_deref() == Some(model_id) {
+            self.selected_model_id = None;
+        }
+    }
+
+    /// 编辑模型（打开弹窗并填充数据）
+    pub fn edit_model(&mut self, model_id: &str) {
+        if let Some(model) = self.models.iter().find(|m| m.id == model_id) {
+            self.add_model_dialog.visible = true;
+            self.add_model_dialog.display_name = model.display_name.clone();
+            self.add_model_dialog.model = model.name.clone();
+            self.add_model_dialog.provider = model.provider.clone();
+            // 根据provider设置selected_provider_button
+            self.add_model_dialog.selected_provider_button = match model.provider.as_str() {
+                "deepseek" => Some(ProviderTemplateButton::DeepSeek),
+                "kimi" => Some(ProviderTemplateButton::Kimi),
+                _ => Some(ProviderTemplateButton::Custom),
+            };
+        }
     }
 
     pub fn dropdown_items(&self, kind: AddModelDropdownKind) -> Vec<String> {
