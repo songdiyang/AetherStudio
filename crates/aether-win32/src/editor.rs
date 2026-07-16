@@ -1681,6 +1681,23 @@ impl EditorState {
                 self.emit_event(crate::events::EditorEvent::StatusBarChanged);
                 // 接线 LSP：通知服务器文档已打开（按需启动 server），激活补全/悬停/诊断
                 self.lsp_notify_open();
+
+                // 启动高亮刷新定时器：tree-sitter 语言且非大文件时，后台高亮在工作线程
+                // 完成后需要一次重绘才能着色。此定时器周期性重绘直至高亮到达，随后自动停止，
+                // 避免文件打开后停留在无高亮纯文本、要等到鼠标移动/光标闪烁才着色的卡顿感。
+                self.update_large_file_flag();
+                if language_to_ts_str(self.content.language).is_some()
+                    && !self.content.is_large_file
+                {
+                    unsafe {
+                        let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(
+                            self.hwnd,
+                            crate::window::HIGHLIGHT_TIMER_ID,
+                            crate::window::HIGHLIGHT_REFRESH_MS,
+                            None,
+                        );
+                    }
+                }
             }
             Err(e) => {
                 let msg = format!("打开文件失败: {}", e);
@@ -4872,7 +4889,7 @@ impl EditorState {
         }
         // AI 面板输入框聚焦时，IME 提交文本进入 AI 输入框
         if self.ai_panel.input_focused {
-            self.ai_panel.input.push_str(&text);
+            self.ai_panel.insert_str(&text);
             self.ai_panel.composition = None;
             self.ai_panel.caret_visible = true;
             let region = self.layout.right_panel_region().clone();
@@ -6020,6 +6037,16 @@ impl EditorState {
                 for i in 0..min_len {
                     self.content.cached_tokens[i] = result.token_lines[i].clone();
                 }
+                // 后台高亮结果刚到达：标记编辑器区域脏，使本帧立即以着色重绘，
+                // 避免文件打开后停留在无高亮的纯文本状态直到下一次无关重绘。
+                let er = self.layout.editor_region();
+                self.dirty_tracker.mark_region(
+                    er.x,
+                    er.y,
+                    er.width,
+                    er.height,
+                    crate::dirty_rect::DirtyRegionType::EditorContent,
+                );
             }
         }
 
@@ -6450,6 +6477,147 @@ impl EditorState {
             if Self::set_clipboard_text(&t) {
                 self.status_message = "已复制 AI 回复".to_string();
             }
+        }
+    }
+
+    /// 保存 AI 代码块为文件
+    /// 如果 filename 为空，则尝试从代码块内容推断或使用默认名称
+    pub fn save_ai_code_block(&mut self, code: &str, suggested_filename: Option<&str>) -> std::result::Result<PathBuf, String> {
+        let root = self.current_folder.clone()
+            .ok_or_else(|| "请先打开一个工作区文件夹".to_string())?;
+
+        // 确定文件名
+        let filename = if let Some(name) = suggested_filename {
+            name.to_string()
+        } else {
+            // 尝试从代码内容推断语言并生成默认文件名
+            let ext = if code.contains("fn ") || code.contains("use ") || code.contains("impl ") {
+                "rs"
+            } else if code.contains("def ") || code.contains("import ") {
+                "py"
+            } else if code.contains("function ") || code.contains("const ") || code.contains("let ") {
+                "js"
+            } else if code.contains("package ") || code.contains("import java.") {
+                "java"
+            } else if code.contains("#include") || code.contains("int main") {
+                "c"
+            } else if code.contains("<?php") {
+                "php"
+            } else if code.contains("<html") || code.contains("<!DOCTYPE") {
+                "html"
+            } else if code.contains("body {") || code.contains("@media") {
+                "css"
+            } else {
+                "txt"
+            };
+            format!("ai_generated.{}", ext)
+        };
+
+        let full_path = root.join(&filename);
+
+        // 确保父目录存在
+        if let Some(parent) = full_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建目录失败: {}", e))?;
+        }
+
+        // 写入文件
+        std::fs::write(&full_path, code)
+            .map_err(|e| format!("写入文件失败: {}", e))?;
+
+        // 打开新创建的文件
+        self.load_file(full_path.clone());
+
+        self.status_message = format!("已保存文件: {}", filename);
+        Ok(full_path)
+    }
+
+    /// AI Agent：处理最后一条助手消息中的动作标记（生成完成时调用一次）。
+    ///
+    /// - `<<<<<<< FILE 路径 >>>>>>>` 块：创建/修改/删除文件（自动建目录）。
+    /// - `<<<<<<< RUN >>>>>>>` 块：在集成终端执行命令。
+    ///
+    /// 执行结果以助手消息形式反馈到 AI 面板，并刷新文件树。
+    pub fn process_ai_agent_actions(&mut self) {
+        // Edit 模式走差异预览确认流程，不在此处直接落盘。
+        if matches!(self.ai_panel.mode, crate::ai_prompt::AiMode::Edit) {
+            return;
+        }
+        let Some(text) = self.ai_panel.last_assistant_text() else {
+            return;
+        };
+
+        // 文件/终端操作必须在已打开的工作区内进行；未打开文件夹时提示用户。
+        let has_actions = text.contains("<<<<<<< FILE") || text.contains("<<<<<<< RUN");
+        if has_actions && self.current_folder.is_none() {
+            self.ai_panel
+                .add_assistant_message("⚠️ 尚未打开工作区文件夹，无法直接创建/修改文件。请先通过“文件 → 打开文件夹”打开一个项目再试。".to_string());
+            self.dirty_tracker.mark_full_window();
+            return;
+        }
+
+        // 1. 文件操作（创建/修改/删除）
+        let edits = crate::ai_agent::parse_edits(&text, None);
+        let mut file_summary: Vec<String> = Vec::new();
+        if !edits.is_empty() {
+            match self.apply_ai_workspace_edits(&edits) {
+                Ok(paths) => {
+                    for p in &paths {
+                        let name = self
+                            .current_folder
+                            .as_ref()
+                            .and_then(|root| p.strip_prefix(root).ok())
+                            .unwrap_or(p.as_path());
+                        file_summary.push(format!("✅ 已写入 `{}`", name.display()));
+                    }
+                }
+                Err(e) => {
+                    file_summary.push(format!("⚠️ 文件操作失败: {}", e));
+                }
+            }
+            // 刷新文件树以显示新文件
+            if let Some(folder) = self.current_folder.clone() {
+                self.open_folder(folder);
+            }
+        }
+
+        // 2. 终端命令
+        let commands = crate::ai_agent::parse_run_commands(&text);
+        let mut cmd_summary: Vec<String> = Vec::new();
+        if !commands.is_empty() {
+            // 打开底部面板并切换到终端
+            self.layout.bottom_panel_visible = true;
+            self.bottom_panel_tab = crate::editor::BottomPanelTab::Terminal;
+            // 同步终端工作目录到当前工作区
+            if let Some(folder) = self.current_folder.clone() {
+                self.terminal_panel.cwd = folder.to_string_lossy().to_string();
+            }
+            // 启动终端（若未运行）并排队命令
+            if !self.terminal_panel.running {
+                let _ = self.terminal_panel.start();
+            }
+            for cmd in &commands {
+                self.terminal_panel.queue_command(cmd.clone());
+                cmd_summary.push(format!("▶️ 执行 `{}`", cmd));
+            }
+            // 启动终端刷新定时器，保证轮询启动结果并刷新命令队列
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(
+                    self.hwnd,
+                    crate::window::TERM_TIMER_ID,
+                    crate::window::TERM_REFRESH_MS,
+                    None,
+                );
+            }
+        }
+
+        // 3. 反馈汇总到 AI 面板
+        if !file_summary.is_empty() || !cmd_summary.is_empty() {
+            let mut lines = Vec::new();
+            lines.extend(file_summary);
+            lines.extend(cmd_summary);
+            self.ai_panel.add_assistant_message(lines.join("\n"));
+            self.dirty_tracker.mark_full_window();
         }
     }
 
@@ -7110,9 +7278,21 @@ impl EditorState {
                 0,
                 new_text.len(),
             );
-            self.content.is_dirty = true;
             self.content.buffer_version += 1;
-            self.status_message = format!("已应用 AI 编辑: {}", full_path.display());
+
+            // 关键：将内容实际写入磁盘（当前工作区），而非仅停留在内存缓冲。
+            // 先确保父目录存在（支持多级子目录自动创建），再原子写入。
+            if let Some(parent) = full_path.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    return Err(format!("创建目录 {} 失败: {}", parent.display(), e));
+                }
+            }
+            if let Err(e) = Self::atomic_write(&full_path, new_text.as_bytes()) {
+                return Err(format!("写入文件 {} 失败: {}", full_path.display(), e));
+            }
+            // 已落盘，清除脏标记
+            self.content.is_dirty = false;
+            self.status_message = format!("已写入文件: {}", full_path.display());
             applied.push(full_path);
         }
 

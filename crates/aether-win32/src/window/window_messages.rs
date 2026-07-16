@@ -12,8 +12,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::{
     compute_cursor_for_pos, create_editor_window, get_and_set_state, invalidate_window,
-    AI_TIMER_ID, CARET_TIMER_ID, EDITOR_STATE, HOVER_TIMER_ID, LP_THRESHOLD_MS, LP_TIMER_ID,
-    TERM_TIMER_ID,
+    AI_TIMER_ID, CARET_TIMER_ID, EDITOR_STATE, HIGHLIGHT_TIMER_ID, HOVER_TIMER_ID, LP_THRESHOLD_MS,
+    LP_TIMER_ID, TERM_TIMER_ID,
 };
 use crate::auto_save::{AUTOSAVE_DEBOUNCE_TIMER_ID, AUTOSAVE_PERIODIC_TIMER_ID};
 
@@ -30,6 +30,9 @@ pub(crate) unsafe fn on_timer(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LP
     }
     if wparam.0 == AI_TIMER_ID {
         return on_timer_ai_refresh(hwnd);
+    }
+    if wparam.0 == HIGHLIGHT_TIMER_ID {
+        return on_timer_highlight_refresh(hwnd);
     }
     if wparam.0 == LP_TIMER_ID {
         return on_timer_long_press(hwnd);
@@ -97,6 +100,28 @@ unsafe fn on_timer_ai_refresh(hwnd: HWND) -> LRESULT {
         invalidate_window(hwnd);
     } else {
         let _ = KillTimer(hwnd, AI_TIMER_ID);
+    }
+    LRESULT(0)
+}
+
+/// 语法高亮刷新：打开文件后周期性重绘，直到当前 buffer 版本的后台高亮结果到达并着色，
+/// 随后自动停止。解决“文件打开后停留在无高亮纯文本、直到下一次无关事件才着色”的卡顿感。
+unsafe fn on_timer_highlight_refresh(hwnd: HWND) -> LRESULT {
+    // done == true 表示：当前 buffer 版本的高亮请求已发出且结果已被消费。
+    let done = EDITOR_STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|state| {
+                let st = state.borrow();
+                st.hl_request_version == st.content.buffer_version
+                    && !st.bg_highlighter.has_pending()
+            })
+            .unwrap_or(true)
+    });
+    if done {
+        let _ = KillTimer(hwnd, HIGHLIGHT_TIMER_ID);
+    } else {
+        invalidate_window(hwnd);
     }
     LRESULT(0)
 }

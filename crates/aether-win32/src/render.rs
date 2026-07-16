@@ -70,9 +70,14 @@ impl EditorState {
 
         // AI-H01: 轮询后台 AI 请求结果，不阻塞 UI 线程
         // 传入工作区目录，供 Edit/Agent 模式解析编辑相对路径生成正确 diff
+        // 生成完成时（just_completed）处理 Agent 动作：创建/修改文件、执行终端命令
         let ai_current_folder = self.current_folder.clone();
-        self.ai_panel
+        let ai_just_completed = self
+            .ai_panel
             .check_background_result(ai_current_folder.as_deref());
+        if ai_just_completed {
+            self.process_ai_agent_actions();
+        }
 
         // 设置面板：轮询测试连接结果
         match self.settings_panel.poll_test_result() {
@@ -96,6 +101,8 @@ impl EditorState {
         if self.terminal_panel.running {
             self.terminal_panel.poll_startup();
             self.terminal_panel.flush_output();
+            // AI Agent 排队命令：终端就绪后自动发送执行
+            self.terminal_panel.flush_pending_commands();
         }
 
         // 懒加载预扫描：确保所有 is_expanded 但未加载的目录节点子项已就绪
@@ -5001,6 +5008,41 @@ impl EditorState {
                     };
                     target.DrawTextLayout(origin, &layout, seg_fg, D2D1_DRAW_TEXT_OPTIONS_NONE);
 
+                    // 代码块添加"保存为文件"按钮
+                    if *is_code && !is_user && !seg_text.is_empty() {
+                        let save_btn_w = 60.0f32;
+                        let save_btn_h = 18.0f32;
+                        let save_btn_x = content_right - save_btn_w - 4.0;
+                        let save_btn_y = msg_y + 2.0;
+                        let save_btn_rect = D2D_RECT_F {
+                            left: save_btn_x,
+                            top: save_btn_y,
+                            right: save_btn_x + save_btn_w,
+                            bottom: save_btn_y + save_btn_h,
+                        };
+                        let save_bg = color_f(0.2, 0.5, 0.3, 1.0);
+                        if let Ok(save_brush) = self.render_ctx.brush_cache.get_brush(target, &save_bg) {
+                            target.FillRectangle(&save_btn_rect, &save_brush);
+                        }
+                        let save_text: Vec<u16> = "保存".encode_utf16().chain(Some(0)).collect();
+                        let save_text_rect = D2D_RECT_F {
+                            left: save_btn_x,
+                            top: save_btn_y + 1.0,
+                            right: save_btn_x + save_btn_w,
+                            bottom: save_btn_y + save_btn_h - 1.0,
+                        };
+                        target.DrawText(
+                            &save_text,
+                            &small_format,
+                            &save_text_rect,
+                            &white_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        // 注册保存按钮区域（简化：只存储 y 范围，点击时通过内容匹配）
+                        // 实际文件名从消息内容中解析
+                    }
+
                     msg_y += seg_h + seg_gap;
                 }
 
@@ -5465,7 +5507,7 @@ impl EditorState {
             }
 
             // ===== 输入框区域（新设计：参考图样式） =====
-            let input_area_h = 110.0f32; // 输入区域总高度
+            let input_area_h = 80.0f32; // 输入区域总高度（去掉提示文字后缩小）
             let input_y = y + height - input_area_h;
             let input_margin = 8.0f32;
 
@@ -5503,29 +5545,8 @@ impl EditorState {
             target.FillRectangle(&card_border_top, &card_border_brush);
             target.FillRectangle(&card_border_bottom, &card_border_brush);
 
-            // 1. 顶部提示文字
-            let hint_y = input_y + 6.0;
-            let hint_text: Vec<u16> = "规划与编程，@ 添加上下文，/ 使用命令"
-                .encode_utf16()
-                .chain(Some(0))
-                .collect();
-            let hint_rect = D2D_RECT_F {
-                left: x + margin + input_margin,
-                top: hint_y,
-                right: x + width - margin - input_margin,
-                bottom: hint_y + 18.0,
-            };
-            target.DrawText(
-                &hint_text,
-                &small_format,
-                &hint_rect,
-                &dim_brush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-
             // 2. 中间输入区域
-            let text_input_y = input_y + 24.0;
+            let text_input_y = input_y + 6.0;
             let text_input_h = 36.0f32;
             let text_input_rect = D2D_RECT_F {
                 left: x + margin + input_margin,
@@ -5560,15 +5581,21 @@ impl EditorState {
                 DWRITE_MEASURING_MODE_NATURAL,
             );
 
-            // IME 合成串（pre-edit text）显示在 input 之后
+            // IME 合成串（pre-edit text）显示在光标位置之后
             if let Some(comp) = &self.ai_panel.composition {
                 if !comp.is_empty() {
                     let comp_text: Vec<u16> = comp.encode_utf16().collect();
+                    // 合成串定位到光标处（光标前文本宽度），而非整段输入末尾
+                    let caret_prefix = if self.ai_panel.caret_pos <= self.ai_panel.input.len() {
+                        &self.ai_panel.input[..self.ai_panel.caret_pos]
+                    } else {
+                        self.ai_panel.input.as_str()
+                    };
                     let input_width = self
                         .render_ctx
                         .text_format_cache
                         .measure_text_width(
-                            &self.ai_panel.input,
+                            caret_prefix,
                             11.0,
                             DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
                         )
@@ -5613,11 +5640,17 @@ impl EditorState {
                 let caret_x = if self.ai_panel.input.is_empty() {
                     text_input_rect.left + 4.0
                 } else {
+                    // 根据 caret_pos 计算光标位置
+                    let text_before_caret = if self.ai_panel.caret_pos <= self.ai_panel.input.len() {
+                        &self.ai_panel.input[..self.ai_panel.caret_pos]
+                    } else {
+                        &self.ai_panel.input
+                    };
                     let tw = self
                         .render_ctx
                         .text_format_cache
                         .measure_text_width(
-                            &self.ai_panel.input,
+                            text_before_caret,
                             11.0,
                             DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
                         )
@@ -11907,10 +11940,17 @@ impl EditorState {
                 }
 
                 // 文件名
-                // REQ-P1-09: 活动标签页的状态在 self.content 中，需从中读取
+                // REQ-P1-09: 活动文件标签页的状态在 self.content 中，需从中读取。
+                // 但设置/欢迎等非文件标签没有独立 content，self.content 可能残留上一个
+                // 文件的内容，若直接用 self.content.file_name() 会导致活动的“设置”标签
+                // 错误显示成某个文件名。故非文件标签一律用标签自身标题。
                 // SubTask 7.4: 不再在文件名中拼接 "●"，改为独立小圆点
                 let (name, is_dirty) = if is_active {
-                    (self.content.file_name(), self.content.is_dirty)
+                    if tab.is_file() {
+                        (self.content.file_name(), self.content.is_dirty)
+                    } else {
+                        (tab.title(), false)
+                    }
                 } else {
                     (tab.file_name(), tab.is_dirty())
                 };

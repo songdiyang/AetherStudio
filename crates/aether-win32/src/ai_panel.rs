@@ -162,8 +162,12 @@ pub struct AiPanel {
     pub selected_change_index: usize,
     /// 上一帧渲染的消息内容总高度（用于滚动条与自动滚底）
     pub content_height: f32,
+    /// 代码块保存按钮区域 (msg_index, seg_index, x, y, w, h, suggested_filename)
+    pub code_save_regions: Vec<(usize, usize, f32, f32, f32, f32, String)>,
     /// 是否吸附底部：新消息/流式到达时自动滚动到底部
     pub stick_to_bottom: bool,
+    /// 输入框光标位置（字符索引，0 = 开头）
+    pub caret_pos: usize,
     /// 输入框光标可见状态（闪烁，由 CARET_TIMER 切换）
     pub caret_visible: bool,
     /// IME 合成串（中文输入法预编辑文本），渲染时显示在 input 之后
@@ -186,7 +190,7 @@ impl AiPanel {
             hover_apply_button: false,
             stream_state: Arc::new(Mutex::new(AiStreamState::default())),
             input_focused: false,
-            mode: AiMode::Ask,
+            mode: AiMode::Agent,
             attachments: Vec::new(),
             mode_button_regions: Vec::new(),
             attachment_chip_regions: Vec::new(),
@@ -197,7 +201,9 @@ impl AiPanel {
             show_diff_view: false,
             selected_change_index: 0,
             content_height: 0.0,
+            code_save_regions: Vec::new(),
             stick_to_bottom: true,
+            caret_pos: 0,
             caret_visible: false,
             composition: None,
             should_stop: Arc::new(AtomicBool::new(false)),
@@ -275,6 +281,7 @@ impl AiPanel {
 
         self.add_user_message(user_input.clone());
         self.input.clear();
+        self.caret_pos = 0;
         self.is_generating = true;
         self.should_stop.store(false, Ordering::SeqCst);
         self.clear_pending_changes();
@@ -357,19 +364,93 @@ impl AiPanel {
         Ok("请求已提交".to_string())
     }
 
-    /// 输入字符
+    /// 输入字符（在光标位置插入）
     pub fn input_char(&mut self, ch: char) {
-        self.input.push(ch);
+        if self.caret_pos > self.input.len() {
+            self.caret_pos = self.input.len();
+        }
+        self.input.insert(self.caret_pos, ch);
+        self.caret_pos += ch.len_utf8();
     }
 
-    /// 退格
+    /// 在光标位置插入字符串（用于 IME 提交等一次性多字符输入）
+    pub fn insert_str(&mut self, s: &str) {
+        if self.caret_pos > self.input.len() {
+            self.caret_pos = self.input.len();
+        }
+        self.input.insert_str(self.caret_pos, s);
+        self.caret_pos += s.len();
+    }
+
+    /// 退格（删除光标前一个字符）
     pub fn backspace(&mut self) {
-        self.input.pop();
+        if self.caret_pos > 0 {
+            let prev_pos = self.prev_char_boundary();
+            self.input.drain(prev_pos..self.caret_pos);
+            self.caret_pos = prev_pos;
+        }
+    }
+
+    /// 删除（删除光标后一个字符）
+    pub fn delete(&mut self) {
+        if self.caret_pos < self.input.len() {
+            let next_pos = self.next_char_boundary();
+            self.input.drain(self.caret_pos..next_pos);
+        }
+    }
+
+    /// 光标左移
+    pub fn move_caret_left(&mut self) {
+        if self.caret_pos > 0 {
+            self.caret_pos = self.prev_char_boundary();
+        }
+    }
+
+    /// 光标右移
+    pub fn move_caret_right(&mut self) {
+        if self.caret_pos < self.input.len() {
+            self.caret_pos = self.next_char_boundary();
+        }
+    }
+
+    /// 光标移到行首
+    pub fn move_caret_home(&mut self) {
+        self.caret_pos = 0;
+    }
+
+    /// 光标移到行尾
+    pub fn move_caret_end(&mut self) {
+        self.caret_pos = self.input.len();
+    }
+
+    /// 获取前一个字符边界（UTF-8）
+    fn prev_char_boundary(&self) -> usize {
+        let mut pos = self.caret_pos;
+        while pos > 0 {
+            pos -= 1;
+            if self.input.is_char_boundary(pos) {
+                return pos;
+            }
+        }
+        0
+    }
+
+    /// 获取后一个字符边界（UTF-8）
+    fn next_char_boundary(&self) -> usize {
+        let mut pos = self.caret_pos + 1;
+        while pos < self.input.len() {
+            if self.input.is_char_boundary(pos) {
+                return pos;
+            }
+            pos += 1;
+        }
+        self.input.len()
     }
 
     /// 清除输入
     pub fn clear_input(&mut self) {
         self.input.clear();
+        self.caret_pos = 0;
     }
 
     /// 停止当前生成（后台线程在下一次循环检查时退出）
@@ -421,9 +502,11 @@ impl AiPanel {
     /// AI-H01: 轮询后台线程结果，应在渲染循环中调用
     ///
     /// `current_folder` 用于 Edit/Agent 模式解析编辑相对路径，生成正确的 diff 预览。
-    pub fn check_background_result(&mut self, current_folder: Option<&Path>) {
+    /// 返回 `true` 表示本帧生成刚刚完成（done 边沿），调用方应在此时处理 Agent 动作
+    /// （创建/修改文件、执行终端命令）。
+    pub fn check_background_result(&mut self, current_folder: Option<&Path>) -> bool {
         if !self.is_generating {
-            return;
+            return false;
         }
         let delta = {
             if let Ok(mut s) = self.stream_state.lock() {
@@ -438,6 +521,7 @@ impl AiPanel {
                 None
             }
         };
+        let mut just_completed = false;
         if let Some((partial, done, error)) = delta {
             if !partial.is_empty() {
                 self.stick_to_bottom = true;
@@ -454,15 +538,28 @@ impl AiPanel {
             if let Some(err) = error {
                 self.add_assistant_message(err);
                 self.is_generating = false;
-                return;
+                return false;
             }
             if done {
                 self.is_generating = false;
-                if matches!(self.mode, AiMode::Edit | AiMode::Agent) {
+                // 仅 Edit 模式构建差异预览等待用户确认；Agent 模式由
+                // EditorState::process_ai_agent_actions 直接落盘应用。
+                if matches!(self.mode, AiMode::Edit) {
                     self.parse_pending_edits(None, current_folder);
                 }
+                just_completed = true;
             }
         }
+        just_completed
+    }
+
+    /// 从最后一条助手消息中提取文件创建编辑（search 为空的编辑）
+    pub fn extract_file_creates(&self) -> Vec<crate::ai_agent::AiEdit> {
+        let Some(text) = self.last_assistant_text() else {
+            return Vec::new();
+        };
+        let edits = parse_edits(&text, None);
+        edits.into_iter().filter(|e| e.is_create_new()).collect()
     }
 
     /// 解析最后一条助手消息中的编辑标记，生成 diff 预览
@@ -568,6 +665,33 @@ impl AiPanel {
         }
     }
 
+    /// 从代码围栏行提取建议的文件名
+    /// 例如 ```python:main.py 或 ```rust src/main.rs
+    pub fn extract_filename_from_fence(line: &str) -> Option<String> {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("```") {
+            return None;
+        }
+        let after_fence = trimmed.strip_prefix("```")?.trim();
+        // 检查是否包含冒号或空格分隔的文件名
+        if let Some(colon_pos) = after_fence.find(':') {
+            let filename = after_fence[colon_pos + 1..].trim();
+            if !filename.is_empty() && !filename.contains(' ') {
+                return Some(filename.to_string());
+            }
+        }
+        // 检查格式：语言 文件名（如 "python main.py"）
+        let parts: Vec<&str> = after_fence.split_whitespace().collect();
+        if parts.len() >= 2 {
+            // 第二部分看起来像文件名（包含 . 或 /）
+            let candidate = parts[1];
+            if candidate.contains('.') || candidate.contains('/') || candidate.contains("\\") {
+                return Some(candidate.to_string());
+            }
+        }
+        None
+    }
+
     /// 获取最后一条助手消息的纯文本（去掉代码块标记）
     pub fn last_assistant_text(&self) -> Option<String> {
         for msg in self.messages.iter().rev() {
@@ -671,6 +795,7 @@ impl AiPanel {
         self.mode_button_regions.clear();
         self.attachment_chip_regions.clear();
         self.change_action_regions.clear();
+        self.code_save_regions.clear();
     }
 }
 

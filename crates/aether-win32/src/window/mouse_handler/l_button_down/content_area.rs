@@ -261,16 +261,113 @@ pub(super) unsafe fn lbd_right_panel(
     if !(layout.right_panel_visible && right_panel_region.contains(mouse_x, mouse_y)) {
         return None;
     }
-    // C-10: 默认点击 AI 面板非输入框区域时取消输入框聚焦
-    {
-        let mut st = state.borrow_mut();
-        st.ai_panel.input_focused = false;
+    // 先检测输入框和按钮点击，如果命中则直接返回（不取消聚焦）
+    if let Some(result) = lbd_right_panel_apply_input(hwnd, state, mouse_x, mouse_y, &right_panel_region) {
+        return Some(result);
     }
+
+    // 检测代码块保存按钮点击
+    // 简化实现：检测是否在消息区域右侧的代码块保存按钮位置
+    let rp_rel_x = mouse_x - right_panel_region.x;
+    let rp_rel_y = mouse_y - right_panel_region.y;
+    let margin = 10.0f32;
+    let content_right = right_panel_region.width - margin;
+    let save_btn_w = 60.0f32;
+    let save_btn_x = content_right - save_btn_w - 4.0;
+
+    // 遍历消息查找代码块位置
+    {
+        let st = state.borrow();
+        let chat_top = 52.0f32; // 标题 + 分隔线后的起始位置
+        let _chat_bottom = right_panel_region.height - 80.0f32; // 输入框上方
+        let mut msg_y = chat_top - st.ai_panel.scroll_y;
+        let seg_pad = 6.0f32;
+        let msg_gap = 12.0f32;
+        let seg_gap = 4.0f32;
+        let label_h = 14.0f32;
+
+        for msg in &st.ai_panel.messages {
+            if msg.role == crate::ai_panel::AiRole::System {
+                continue;
+            }
+            let is_user = msg.role == crate::ai_panel::AiRole::User;
+            msg_y += label_h;
+
+            // 按 ``` 代码围栏拆分
+            let mut segments: Vec<(bool, String)> = Vec::new();
+            {
+                let mut in_code = false;
+                let mut buf: Vec<&str> = Vec::new();
+                for line in msg.content.lines() {
+                    if line.trim_start().starts_with("```") {
+                        if !buf.is_empty() {
+                            segments.push((in_code, buf.join("\n")));
+                            buf.clear();
+                        }
+                        in_code = !in_code;
+                        continue;
+                    }
+                    buf.push(line);
+                }
+                if !buf.is_empty() {
+                    segments.push((in_code, buf.join("\n")));
+                }
+            }
+
+            for (is_code, seg_text) in &segments {
+                // 估算段高度（简化）
+                let line_count = seg_text.lines().count().max(1);
+                let seg_h = if *is_code {
+                    (line_count as f32 * 16.0 + seg_pad * 2.0).max(30.0)
+                } else {
+                    (line_count as f32 * 16.0 + seg_pad * 2.0).max(20.0)
+                };
+
+                // 检查是否在视口内且是代码块
+                if *is_code && !is_user && !seg_text.is_empty() {
+                    let save_btn_y = msg_y + 2.0;
+                    let save_btn_h = 18.0f32;
+                    if rp_rel_y >= save_btn_y
+                        && rp_rel_y < save_btn_y + save_btn_h
+                        && rp_rel_x >= save_btn_x
+                        && rp_rel_x < save_btn_x + save_btn_w
+                    {
+                        // 点击了保存按钮 - 先收集需要的信息，然后释放借用
+                        let code_to_save = seg_text.clone();
+                        let suggested_name = msg.content.lines()
+                            .find(|l| l.trim_start().starts_with("```") && !l.trim_start().starts_with("```\n"))
+                            .and_then(|l| crate::ai_panel::AiPanel::extract_filename_from_fence(l));
+                        drop(st);
+                        let mut st_mut = state.borrow_mut();
+                        match st_mut.save_ai_code_block(&code_to_save, suggested_name.as_deref()) {
+                            Ok(path) => {
+                                st_mut.status_message = format!("已保存: {}", path.display());
+                            }
+                            Err(e) => {
+                                st_mut.status_message = format!("保存失败: {}", e);
+                            }
+                        }
+                        drop(st_mut);
+                        invalidate_window(hwnd);
+                        return Some(LRESULT(0));
+                    }
+                }
+                msg_y += seg_h + seg_gap;
+            }
+            msg_y += msg_gap;
+        }
+    }
+
     // 模式切换 / 上下文附件 / 变更列表按钮（基于渲染时注册的绝对坐标命中区）
     if lbd_right_panel_ai_controls(hwnd, state, mouse_x, mouse_y).is_some() {
         return Some(LRESULT(0));
     }
-    lbd_right_panel_apply_input(hwnd, state, mouse_x, mouse_y, &right_panel_region)
+    // C-10: 点击 AI 面板非输入框/按钮区域时取消输入框聚焦
+    {
+        let mut st = state.borrow_mut();
+        st.ai_panel.input_focused = false;
+    }
+    None
 }
 
 /// AI 面板：模式切换 / 上下文附件切换 / 变更列表接受·拒绝·预览。
@@ -350,72 +447,25 @@ unsafe fn lbd_right_panel_apply_input(
     let rp_rel_x = mouse_x - right_panel_region.x;
     let rp_rel_y = mouse_y - right_panel_region.y;
     let margin = 10.0;
-    // 停止 / 复制 / 重新生成 按钮（浮层行，与渲染坐标对齐）
-    let act_y = right_panel_region.height - 78.0;
-    let act_h = 26.0;
-    if rp_rel_y >= act_y && rp_rel_y < act_y + act_h {
-        let is_gen = state.borrow().ai_panel.is_generating;
-        if is_gen {
-            if rp_rel_x >= margin && rp_rel_x < margin + 96.0 {
-                state.borrow_mut().ai_panel.stop_generation();
-                invalidate_window(hwnd);
-                return Some(LRESULT(0));
-            }
-        } else {
-            let has_assistant = state
-                .borrow()
-                .ai_panel
-                .messages
-                .iter()
-                .any(|m| m.role == crate::ai_panel::AiRole::Assistant);
-            if has_assistant {
-                let copy_w = 56.0;
-                let regen_x = margin + copy_w + 6.0;
-                let regen_w = 84.0;
-                if rp_rel_x >= margin && rp_rel_x < margin + copy_w {
-                    state.borrow_mut().copy_ai_last_response();
-                    invalidate_window(hwnd);
-                    return Some(LRESULT(0));
-                }
-                if rp_rel_x >= regen_x && rp_rel_x < regen_x + regen_w {
-                    let settings = state.borrow().app_settings.ai.clone();
-                    state.borrow_mut().ai_panel.regenerate(&settings);
-                    let _ = SetTimer(hwnd, AI_TIMER_ID, AI_REFRESH_MS, None);
-                    invalidate_window(hwnd);
-                    return Some(LRESULT(0));
-                }
-            }
-        }
-    }
-    // Apply 按钮
-    let apply_y = right_panel_region.height - 76.0;
-    let apply_btn_w = 80.0;
-    let apply_btn_h = 24.0;
-    let apply_btn_x = right_panel_region.width - margin - apply_btn_w;
-    if rp_rel_x >= apply_btn_x
-        && rp_rel_x < apply_btn_x + apply_btn_w
-        && rp_rel_y >= apply_y
-        && rp_rel_y < apply_y + apply_btn_h
-    {
-        let mut st = state.borrow_mut();
-        if let Some(code) = st.ai_panel.extract_last_code_block() {
-            st.apply_ai_code(&code);
-            st.status_message = "AI 代码已应用到编辑器".to_string();
-        }
-        drop(st);
-        invalidate_window(hwnd);
-        return Some(LRESULT(0));
-    }
-    // 输入框
-    let input_y = right_panel_region.height - 40.0;
-    if rp_rel_y >= input_y
-        && rp_rel_y < input_y + 32.0
-        && rp_rel_x >= margin
-        && rp_rel_x < right_panel_region.width - margin
+    let input_margin = 8.0;
+
+    // ===== 输入框区域（新设计：参考图样式，总高度 80.0）=====
+    let input_area_h = 80.0f32;
+    let input_y = right_panel_region.height - input_area_h;
+    let text_input_y = input_y + 6.0; // 中间文本输入区域
+    let text_input_h = 36.0f32;
+
+    // 检测是否在输入框区域内（先检测输入框，避免被其他按钮逻辑覆盖）
+    if rp_rel_y >= text_input_y
+        && rp_rel_y < text_input_y + text_input_h
+        && rp_rel_x >= margin + input_margin
+        && rp_rel_x < right_panel_region.width - margin - input_margin
     {
         let mut st = state.borrow_mut();
         st.ai_panel.input_focused = true;
         st.ai_panel.caret_visible = true;
+        // 点击输入框时将光标移到末尾
+        st.ai_panel.caret_pos = st.ai_panel.input.len();
         let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(
             hwnd,
             crate::window::CARET_TIMER_ID,
@@ -426,6 +476,62 @@ unsafe fn lbd_right_panel_apply_input(
         invalidate_window(hwnd);
         return Some(LRESULT(0));
     }
+
+    // 底部工具栏按钮检测（发送按钮等）
+    let toolbar_sep_y = input_y + input_area_h - 34.0;
+    let toolbar_y = toolbar_sep_y + 4.0;
+    let _toolbar_h = 26.0f32;
+
+    // 发送按钮（蓝色背景，最右侧）
+    let send_btn_size = 24.0f32;
+    let right_btn_area_x = right_panel_region.width - margin - input_margin;
+    let send_btn_x = right_btn_area_x - send_btn_size;
+    let send_btn_y = toolbar_y + 1.0;
+    if rp_rel_x >= send_btn_x
+        && rp_rel_x < send_btn_x + send_btn_size
+        && rp_rel_y >= send_btn_y
+        && rp_rel_y < send_btn_y + send_btn_size
+    {
+        // 发送消息（使用当前模式 + 编辑器上下文，与 Enter 键行为一致，
+        // 以便 Agent 模式收到工具指令并输出 FILE/RUN 标记）
+        let mut st = state.borrow_mut();
+        let settings = st.app_settings.ai.clone();
+        let mode = st.ai_panel.mode;
+        let attachments = st.ai_panel.attachments.clone();
+        let context = st.gather_context(&attachments);
+        if let Err(e) = st
+            .ai_panel
+            .send_message_with_prepared_context(&settings, context, mode)
+        {
+            st.status_message = e;
+        } else {
+            st.status_message = "AI 请求已发送".to_string();
+            let _ = SetTimer(hwnd, AI_TIMER_ID, AI_REFRESH_MS, None);
+        }
+        st.ai_panel.input_focused = false;
+        drop(st);
+        invalidate_window(hwnd);
+        return Some(LRESULT(0));
+    }
+
+    // 停止生成按钮（当正在生成时显示）
+    let is_gen = state.borrow().ai_panel.is_generating;
+    if is_gen {
+        let stop_w = 96.0f32;
+        let stop_x = margin + input_margin;
+        let stop_y = input_y + 4.0; // 在输入框卡片上方区域
+        let stop_h = 26.0f32;
+        if rp_rel_x >= stop_x
+            && rp_rel_x < stop_x + stop_w
+            && rp_rel_y >= stop_y
+            && rp_rel_y < stop_y + stop_h
+        {
+            state.borrow_mut().ai_panel.stop_generation();
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        }
+    }
+
     None
 }
 
