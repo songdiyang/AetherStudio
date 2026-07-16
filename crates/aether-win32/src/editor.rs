@@ -634,20 +634,17 @@ impl EditorState {
         if self.logo_bitmap.is_some() {
             return;
         }
-        let png_path = std::path::Path::new(
-            env!("CARGO_MANIFEST_DIR"),
-        ).join("resources/app_icons/source/aether-512.png");
+        let png_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/app_icons/source/aether-512.png");
         match std::fs::read(&png_path) {
-            Ok(png_bytes) => {
-                match crate::bitmap_loader::load_png_to_bitmap(target, &png_bytes) {
-                    Ok(bitmap) => {
-                        self.logo_bitmap = Some(bitmap);
-                    }
-                    Err(e) => {
-                        tracing::warn!("加载 logo 位图失败: {}", e);
-                    }
+            Ok(png_bytes) => match crate::bitmap_loader::load_png_to_bitmap(target, &png_bytes) {
+                Ok(bitmap) => {
+                    self.logo_bitmap = Some(bitmap);
                 }
-            }
+                Err(e) => {
+                    tracing::warn!("加载 logo 位图失败: {}", e);
+                }
+            },
             Err(e) => {
                 tracing::warn!("读取 logo 文件失败: {:?} - {}", png_path, e);
             }

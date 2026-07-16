@@ -427,7 +427,10 @@ pub(super) unsafe fn lbd_settings_page(
     }
 
     // 2. 下拉触发区 → 开/关（以当前状态切换）
-    if let Some(kind) = st.settings_panel.hit_test_dropdown_trigger(mouse_x, mouse_y) {
+    if let Some(kind) = st
+        .settings_panel
+        .hit_test_dropdown_trigger(mouse_x, mouse_y)
+    {
         st.settings_panel.open_dropdown = if st.settings_panel.open_dropdown == Some(kind) {
             None
         } else {

@@ -572,12 +572,8 @@ impl SettingsPanel {
     pub fn model_dropdown_options(&self) -> Vec<(String, String)> {
         // 返回当前服务商的模型列表
         match self.provider.as_str() {
-            "kimi" => vec![
-                ("kimi-code".to_string(), "kimi-code".to_string()),
-            ],
-            "deepseek" => vec![
-                ("deepseek-v4-pro".to_string(), "deepseek-v4-pro".to_string()),
-            ],
+            "kimi" => vec![("kimi-code".to_string(), "kimi-code".to_string())],
+            "deepseek" => vec![("deepseek-v4-pro".to_string(), "deepseek-v4-pro".to_string())],
             _ => vec![(self.model.clone(), self.model.clone())],
         }
     }

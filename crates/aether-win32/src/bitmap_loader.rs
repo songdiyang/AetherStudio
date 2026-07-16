@@ -61,12 +61,7 @@ pub fn load_png_to_bitmap(
                 tracing::warn!(error = ?e, "BGRA8 PREMULTIPLIED 失败，尝试默认属性");
                 let default_props = D2D1_BITMAP_PROPERTIES::default();
                 target
-                    .CreateBitmap(
-                        size,
-                        Some(bgra.as_ptr() as *const _),
-                        pitch,
-                        &default_props,
-                    )
+                    .CreateBitmap(size, Some(bgra.as_ptr() as *const _), pitch, &default_props)
                     .map_err(|e2| {
                         tracing::error!(error = ?e2, "D2D CreateBitmap 默认属性也失败");
                         format!("D2D CreateBitmap 失败: {:?}", e2)

@@ -6804,137 +6804,136 @@ impl EditorState {
 
             // Base URL（仅自定义模式显示，预制模式自动填充）
             if is_custom {
-                let baseurl_label: Vec<u16> =
-                    "基础地址".encode_utf16().chain(Some(0)).collect();
-            let baseurl_label_rect = D2D_RECT_F {
-                left: x + margin,
-                top: cy,
-                right: x + width - margin,
-                bottom: cy + label_h,
-            };
-            target.DrawText(
-                &baseurl_label,
-                &label_format,
-                &baseurl_label_rect,
-                text_brush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-            cy += label_h;
-            let baseurl_bg = color_f(0.18, 0.18, 0.18, 1.0);
-            let baseurl_bg_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &baseurl_bg)
-                .unwrap();
-            let baseurl_border = if self.settings_panel.active_field
-                == Some(crate::settings::SettingsField::BaseUrl)
-            {
-                color_f(0.0, 0.47, 0.83, 1.0)
-            } else {
-                color_f(0.3, 0.3, 0.3, 1.0)
-            };
-            let baseurl_border_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &baseurl_border)
-                .unwrap();
-            let baseurl_rect = D2D_RECT_F {
-                left: x + margin,
-                top: cy,
-                right: x + margin + input_w,
-                bottom: cy + input_h,
-            };
-            target.FillRectangle(&baseurl_rect, &baseurl_bg_brush);
-            let border_top = D2D_RECT_F {
-                left: x + margin,
-                top: cy,
-                right: x + margin + input_w,
-                bottom: cy + 1.0,
-            };
-            let border_bottom = D2D_RECT_F {
-                left: x + margin,
-                top: cy + input_h - 1.0,
-                right: x + margin + input_w,
-                bottom: cy + input_h,
-            };
-            let border_left = D2D_RECT_F {
-                left: x + margin,
-                top: cy,
-                right: x + margin + 1.0,
-                bottom: cy + input_h,
-            };
-            let border_right = D2D_RECT_F {
-                left: x + margin + input_w - 1.0,
-                top: cy,
-                right: x + margin + input_w,
-                bottom: cy + input_h,
-            };
-            target.FillRectangle(&border_top, &baseurl_border_brush);
-            target.FillRectangle(&border_bottom, &baseurl_border_brush);
-            target.FillRectangle(&border_left, &baseurl_border_brush);
-            target.FillRectangle(&border_right, &baseurl_border_brush);
-            let baseurl_text: Vec<u16> = self
-                .settings_panel
-                .base_url
-                .encode_utf16()
-                .chain(Some(0))
-                .collect();
-            let baseurl_text_rect = D2D_RECT_F {
-                left: x + margin + 6.0,
-                top: cy,
-                right: x + margin + input_w - 6.0,
-                bottom: cy + input_h,
-            };
-            target.DrawText(
-                &baseurl_text,
-                &input_format,
-                &baseurl_text_rect,
-                text_brush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-            self.settings_panel.add_field_region(
-                crate::settings::SettingsField::BaseUrl,
-                x + margin,
-                cy,
-                input_w,
-                input_h,
-            );
-            cy += input_h + gap;
+                let baseurl_label: Vec<u16> = "基础地址".encode_utf16().chain(Some(0)).collect();
+                let baseurl_label_rect = D2D_RECT_F {
+                    left: x + margin,
+                    top: cy,
+                    right: x + width - margin,
+                    bottom: cy + label_h,
+                };
+                target.DrawText(
+                    &baseurl_label,
+                    &label_format,
+                    &baseurl_label_rect,
+                    text_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+                cy += label_h;
+                let baseurl_bg = color_f(0.18, 0.18, 0.18, 1.0);
+                let baseurl_bg_brush = self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &baseurl_bg)
+                    .unwrap();
+                let baseurl_border = if self.settings_panel.active_field
+                    == Some(crate::settings::SettingsField::BaseUrl)
+                {
+                    color_f(0.0, 0.47, 0.83, 1.0)
+                } else {
+                    color_f(0.3, 0.3, 0.3, 1.0)
+                };
+                let baseurl_border_brush = self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &baseurl_border)
+                    .unwrap();
+                let baseurl_rect = D2D_RECT_F {
+                    left: x + margin,
+                    top: cy,
+                    right: x + margin + input_w,
+                    bottom: cy + input_h,
+                };
+                target.FillRectangle(&baseurl_rect, &baseurl_bg_brush);
+                let border_top = D2D_RECT_F {
+                    left: x + margin,
+                    top: cy,
+                    right: x + margin + input_w,
+                    bottom: cy + 1.0,
+                };
+                let border_bottom = D2D_RECT_F {
+                    left: x + margin,
+                    top: cy + input_h - 1.0,
+                    right: x + margin + input_w,
+                    bottom: cy + input_h,
+                };
+                let border_left = D2D_RECT_F {
+                    left: x + margin,
+                    top: cy,
+                    right: x + margin + 1.0,
+                    bottom: cy + input_h,
+                };
+                let border_right = D2D_RECT_F {
+                    left: x + margin + input_w - 1.0,
+                    top: cy,
+                    right: x + margin + input_w,
+                    bottom: cy + input_h,
+                };
+                target.FillRectangle(&border_top, &baseurl_border_brush);
+                target.FillRectangle(&border_bottom, &baseurl_border_brush);
+                target.FillRectangle(&border_left, &baseurl_border_brush);
+                target.FillRectangle(&border_right, &baseurl_border_brush);
+                let baseurl_text: Vec<u16> = self
+                    .settings_panel
+                    .base_url
+                    .encode_utf16()
+                    .chain(Some(0))
+                    .collect();
+                let baseurl_text_rect = D2D_RECT_F {
+                    left: x + margin + 6.0,
+                    top: cy,
+                    right: x + margin + input_w - 6.0,
+                    bottom: cy + input_h,
+                };
+                target.DrawText(
+                    &baseurl_text,
+                    &input_format,
+                    &baseurl_text_rect,
+                    text_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+                self.settings_panel.add_field_region(
+                    crate::settings::SettingsField::BaseUrl,
+                    x + margin,
+                    cy,
+                    input_w,
+                    input_h,
+                );
+                cy += input_h + gap;
             } // end if is_custom
 
             // Model 下拉（仅自定义模式显示，预制模式自动填充）
             if is_custom {
-            let model_value = if self.settings_panel.model.is_empty() {
-                "选择模型".to_string()
-            } else {
-                self.settings_panel.model.clone()
-            };
-            let model_items: Vec<String> = self
-                .settings_panel
-                .model_dropdown_options()
-                .into_iter()
-                .map(|(id, name)| name)
-                .collect();
-            cy = self.render_settings_dropdown(
-                target,
-                x,
-                cy,
-                margin,
-                input_w,
-                label_h,
-                input_h,
-                gap,
-                "模型",
-                &model_value,
-                true,
-                crate::settings::SettingsDropdownKind::Model,
-                model_items,
-                &label_format,
-                &input_format,
-                text_brush,
-            );
+                let model_value = if self.settings_panel.model.is_empty() {
+                    "选择模型".to_string()
+                } else {
+                    self.settings_panel.model.clone()
+                };
+                let model_items: Vec<String> = self
+                    .settings_panel
+                    .model_dropdown_options()
+                    .into_iter()
+                    .map(|(id, name)| name)
+                    .collect();
+                cy = self.render_settings_dropdown(
+                    target,
+                    x,
+                    cy,
+                    margin,
+                    input_w,
+                    label_h,
+                    input_h,
+                    gap,
+                    "模型",
+                    &model_value,
+                    true,
+                    crate::settings::SettingsDropdownKind::Model,
+                    model_items,
+                    &label_format,
+                    &input_format,
+                    text_brush,
+                );
             } // end if is_custom
 
             // Temperature
