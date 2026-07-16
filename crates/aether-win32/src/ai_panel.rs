@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use aether_ai::{AiClient, AiStreamEvent};
@@ -159,6 +160,14 @@ pub struct AiPanel {
     pub show_diff_view: bool,
     /// 变更列表中当前选中的索引
     pub selected_change_index: usize,
+    /// 上一帧渲染的消息内容总高度（用于滚动条与自动滚底）
+    pub content_height: f32,
+    /// 是否吸附底部：新消息/流式到达时自动滚动到底部
+    pub stick_to_bottom: bool,
+    /// 输入框光标可见状态（闪烁，由 CARET_TIMER 切换）
+    pub caret_visible: bool,
+    /// 停止生成标志：后台流式线程在下一次循环检查时退出
+    pub should_stop: Arc<AtomicBool>,
 }
 
 impl AiPanel {
@@ -185,6 +194,10 @@ impl AiPanel {
             diff_view: DiffView::new(),
             show_diff_view: false,
             selected_change_index: 0,
+            content_height: 0.0,
+            stick_to_bottom: true,
+            caret_visible: false,
+            should_stop: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -194,6 +207,7 @@ impl AiPanel {
             role: AiRole::User,
             content,
         });
+        self.stick_to_bottom = true;
     }
 
     /// 添加助手消息
@@ -202,6 +216,7 @@ impl AiPanel {
             role: AiRole::Assistant,
             content,
         });
+        self.stick_to_bottom = true;
     }
 
     /// 发送消息（AI-H01: 非阻塞 — HTTP 调用在后台线程执行，结果通过 stream_state 流式返回）
@@ -258,6 +273,7 @@ impl AiPanel {
         self.add_user_message(user_input.clone());
         self.input.clear();
         self.is_generating = true;
+        self.should_stop.store(false, Ordering::SeqCst);
         self.clear_pending_changes();
         // 重置流式状态
         if let Ok(mut s) = self.stream_state.lock() {
@@ -289,12 +305,19 @@ impl AiPanel {
         let context = context.unwrap_or_default();
         let messages = build_chat_prompt(&settings, &context, &user_input, mode);
         let stream_state = Arc::clone(&self.stream_state);
+        let should_stop = Arc::clone(&self.should_stop);
 
         std::thread::spawn(move || {
             let client = AiClient::new(&settings);
             match client.chat_completion_stream(&messages) {
                 Ok(rx) => {
                     while let Ok(event) = rx.recv() {
+                        if should_stop.load(Ordering::SeqCst) {
+                            if let Ok(mut s) = stream_state.lock() {
+                                s.done = true;
+                            }
+                            break;
+                        }
                         match event {
                             AiStreamEvent::Token(token) => {
                                 if let Ok(mut s) = stream_state.lock() {
@@ -346,6 +369,38 @@ impl AiPanel {
         self.input.clear();
     }
 
+    /// 停止当前生成（后台线程在下一次循环检查时退出）
+    pub fn stop_generation(&mut self) {
+        self.should_stop.store(true, Ordering::SeqCst);
+        self.is_generating = false;
+        if let Ok(mut s) = self.stream_state.lock() {
+            s.done = true;
+        }
+    }
+
+    /// 重新生成：移除末尾助手消息，用最近一条用户消息重新发送
+    pub fn regenerate(&mut self, settings: &AiSettings) {
+        if self.is_generating {
+            return;
+        }
+        while matches!(self.messages.last(), Some(m) if m.role == AiRole::Assistant) {
+            self.messages.pop();
+        }
+        let last_user = self
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == AiRole::User)
+            .map(|m| m.content.clone());
+        if let Some(input) = last_user {
+            if matches!(self.messages.last(), Some(m) if m.role == AiRole::User) {
+                self.messages.pop();
+            }
+            self.input = input;
+            let _ = self.send_message(settings);
+        }
+    }
+
     /// 清除所有对话
     pub fn clear_history(&mut self) {
         self.messages.clear();
@@ -382,6 +437,7 @@ impl AiPanel {
         };
         if let Some((partial, done, error)) = delta {
             if !partial.is_empty() {
+                self.stick_to_bottom = true;
                 if let Some(last) = self.messages.last_mut() {
                     if last.role == AiRole::Assistant {
                         last.content.push_str(&partial);
@@ -613,4 +669,97 @@ impl AiPanel {
         self.attachment_chip_regions.clear();
         self.change_action_regions.clear();
     }
+}
+
+/// 解析段落内的轻量 Markdown：标题(`#`/`##`/`###`)、无序列表(`-`/`*`/`+`)、粗体(`**`)。
+///
+/// 返回 `(清洗后的 UTF-16 文本, 粗体范围, 标题范围[start,len,字号])`，
+/// 范围以 UTF-16 code unit 为单位，直接供 `IDWriteTextLayout` 的 range 样式使用。
+pub fn parse_markdown_segment(text: &str) -> (Vec<u16>, Vec<(u32, u32)>, Vec<(u32, u32, f32)>) {
+    let mut clean: Vec<u16> = Vec::new();
+    let mut bolds: Vec<(u32, u32)> = Vec::new();
+    let mut headings: Vec<(u32, u32, f32)> = Vec::new();
+
+    for (li, line) in text.lines().enumerate() {
+        if li > 0 {
+            clean.push(b'\n' as u16);
+        }
+        let line_start = clean.len() as u32;
+
+        // 行首标题标记
+        let trimmed = line.trim_start();
+        let (mut content, heading_size): (&str, Option<f32>) =
+            if let Some(rest) = trimmed.strip_prefix("### ") {
+                (rest, Some(13.5))
+            } else if let Some(rest) = trimmed.strip_prefix("## ") {
+                (rest, Some(15.0))
+            } else if let Some(rest) = trimmed.strip_prefix("# ") {
+                (rest, Some(17.0))
+            } else {
+                (line, None)
+            };
+
+        // 行首无序列表标记（非标题时），替换为圆点
+        if heading_size.is_none() {
+            let t = content.trim_start();
+            if let Some(rest) = t
+                .strip_prefix("- ")
+                .or_else(|| t.strip_prefix("* "))
+                .or_else(|| t.strip_prefix("+ "))
+            {
+                clean.push(0x2022); // •
+                clean.push(b' ' as u16);
+                content = rest;
+            }
+        }
+
+        // 行内粗体 **text**
+        let chars: Vec<char> = content.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
+                if let Some(end) = find_double_star(&chars, i + 2) {
+                    let b_start = clean.len() as u32;
+                    for &c in &chars[i + 2..end] {
+                        push_utf16(&mut clean, c);
+                    }
+                    let b_len = clean.len() as u32 - b_start;
+                    if b_len > 0 {
+                        bolds.push((b_start, b_len));
+                    }
+                    i = end + 2;
+                    continue;
+                }
+            }
+            push_utf16(&mut clean, chars[i]);
+            i += 1;
+        }
+
+        if let Some(size) = heading_size {
+            let line_len = clean.len() as u32 - line_start;
+            if line_len > 0 {
+                headings.push((line_start, line_len, size));
+            }
+        }
+    }
+
+    (clean, bolds, headings)
+}
+
+fn push_utf16(buf: &mut Vec<u16>, c: char) {
+    let mut tmp = [0u16; 2];
+    for u in c.encode_utf16(&mut tmp) {
+        buf.push(*u);
+    }
+}
+
+fn find_double_star(chars: &[char], from: usize) -> Option<usize> {
+    let mut i = from;
+    while i + 1 < chars.len() {
+        if chars[i] == '*' && chars[i + 1] == '*' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }

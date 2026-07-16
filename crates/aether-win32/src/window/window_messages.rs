@@ -106,15 +106,36 @@ unsafe fn on_timer_caret(hwnd: HWND) -> LRESULT {
     if let Some(state) = get_and_set_state(hwnd) {
         let mut st = state.borrow_mut();
         let mut need_invalidate = false;
+        let mut any_active = false;
         if st.new_project_dialog.visible {
             st.new_project_dialog.caret_visible = !st.new_project_dialog.caret_visible;
             need_invalidate = true;
+            any_active = true;
         }
         if st.file_tree_input.is_some() {
             if let Some(input) = st.file_tree_input.as_mut() {
                 input.caret_visible = !input.caret_visible;
             }
             need_invalidate = true;
+            any_active = true;
+        }
+        // AI 助手输入框光标闪烁（右侧面板）
+        if st.ai_panel.input_focused {
+            st.ai_panel.caret_visible = !st.ai_panel.caret_visible;
+            let rp = st.layout.right_panel_region().clone();
+            st.dirty_tracker.mark_region(
+                rp.x,
+                rp.y,
+                rp.width,
+                rp.height,
+                crate::dirty_rect::DirtyRegionType::RightPanel,
+            );
+            need_invalidate = true;
+            any_active = true;
+        }
+        // 无任何活跃输入时停止定时器，避免空转
+        if !any_active {
+            let _ = KillTimer(hwnd, CARET_TIMER_ID);
         }
         if need_invalidate {
             let region = st.layout.sidebar_region().clone();

@@ -350,6 +350,43 @@ unsafe fn lbd_right_panel_apply_input(
     let rp_rel_x = mouse_x - right_panel_region.x;
     let rp_rel_y = mouse_y - right_panel_region.y;
     let margin = 10.0;
+    // 停止 / 复制 / 重新生成 按钮（浮层行，与渲染坐标对齐）
+    let act_y = right_panel_region.height - 78.0;
+    let act_h = 26.0;
+    if rp_rel_y >= act_y && rp_rel_y < act_y + act_h {
+        let is_gen = state.borrow().ai_panel.is_generating;
+        if is_gen {
+            if rp_rel_x >= margin && rp_rel_x < margin + 96.0 {
+                state.borrow_mut().ai_panel.stop_generation();
+                invalidate_window(hwnd);
+                return Some(LRESULT(0));
+            }
+        } else {
+            let has_assistant = state
+                .borrow()
+                .ai_panel
+                .messages
+                .iter()
+                .any(|m| m.role == crate::ai_panel::AiRole::Assistant);
+            if has_assistant {
+                let copy_w = 56.0;
+                let regen_x = margin + copy_w + 6.0;
+                let regen_w = 84.0;
+                if rp_rel_x >= margin && rp_rel_x < margin + copy_w {
+                    state.borrow_mut().copy_ai_last_response();
+                    invalidate_window(hwnd);
+                    return Some(LRESULT(0));
+                }
+                if rp_rel_x >= regen_x && rp_rel_x < regen_x + regen_w {
+                    let settings = state.borrow().app_settings.ai.clone();
+                    state.borrow_mut().ai_panel.regenerate(&settings);
+                    let _ = SetTimer(hwnd, AI_TIMER_ID, AI_REFRESH_MS, None);
+                    invalidate_window(hwnd);
+                    return Some(LRESULT(0));
+                }
+            }
+        }
+    }
     // Apply 按钮
     let apply_y = right_panel_region.height - 76.0;
     let apply_btn_w = 80.0;
@@ -378,6 +415,13 @@ unsafe fn lbd_right_panel_apply_input(
     {
         let mut st = state.borrow_mut();
         st.ai_panel.input_focused = true;
+        st.ai_panel.caret_visible = true;
+        let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(
+            hwnd,
+            crate::window::CARET_TIMER_ID,
+            530,
+            None,
+        );
         drop(st);
         invalidate_window(hwnd);
         return Some(LRESULT(0));

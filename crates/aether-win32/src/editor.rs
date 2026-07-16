@@ -2790,12 +2790,12 @@ impl EditorState {
                 self.git.scroll_y = (self.git.scroll_y + delta_y).clamp(0.0, max_scroll);
             }
             crate::layout::SidebarContent::AiAssistantPanel => {
-                let msg_height = 60.0;
-                let total_height = self.ai_panel.messages.len() as f32 * msg_height + 200.0;
-                let sidebar_region = self.layout.sidebar_region();
-                let visible_height = sidebar_region.height;
-                let max_scroll = (total_height - visible_height).max(0.0);
-                self.ai_panel.scroll_y = (self.ai_panel.scroll_y + delta_y).clamp(0.0, max_scroll);
+                // 使用渲染实测的最大滚动量（消息换行后高度可变，固定估算会失真）
+                let max_scroll = self.ai_panel.content_height;
+                let new_scroll = (self.ai_panel.scroll_y + delta_y).clamp(0.0, max_scroll);
+                self.ai_panel.scroll_y = new_scroll;
+                // 手动滚离底部则取消吸附；回到底部则恢复吸附
+                self.ai_panel.stick_to_bottom = new_scroll >= max_scroll - 1.0;
             }
             _ => {}
         }
@@ -6400,6 +6400,15 @@ impl EditorState {
         self.find_visible = false;
         self.replace_visible = false;
         self.find_focus = FindReplaceFocus::None;
+    }
+
+    /// 复制最后一条 AI 回复到剪贴板
+    pub fn copy_ai_last_response(&mut self) {
+        if let Some(t) = self.ai_panel.last_assistant_text() {
+            if Self::set_clipboard_text(&t) {
+                self.status_message = "已复制 AI 回复".to_string();
+            }
+        }
     }
 
     /// 把当前文件的 LSP 诊断发送给 AI 修复

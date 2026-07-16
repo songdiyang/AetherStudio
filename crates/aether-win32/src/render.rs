@@ -4830,144 +4830,196 @@ impl EditorState {
             // ===== 聊天消息区域 =====
             let chat_top = cy;
             let chat_bottom = y + height - 52.0;
-            let chat_height = chat_bottom - chat_top;
-
-            // 消息滚动区域
-            let mut msg_y = chat_top - self.ai_panel.scroll_y;
-            let line_h = 16.0f32;
-            let max_lines_per_msg = ((chat_height - 16.0) / line_h).max(3.0) as usize;
+            // 消息区域（自动换行 + 完整显示 + 代码块分段，不再按 80 字符截断）
+            let content_left = x + margin;
+            let content_right = x + width - margin;
+            let seg_pad = 6.0f32;
+            let label_h = 14.0f32;
+            let msg_gap = 12.0f32;
+            let seg_gap = 4.0f32;
+            // 自动滚到底：吸附底部时对齐到最新消息（用上一帧的最大滚动量）
+            if self.ai_panel.stick_to_bottom {
+                self.ai_panel.scroll_y = self.ai_panel.content_height;
+            }
+            let dwrite = self.text_renderer.dwrite_factory();
+            let content_start_y = chat_top - self.ai_panel.scroll_y;
+            let mut msg_y = content_start_y;
 
             for msg in &self.ai_panel.messages {
-                if msg_y > chat_bottom {
-                    break;
-                }
-                if msg_y + line_h < chat_top {
-                    msg_y += line_h;
+                if msg.role == crate::ai_panel::AiRole::System {
                     continue;
                 }
-
                 let is_user = msg.role == crate::ai_panel::AiRole::User;
-                let is_system = msg.role == crate::ai_panel::AiRole::System;
 
-                // 跳过系统消息的渲染（只保留作为上下文）
-                if is_system {
-                    continue;
-                }
-
+                // 角色标签
                 let label = if is_user { "你" } else { "AI" };
                 let label_color: &ID2D1SolidColorBrush =
                     if is_user { &accent_brush } else { &green_brush };
-                let label_wide: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
-                let label_rect = D2D_RECT_F {
-                    left: x + margin + 4.0,
-                    top: msg_y,
-                    right: x + width - margin,
-                    bottom: msg_y + 14.0,
-                };
-                target.DrawText(
-                    &label_wide,
-                    &small_format,
-                    &label_rect,
-                    label_color,
-                    D2D1_DRAW_TEXT_OPTIONS_NONE,
-                    DWRITE_MEASURING_MODE_NATURAL,
-                );
-                msg_y += 14.0;
+                if msg_y + label_h >= chat_top && msg_y <= chat_bottom {
+                    let label_wide: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
+                    let label_rect = D2D_RECT_F {
+                        left: content_left + 4.0,
+                        top: msg_y,
+                        right: content_right,
+                        bottom: msg_y + label_h,
+                    };
+                    target.DrawText(
+                        &label_wide,
+                        &small_format,
+                        &label_rect,
+                        label_color,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
+                msg_y += label_h;
 
-                // 消息内容
-                let content_lines: Vec<&str> = msg.content.lines().collect();
-                let visible_lines = content_lines.len().min(max_lines_per_msg);
-                let msg_h = visible_lines as f32 * line_h + 10.0;
+                // 按 ``` 代码围栏拆分为普通段 / 代码段
+                let mut segments: Vec<(bool, String)> = Vec::new();
+                {
+                    let mut in_code = false;
+                    let mut buf: Vec<&str> = Vec::new();
+                    for line in msg.content.lines() {
+                        if line.trim_start().starts_with("```") {
+                            if !buf.is_empty() {
+                                segments.push((in_code, buf.join("\n")));
+                                buf.clear();
+                            }
+                            in_code = !in_code;
+                            continue;
+                        }
+                        buf.push(line);
+                    }
+                    if !buf.is_empty() {
+                        segments.push((in_code, buf.join("\n")));
+                    }
+                }
+                if segments.is_empty() {
+                    segments.push((false, String::new()));
+                }
 
-                if msg_y + msg_h > chat_top && msg_y < chat_bottom {
-                    let bubble_bg: &ID2D1SolidColorBrush = if is_user {
+                for (is_code, seg_text) in &segments {
+                    let inner_w = if *is_code {
+                        (content_right - content_left - seg_pad * 2.0 - 8.0).max(20.0)
+                    } else {
+                        (content_right - content_left - seg_pad * 2.0).max(20.0)
+                    };
+
+                    // 普通段解析轻量 Markdown；代码段保持原文
+                    let (layout_wide, bolds, headings): (
+                        Vec<u16>,
+                        Vec<(u32, u32)>,
+                        Vec<(u32, u32, f32)>,
+                    ) = if *is_code {
+                        (seg_text.encode_utf16().collect(), Vec::new(), Vec::new())
+                    } else {
+                        crate::ai_panel::parse_markdown_segment(seg_text)
+                    };
+                    let layout =
+                        match dwrite.CreateTextLayout(&layout_wide, &msg_format, inner_w, 100000.0)
+                        {
+                            Ok(l) => l,
+                            Err(_) => {
+                                msg_y += 14.0 + seg_pad * 2.0 + seg_gap;
+                                continue;
+                            }
+                        };
+                    if !*is_code {
+                        for (bs, bl) in &bolds {
+                            let _ = layout.SetFontWeight(
+                                DWRITE_FONT_WEIGHT_BOLD,
+                                windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_RANGE {
+                                    startPosition: *bs,
+                                    length: *bl,
+                                },
+                            );
+                        }
+                        for (hs, hl, hsize) in &headings {
+                            let r = windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_RANGE {
+                                startPosition: *hs,
+                                length: *hl,
+                            };
+                            let _ = layout.SetFontSize(*hsize, r);
+                            let _ = layout.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, r);
+                        }
+                    }
+                    let mut m =
+                        windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_METRICS::default();
+                    let text_h = if layout.GetMetrics(&mut m).is_ok() {
+                        m.height.max(14.0)
+                    } else {
+                        14.0
+                    };
+                    let seg_h = text_h + seg_pad * 2.0;
+
+                    // 完全在视口外：仅累加高度，跳过绘制
+                    if msg_y + seg_h < chat_top || msg_y > chat_bottom {
+                        msg_y += seg_h + seg_gap;
+                        continue;
+                    }
+
+                    let seg_left = if *is_code {
+                        content_left + 4.0
+                    } else {
+                        content_left
+                    };
+                    let seg_bg: &ID2D1SolidColorBrush = if *is_code {
+                        &code_bg_brush
+                    } else if is_user {
                         &user_bg_brush
                     } else {
                         &assistant_bg_brush
                     };
-                    let bubble_rect = D2D_RECT_F {
-                        left: x + margin,
+                    let seg_rect = D2D_RECT_F {
+                        left: seg_left,
                         top: msg_y,
-                        right: x + width - margin,
-                        bottom: msg_y + msg_h,
+                        right: content_right,
+                        bottom: msg_y + seg_h,
                     };
-                    target.FillRectangle(&bubble_rect, bubble_bg);
+                    target.FillRectangle(&seg_rect, seg_bg);
 
-                    let mut in_code = false;
-                    for (li, line) in content_lines.iter().take(visible_lines).enumerate() {
-                        let trimmed = line.trim();
-                        if trimmed.starts_with("```") {
-                            in_code = !in_code;
-                            continue;
-                        }
-                        let line_y = msg_y + 5.0 + li as f32 * line_h;
-                        let line_rect = D2D_RECT_F {
-                            left: x + margin + 8.0,
-                            top: line_y,
-                            right: x + width - margin - 8.0,
-                            bottom: line_y + line_h,
-                        };
-                        if in_code {
-                            let code_rect = D2D_RECT_F {
-                                left: x + margin + 4.0,
-                                top: line_y,
-                                right: x + width - margin - 4.0,
-                                bottom: line_y + line_h,
-                            };
-                            target.FillRectangle(&code_rect, &code_bg_brush);
-                            let line_text: String = if line.chars().count() > 80 {
-                                line.chars().take(80).collect()
-                            } else {
-                                line.to_string()
-                            };
-                            let line_wide: Vec<u16> =
-                                line_text.encode_utf16().chain(Some(0)).collect();
-                            target.DrawText(
-                                &line_wide,
-                                &msg_format,
-                                &line_rect,
-                                &code_text_brush,
-                                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                DWRITE_MEASURING_MODE_NATURAL,
-                            );
-                        } else {
-                            let line_text: String = if line.chars().count() > 80 {
-                                line.chars().take(80).collect()
-                            } else {
-                                line.to_string()
-                            };
-                            let line_wide: Vec<u16> =
-                                line_text.encode_utf16().chain(Some(0)).collect();
-                            target.DrawText(
-                                &line_wide,
-                                &msg_format,
-                                &line_rect,
-                                text_brush,
-                                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                DWRITE_MEASURING_MODE_NATURAL,
-                            );
-                        }
-                    }
+                    let seg_fg: &ID2D1SolidColorBrush = if *is_code {
+                        &code_text_brush
+                    } else {
+                        text_brush
+                    };
+                    let origin = windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F {
+                        x: seg_left + seg_pad,
+                        y: msg_y + seg_pad,
+                    };
+                    target.DrawTextLayout(origin, &layout, seg_fg, D2D1_DRAW_TEXT_OPTIONS_NONE);
 
-                    if content_lines.len() > max_lines_per_msg {
-                        let more_wide: Vec<u16> = "...".encode_utf16().chain(Some(0)).collect();
-                        let more_rect = D2D_RECT_F {
-                            left: x + margin + 8.0,
-                            top: msg_y + msg_h - 16.0,
-                            right: x + width - margin - 8.0,
-                            bottom: msg_y + msg_h,
-                        };
-                        target.DrawText(
-                            &more_wide,
-                            &msg_format,
-                            &more_rect,
-                            &dim_brush,
-                            D2D1_DRAW_TEXT_OPTIONS_NONE,
-                            DWRITE_MEASURING_MODE_NATURAL,
-                        );
-                    }
+                    msg_y += seg_h + seg_gap;
                 }
-                msg_y += msg_h + 10.0;
+
+                msg_y += msg_gap;
+            }
+
+            // 记录内容高度与最大滚动量（供滚轮/滚动条），并绘制滚动条
+            let viewport_h = (chat_bottom - chat_top).max(1.0);
+            let total_content = (msg_y - content_start_y).max(0.0);
+            self.ai_panel.content_height = (total_content - viewport_h).max(0.0);
+            if self.ai_panel.content_height > 0.0 {
+                let track_h = viewport_h;
+                let total = total_content.max(viewport_h);
+                let thumb_h = (viewport_h / total * track_h).max(24.0);
+                let denom = self.ai_panel.content_height.max(1.0);
+                let scroll_ratio = (self.ai_panel.scroll_y / denom).clamp(0.0, 1.0);
+                let thumb_y = chat_top + scroll_ratio * (track_h - thumb_h);
+                let track_x = x + width - 6.0;
+                let thumb_rect = D2D_RECT_F {
+                    left: track_x,
+                    top: thumb_y,
+                    right: track_x + 4.0,
+                    bottom: thumb_y + thumb_h,
+                };
+                if let Ok(sb) = self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &color_f(0.4, 0.4, 0.45, 0.85))
+                {
+                    target.FillRectangle(&thumb_rect, &sb);
+                }
             }
 
             // 正在生成指示器（带动画点）
@@ -5035,6 +5087,80 @@ impl EditorState {
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
+            }
+
+            // ===== 停止 / 复制 / 重新生成 按钮（浮层行，左侧） =====
+            let act_y = y + height - 78.0;
+            let act_h = 26.0f32;
+            if self.ai_panel.is_generating {
+                let stop_w = 96.0f32;
+                let stop_x = x + margin;
+                let stop_rect = D2D_RECT_F {
+                    left: stop_x,
+                    top: act_y,
+                    right: stop_x + stop_w,
+                    bottom: act_y + act_h,
+                };
+                if let Ok(b) = self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &color_f(0.6, 0.2, 0.2, 1.0))
+                {
+                    target.FillRectangle(&stop_rect, &b);
+                }
+                let t: Vec<u16> = "■ 停止生成".encode_utf16().chain(Some(0)).collect();
+                let tr = D2D_RECT_F {
+                    left: stop_x,
+                    top: act_y + 4.0,
+                    right: stop_x + stop_w,
+                    bottom: act_y + act_h - 2.0,
+                };
+                target.DrawText(
+                    &t,
+                    &small_format,
+                    &tr,
+                    &white_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+            } else if self
+                .ai_panel
+                .messages
+                .iter()
+                .any(|m| m.role == crate::ai_panel::AiRole::Assistant)
+            {
+                let copy_w = 56.0f32;
+                let regen_w = 84.0f32;
+                let copy_x = x + margin;
+                let regen_x = copy_x + copy_w + 6.0;
+                let btn_bg = color_f(0.22, 0.22, 0.25, 1.0);
+                for (bx, bw, label) in [(copy_x, copy_w, "复制"), (regen_x, regen_w, "重新生成")]
+                {
+                    let br = D2D_RECT_F {
+                        left: bx,
+                        top: act_y,
+                        right: bx + bw,
+                        bottom: act_y + act_h,
+                    };
+                    if let Ok(b) = self.render_ctx.brush_cache.get_brush(target, &btn_bg) {
+                        target.FillRectangle(&br, &b);
+                    }
+                    let t: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
+                    let tr = D2D_RECT_F {
+                        left: bx,
+                        top: act_y + 4.0,
+                        right: bx + bw,
+                        bottom: act_y + act_h - 2.0,
+                    };
+                    target.DrawText(
+                        &t,
+                        &small_format,
+                        &tr,
+                        text_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
             }
 
             // ===== 变更列表 + Diff 预览（Edit/Agent 模式） =====
@@ -5413,6 +5539,31 @@ impl EditorState {
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
                 DWRITE_MEASURING_MODE_NATURAL,
             );
+
+            // 输入框光标（聚焦且 caret_visible 时闪烁）
+            if self.ai_panel.input_focused && self.ai_panel.caret_visible {
+                let caret_x = if self.ai_panel.input.is_empty() {
+                    x + margin + 8.0
+                } else {
+                    let tw = self
+                        .render_ctx
+                        .text_format_cache
+                        .measure_text_width(
+                            &self.ai_panel.input,
+                            11.0,
+                            DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+                        )
+                        .unwrap_or(0.0);
+                    x + margin + 8.0 + tw
+                };
+                let caret_rect = D2D_RECT_F {
+                    left: caret_x,
+                    top: input_y + 8.0,
+                    right: caret_x + 1.5,
+                    bottom: input_y + 28.0,
+                };
+                target.FillRectangle(&caret_rect, text_brush);
+            }
 
             // 发送提示
             let hint: Vec<u16> = "Enter 发送".encode_utf16().chain(Some(0)).collect();
