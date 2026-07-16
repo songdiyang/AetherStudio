@@ -79,6 +79,11 @@ pub enum IconKind {
     // 品牌与 AI 助手
     EmojiSheep,
     Bot,
+    // AI 面板输入框工具栏
+    Send,
+    Mic,
+    Sparkles,
+    List,
     // 文件类型
     FilePython,
     FileJava,
@@ -108,7 +113,7 @@ pub enum IconKind {
 
 impl IconKind {
     /// 所有图标变体索引（与 SVG_DEFS 数组下标对应）
-    pub const ALL: [IconKind; 62] = [
+    pub const ALL: [IconKind; 66] = [
         IconKind::OpenFolder,
         IconKind::NewFile,
         IconKind::Clone,
@@ -147,6 +152,10 @@ impl IconKind {
         IconKind::ChevronRight,
         IconKind::EmojiSheep,
         IconKind::Bot,
+        IconKind::Send,
+        IconKind::Mic,
+        IconKind::Sparkles,
+        IconKind::List,
         IconKind::FilePython,
         IconKind::FileJava,
         IconKind::FileText,
@@ -305,10 +314,10 @@ impl IconCache {
 mod tests {
     use super::IconKind;
 
-    /// 验证 ALL 数组长度为 62
+    /// 验证 ALL 数组长度为 66
     #[test]
-    fn all_icons_count_is_62() {
-        assert_eq!(IconKind::ALL.len(), 62);
+    fn all_icons_count_is_66() {
+        assert_eq!(IconKind::ALL.len(), 66);
     }
 
     /// 验证 ALL 数组中无重复项

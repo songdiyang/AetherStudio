@@ -253,6 +253,7 @@ impl ConPtySession {
 
             // 5. 创建子进程
             //    bInheritHandles = FALSE：ConPTY 属性与句柄继承互斥（Microsoft 官方要求）。
+            //    CREATE_NO_WINDOW：禁止创建独立的控制台窗口，避免启动时弹出可见窗口。
             let mut process_info = PROCESS_INFORMATION::default();
             let result = CreateProcessW(
                 None,
@@ -260,7 +261,7 @@ impl ConPtySession {
                 None,
                 None,
                 false,
-                EXTENDED_STARTUPINFO_PRESENT,
+                EXTENDED_STARTUPINFO_PRESENT | windows::Win32::System::Threading::CREATE_NO_WINDOW,
                 None,
                 cwd_wide
                     .as_ref()

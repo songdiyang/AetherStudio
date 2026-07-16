@@ -4784,6 +4784,20 @@ impl EditorState {
             );
             return;
         }
+        // AI 面板输入框聚焦时，合成串存到 AI 面板
+        if self.ai_panel.input_focused {
+            self.ai_panel.composition = Some(text);
+            self.ai_panel.caret_visible = true;
+            let region = self.layout.right_panel_region().clone();
+            self.dirty_tracker.mark_region(
+                region.x,
+                region.y,
+                region.width,
+                region.height,
+                crate::dirty_rect::DirtyRegionType::RightPanel,
+            );
+            return;
+        }
         self.composition = Some(text);
     }
 
@@ -4856,6 +4870,21 @@ impl EditorState {
             );
             return;
         }
+        // AI 面板输入框聚焦时，IME 提交文本进入 AI 输入框
+        if self.ai_panel.input_focused {
+            self.ai_panel.input.push_str(&text);
+            self.ai_panel.composition = None;
+            self.ai_panel.caret_visible = true;
+            let region = self.layout.right_panel_region().clone();
+            self.dirty_tracker.mark_region(
+                region.x,
+                region.y,
+                region.width,
+                region.height,
+                crate::dirty_rect::DirtyRegionType::RightPanel,
+            );
+            return;
+        }
         for ch in text.chars() {
             self.broadcast_insert_char(ch);
         }
@@ -4875,6 +4904,19 @@ impl EditorState {
                 region.width,
                 region.height,
                 crate::dirty_rect::DirtyRegionType::Sidebar,
+            );
+            return;
+        }
+        // AI 面板输入框聚焦时，清除 AI 面板的合成串
+        if self.ai_panel.input_focused {
+            self.ai_panel.composition = None;
+            let region = self.layout.right_panel_region().clone();
+            self.dirty_tracker.mark_region(
+                region.x,
+                region.y,
+                region.width,
+                region.height,
+                crate::dirty_rect::DirtyRegionType::RightPanel,
             );
             return;
         }

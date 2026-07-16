@@ -40,6 +40,8 @@ pub(crate) unsafe fn on_char(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPA
         if let Some(c) = char::from_u32(code_point) {
             // IME 合成期间：commit_composition 已经把提交结果路由到终端/编辑器，
             // 此处不应再分发原始字符到终端或编辑器，否则会重复插入。
+            // 但 AI 面板、设置面板等自定义输入框没有自己的 composition 状态，
+            // 它们依赖 WM_CHAR 接收字符，因此需要单独判断。
             let ime_composing = EDITOR_STATE.with(|s| {
                 s.borrow()
                     .as_ref()

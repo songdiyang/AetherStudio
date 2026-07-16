@@ -166,6 +166,8 @@ pub struct AiPanel {
     pub stick_to_bottom: bool,
     /// 输入框光标可见状态（闪烁，由 CARET_TIMER 切换）
     pub caret_visible: bool,
+    /// IME 合成串（中文输入法预编辑文本），渲染时显示在 input 之后
+    pub composition: Option<String>,
     /// 停止生成标志：后台流式线程在下一次循环检查时退出
     pub should_stop: Arc<AtomicBool>,
 }
@@ -197,6 +199,7 @@ impl AiPanel {
             content_height: 0.0,
             stick_to_bottom: true,
             caret_visible: false,
+            composition: None,
             should_stop: Arc::new(AtomicBool::new(false)),
         }
     }
