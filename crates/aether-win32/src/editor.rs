@@ -626,6 +626,34 @@ impl EditorState {
         self.tabs.iter().position(|t| t.is_welcome())
     }
 
+    /// 确保 logo 位图已加载（懒加载，仅在首次需要时从文件读取）
+    pub(crate) fn ensure_logo_bitmap(
+        &mut self,
+        target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+    ) {
+        if self.logo_bitmap.is_some() {
+            return;
+        }
+        let png_path = std::path::Path::new(
+            env!("CARGO_MANIFEST_DIR"),
+        ).join("resources/app_icons/source/aether-512.png");
+        match std::fs::read(&png_path) {
+            Ok(png_bytes) => {
+                match crate::bitmap_loader::load_png_to_bitmap(target, &png_bytes) {
+                    Ok(bitmap) => {
+                        self.logo_bitmap = Some(bitmap);
+                    }
+                    Err(e) => {
+                        tracing::warn!("加载 logo 位图失败: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("读取 logo 文件失败: {:?} - {}", png_path, e);
+            }
+        }
+    }
+
     /// 切换活动视图到指定视图（非 AI 助手）。
     ///
     /// 更新活动栏高亮、`activity_view`、侧边栏可见性与内容。
@@ -1329,6 +1357,8 @@ impl EditorState {
             last_closed_tab: None,
             logo_bitmap: None,
         };
+        // 加载 logo 位图（aether-512.png）
+        // 注意：此时还没有 render target，位图会在首次渲染时通过 ensure_logo_bitmap 懒加载
         // 应用持久化的活动栏/菜单栏顺序（空配置使用默认顺序）
         let activity_order = state.app_settings.ui.activity_bar_order.clone();
         let menu_order = state.app_settings.ui.menu_bar_order.clone();
@@ -2725,7 +2755,7 @@ impl EditorState {
     pub fn scroll_sidebar(&mut self, delta_y: f32) {
         match &self.sidebar_content {
             crate::layout::SidebarContent::FileTree => {
-                let node_height = 18.0;
+                let node_height = 16.0;
                 let estimated_nodes = if let Some(tree) = &self.file_tree {
                     tree.len() as f32
                 } else {
@@ -2738,7 +2768,7 @@ impl EditorState {
                 self.sidebar_scroll_y = (self.sidebar_scroll_y + delta_y).clamp(0.0, max_scroll);
             }
             crate::layout::SidebarContent::RemoteFileTree => {
-                let node_height = 18.0;
+                let node_height = 16.0;
                 // P0-1: 按可见节点数（含展开的子节点）估算滚动高度
                 let visible_nodes = self
                     .remote_file_tree
@@ -3939,7 +3969,7 @@ impl EditorState {
                 Some(t) => t,
                 None => return false,
             };
-            let node_height = 18.0_f32;
+            let node_height = 16.0_f32;
             let mut current_y = 10.0 - self.remote_scroll_y;
             let target =
                 Self::find_remote_node_at_y(&tree.nodes, mouse_y, node_height, &mut current_y);
@@ -4107,7 +4137,7 @@ impl EditorState {
             }
         };
         // P0-1: 递归遍历可见节点确定悬停目标（按路径标识）
-        let node_height = 18.0_f32;
+        let node_height = 16.0_f32;
         let mut current_y = 10.0 - self.remote_scroll_y;
         let new_hover =
             Self::find_remote_node_at_y(&tree.nodes, mouse_y, node_height, &mut current_y)
@@ -4489,7 +4519,7 @@ impl EditorState {
         dpi_scale: f32,
         current_y: &mut f32,
     ) -> Option<(u32, FileKind, FileTreeClickPart)> {
-        let node_height = 18.0 * dpi_scale;
+        let node_height = 16.0 * dpi_scale;
         let base_x = 10.0;
         let mut child_idx = if parent_idx == u32::MAX {
             tree.first_root_node()
@@ -6410,16 +6440,55 @@ impl EditorState {
         self.ai_panel.clear_pending_changes();
     }
 
+    /// 接受并立即应用变更列表中的单个文件（变更列表预览“接受”按钮）
+    pub fn ai_accept_change_file(&mut self, idx: usize) {
+        let edit = match self.ai_panel.diff_view.files.get(idx) {
+            Some(f) => crate::ai_agent::AiEdit {
+                path: f.path.clone(),
+                search: f.original.clone(),
+                replace: f.proposed.clone(),
+            },
+            None => return,
+        };
+        match self.apply_ai_workspace_edits(&[edit]) {
+            Ok(_) => {
+                if idx < self.ai_panel.diff_view.files.len() {
+                    self.ai_panel.diff_view.files.remove(idx);
+                }
+                self.status_message = "已应用该文件变更".to_string();
+            }
+            Err(e) => self.status_message = format!("AI 编辑应用失败: {}", e),
+        }
+        self.ai_panel.diff_view.selected_index = 0;
+        if self.ai_panel.diff_view.files.is_empty() {
+            self.ai_panel.clear_pending_changes();
+        }
+    }
+
+    /// 拒绝变更列表中的单个文件（仅从列表移除，不修改磁盘）
+    pub fn ai_reject_change_file(&mut self, idx: usize) {
+        if idx < self.ai_panel.diff_view.files.len() {
+            self.ai_panel.diff_view.files.remove(idx);
+        }
+        self.ai_panel.diff_view.selected_index = 0;
+        if self.ai_panel.diff_view.files.is_empty() {
+            self.ai_panel.clear_pending_changes();
+        }
+        self.status_message = "已拒绝该文件变更".to_string();
+    }
+
     /// 打开设置标签页（作为通用 tab 插入到标签栏）
     pub fn open_settings_tab(&mut self) {
         self.settings_panel.apply_settings(&self.app_settings);
         if let Some(idx) = self.find_settings_tab() {
             self.switch_tab(idx);
         } else {
+            // 保存当前文件 tab 的内容到 tabs[active_tab]（如果是文件 tab）
             self.swap_tab_content(self.active_tab);
             self.tabs.push(crate::tabs::Tab::Settings);
             self.active_tab = self.tabs.len() - 1;
             // 设置 tab 无 content，self.content 保持空即可
+            self.content = crate::tabs::TabContent::new();
             self.ai_panel.input_focused = false;
             self.status_message = "已打开设置标签页".to_string();
             self.emit_event(crate::events::EditorEvent::TabChanged);
@@ -6451,6 +6520,29 @@ impl EditorState {
         } else {
             self.open_settings_tab();
         }
+    }
+
+    /// 将设置面板中的 AI 配置应用到 app_settings 并持久化到磁盘
+    ///
+    /// API 密钥通过 DPAPI 加密单独存储（见 AppSettings::save），不会明文写入 settings.json。
+    /// 同时刷新 AI 面板使用的运行时设置。
+    pub fn save_ai_settings(&mut self) {
+        self.app_settings.ai = self.settings_panel.to_ai_settings();
+        match self.app_settings.save() {
+            Ok(_) => {
+                self.settings_panel.test_status = "✓ 设置已保存".to_string();
+                self.status_message = "AI 设置已保存".to_string();
+            }
+            Err(e) => {
+                self.settings_panel.test_status = format!("✗ 保存失败：{}", e);
+            }
+        }
+    }
+
+    /// 使用设置面板当前配置启动 AI 测试连接（后台线程，不阻塞 UI）
+    pub fn start_ai_test_connection(&mut self) {
+        let ai = self.settings_panel.to_ai_settings();
+        self.settings_panel.start_test_connection(ai);
     }
 
     /// 初始化 LSP 客户端（在打开工作区文件夹时调用）
@@ -6937,9 +7029,27 @@ impl EditorState {
                 }
             };
 
+            // 记录 undo history，使 AI 工作区编辑可通过 Ctrl+Z 逐文件撤销
+            let before_pieces = self.content.buffer.get_pieces();
+            let before_add_len = self.content.buffer.add_buffer_len();
+            let cursor_before =
+                CursorPosition::new(self.content.cursor_line, self.content.cursor_col);
             let len = self.content.buffer.len_bytes();
             self.content.buffer.delete(0, len);
             self.content.buffer.insert(0, &new_text);
+            // 全量替换后将光标复位到文件开头，避免越界
+            self.content.cursor_line = 0;
+            self.content.cursor_col = 0;
+            let cursor_after = CursorPosition::new(0, 0);
+            self.content.history.record(
+                before_pieces,
+                before_add_len,
+                cursor_before,
+                cursor_after,
+                OpType::Insert,
+                0,
+                new_text.len(),
+            );
             self.content.is_dirty = true;
             self.content.buffer_version += 1;
             self.status_message = format!("已应用 AI 编辑: {}", full_path.display());

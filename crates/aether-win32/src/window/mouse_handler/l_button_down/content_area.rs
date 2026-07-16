@@ -12,7 +12,9 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use crate::dialogs::Dialogs;
 use crate::editor::{BottomPanelTab, EditorState};
 
-use super::super::super::{invalidate_window, LP_THRESHOLD_MS, LP_TIMER_ID};
+use super::super::super::{
+    invalidate_window, AI_REFRESH_MS, AI_TIMER_ID, LP_THRESHOLD_MS, LP_TIMER_ID,
+};
 
 /// 活动栏点击 + 长按检测。
 pub(super) unsafe fn lbd_activity_bar(
@@ -89,6 +91,12 @@ pub(super) unsafe fn lbd_panel_resizing(
         && (mouse_y >= bottom_region.y - 4.0 && mouse_y <= bottom_region.y + 4.0)
         && mouse_x >= bottom_region.x
         && mouse_x < bottom_region.x + bottom_region.width;
+    // 侧边栏右侧调整区域
+    let sidebar_region = layout.sidebar_region();
+    let sidebar_resize_zone = layout.sidebar_visible
+        && (mouse_x >= sidebar_region.right() - 4.0 && mouse_x <= sidebar_region.right() + 4.0)
+        && mouse_y >= sidebar_region.y
+        && mouse_y < sidebar_region.y + sidebar_region.height;
     let mut st = state.borrow_mut();
     if right_panel_resize_zone {
         st.layout.right_panel_resizing = true;
@@ -98,6 +106,12 @@ pub(super) unsafe fn lbd_panel_resizing(
     }
     if bottom_panel_resize_zone {
         st.layout.bottom_panel_resizing = true;
+        drop(st);
+        invalidate_window(hwnd);
+        return Some(LRESULT(0));
+    }
+    if sidebar_resize_zone {
+        st.layout.sidebar_resizing = true;
         drop(st);
         invalidate_window(hwnd);
         return Some(LRESULT(0));
@@ -235,7 +249,7 @@ unsafe fn lbd_ssh_manager_buttons(
     Some(LRESULT(0))
 }
 
-/// 右侧 AI 面板点击（快捷操作 / Apply / 输入框）。
+/// 右侧 AI 面板点击（模式切换 / 上下文附件 / 变更列表 / Apply / 输入框）。
 pub(super) unsafe fn lbd_right_panel(
     hwnd: HWND,
     state: &Rc<RefCell<EditorState>>,
@@ -252,61 +266,75 @@ pub(super) unsafe fn lbd_right_panel(
         let mut st = state.borrow_mut();
         st.ai_panel.input_focused = false;
     }
-    if lbd_right_panel_actions(hwnd, state, mouse_x, mouse_y, &right_panel_region).is_some() {
+    // 模式切换 / 上下文附件 / 变更列表按钮（基于渲染时注册的绝对坐标命中区）
+    if lbd_right_panel_ai_controls(hwnd, state, mouse_x, mouse_y).is_some() {
         return Some(LRESULT(0));
     }
     lbd_right_panel_apply_input(hwnd, state, mouse_x, mouse_y, &right_panel_region)
 }
 
-/// AI 面板快捷操作按钮点击。
-unsafe fn lbd_right_panel_actions(
+/// AI 面板：模式切换 / 上下文附件切换 / 变更列表接受·拒绝·预览。
+///
+/// 使用渲染时注册的绝对坐标命中区（mode_button_regions / attachment_chip_regions /
+/// change_action_regions），与旧的硬编码坐标处理器互不冲突。
+unsafe fn lbd_right_panel_ai_controls(
     hwnd: HWND,
     state: &Rc<RefCell<EditorState>>,
     mouse_x: f32,
     mouse_y: f32,
-    right_panel_region: &crate::layout::Region,
 ) -> Option<LRESULT> {
-    let rp_rel_x = mouse_x - right_panel_region.x;
-    let rp_rel_y = mouse_y - right_panel_region.y;
-    let actions = crate::ai_panel::AiPanel::quick_actions();
-    let margin = 10.0;
-    let btn_w = (right_panel_region.width - margin * 2.0 - 8.0) / 2.0;
-    let btn_h = 28.0;
-    let btn_gap = 8.0;
-    let action_start_y = 52.0;
-    let action_rows = actions.len().div_ceil(2);
-    let action_end_y = action_start_y + action_rows as f32 * (btn_h + 6.0) + 8.0;
-    if !(rp_rel_y >= action_start_y && rp_rel_y < action_end_y) {
-        return None;
-    }
-    for (i, action) in actions.iter().enumerate() {
-        let col = i % 2;
-        let row = i / 2;
-        let bx = margin + col as f32 * (btn_w + btn_gap);
-        let by = action_start_y + row as f32 * (btn_h + 6.0);
-        if rp_rel_x >= bx && rp_rel_x < bx + btn_w && rp_rel_y >= by && rp_rel_y < by + btn_h {
-            let st = state.borrow_mut();
-            let selected_code = if let Some(text) = st.get_selected_text() {
-                text
-            } else {
-                st.content
-                    .buffer
-                    .get_all_text()
-                    .chars()
-                    .take(2000)
-                    .collect::<String>()
-            };
-            let settings = st.app_settings.ai.clone();
-            let action_clone = *action;
+    // 1. 模式切换按钮
+    {
+        let mut st = state.borrow_mut();
+        if let Some(mode) = st.ai_panel.hit_test_mode_button(mouse_x, mouse_y) {
+            st.ai_panel.mode = mode;
+            st.status_message = format!("AI 模式：{}", mode.label());
             drop(st);
-            let _ = state.borrow_mut().ai_panel.send_quick_action(
-                action_clone,
-                &selected_code,
-                &settings,
-            );
             invalidate_window(hwnd);
             return Some(LRESULT(0));
         }
+    }
+    // 2. 上下文附件切换按钮（索引 → toggleable_attachments）
+    {
+        let mut st = state.borrow_mut();
+        if let Some(i) = st.ai_panel.hit_test_attachment(mouse_x, mouse_y) {
+            let items = crate::ai_panel::AiPanel::toggleable_attachments();
+            if let Some(att) = items.get(i) {
+                let att = att.clone();
+                st.ai_panel.toggle_attachment(att);
+            }
+            drop(st);
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        }
+    }
+    // 3. 变更列表按钮（idx == usize::MAX 为批量操作；否则 0=预览 1=接受 2=拒绝）
+    let hit = {
+        let st = state.borrow();
+        st.ai_panel.hit_test_change_action(mouse_x, mouse_y)
+    };
+    if let Some((idx, action)) = hit {
+        if idx == usize::MAX {
+            match action {
+                1 => state.borrow_mut().ai_apply_pending_changes(),
+                2 => state.borrow_mut().ai_panel.reject_all_changes(),
+                _ => {}
+            }
+        } else {
+            match action {
+                0 => {
+                    let mut st = state.borrow_mut();
+                    if idx < st.ai_panel.diff_view.files.len() {
+                        st.ai_panel.diff_view.selected_index = idx;
+                    }
+                }
+                1 => state.borrow_mut().ai_accept_change_file(idx),
+                2 => state.borrow_mut().ai_reject_change_file(idx),
+                _ => {}
+            }
+        }
+        invalidate_window(hwnd);
+        return Some(LRESULT(0));
     }
     None
 }
@@ -355,6 +383,110 @@ unsafe fn lbd_right_panel_apply_input(
         return Some(LRESULT(0));
     }
     None
+}
+
+/// 设置页点击（导航标签 / 字段聚焦 / 下拉选择 / 保存 / 测试连接）。
+///
+/// 设置页渲染在编辑区，各命中区由 render_settings_sidebar 以绝对坐标注册，此处直接命中测试。
+pub(super) unsafe fn lbd_settings_page(
+    hwnd: HWND,
+    state: &Rc<RefCell<EditorState>>,
+    mouse_x: f32,
+    mouse_y: f32,
+    layout: &crate::layout::LayoutManager,
+) -> Option<LRESULT> {
+    {
+        let st = state.borrow();
+        if !st.active_tab_is_settings() {
+            return None;
+        }
+    }
+    let editor_region = layout.editor_region();
+    if !editor_region.contains(mouse_x, mouse_y) {
+        return None;
+    }
+
+    let mut st = state.borrow_mut();
+
+    // 1. 下拉展开时，优先处理选项点击
+    if st.settings_panel.open_dropdown.is_some() {
+        if let Some((kind, idx)) = st.settings_panel.hit_test_dropdown_item(mouse_x, mouse_y) {
+            match kind {
+                crate::settings::SettingsDropdownKind::Provider => {
+                    st.settings_panel.select_provider_by_index(idx);
+                }
+                crate::settings::SettingsDropdownKind::Model => {
+                    st.settings_panel.select_model_by_index(idx);
+                }
+            }
+            st.settings_panel.open_dropdown = None;
+            drop(st);
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        }
+    }
+
+    // 2. 下拉触发区 → 开/关（以当前状态切换）
+    if let Some(kind) = st.settings_panel.hit_test_dropdown_trigger(mouse_x, mouse_y) {
+        st.settings_panel.open_dropdown = if st.settings_panel.open_dropdown == Some(kind) {
+            None
+        } else {
+            Some(kind)
+        };
+        st.settings_panel.active_field = None;
+        drop(st);
+        invalidate_window(hwnd);
+        return Some(LRESULT(0));
+    }
+
+    // 3. 若下拉处于展开且点击了别处 → 先关闭，再继续尝试其它命中
+    if st.settings_panel.open_dropdown.is_some() {
+        st.settings_panel.open_dropdown = None;
+    }
+
+    // 4. 导航标签切换
+    if let Some(tab) = st.settings_panel.hit_test_tab(mouse_x, mouse_y) {
+        st.settings_panel.active_tab = tab;
+        st.settings_panel.active_field = None;
+        drop(st);
+        invalidate_window(hwnd);
+        return Some(LRESULT(0));
+    }
+
+    // 5. 按钮：保存 / 测试连接
+    if let Some(btn) = st.settings_panel.hit_test_button(mouse_x, mouse_y) {
+        let mut started_test = false;
+        match btn {
+            crate::settings::SettingsButton::Save => st.save_ai_settings(),
+            crate::settings::SettingsButton::TestConnection => {
+                st.start_ai_test_connection();
+                started_test = st.settings_panel.is_testing;
+            }
+        }
+        st.settings_panel.active_field = None;
+        drop(st);
+        // 测试期间启动后台刷新定时器，结果到达后自动停止
+        if started_test {
+            let _ = SetTimer(hwnd, AI_TIMER_ID, AI_REFRESH_MS, None);
+        }
+        invalidate_window(hwnd);
+        return Some(LRESULT(0));
+    }
+
+    // 6. 输入字段聚焦
+    if let Some(field) = st.settings_panel.hit_test_field(mouse_x, mouse_y) {
+        st.settings_panel.active_field = Some(field);
+        drop(st);
+        invalidate_window(hwnd);
+        return Some(LRESULT(0));
+    }
+
+    // 7. 点击设置区空白 → 清除聚焦与下拉，消费点击
+    st.settings_panel.active_field = None;
+    st.settings_panel.open_dropdown = None;
+    drop(st);
+    invalidate_window(hwnd);
+    Some(LRESULT(0))
 }
 
 /// 标签栏点击。

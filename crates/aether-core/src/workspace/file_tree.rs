@@ -36,6 +36,8 @@ pub struct FileNode {
     /// 目录的子节点是否已扫描加载（懒加载标记）
     /// false 表示该目录尚未扫描子节点，展开时需先加载
     pub is_loaded: bool,
+    /// 目录是否正在后台加载中（防止重复触发加载）
+    pub is_loading: bool,
     pub is_git_tracked: bool,
     pub is_git_modified: bool,
     pub file_size: u64,
@@ -99,6 +101,7 @@ impl FileTree {
             is_expanded: kind == FileKind::Directory && depth == 0,
             // 新建节点默认未加载子节点；open_folder 会对根层显式标记
             is_loaded: false,
+            is_loading: false,
             is_git_tracked: false,
             is_git_modified: false,
             file_size: 0,

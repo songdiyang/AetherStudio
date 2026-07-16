@@ -378,27 +378,9 @@ unsafe fn omm_ai_hover(
     let mut st = state.borrow_mut();
     let right_panel_region = layout.right_panel_region();
     if layout.right_panel_visible && right_panel_region.contains(mouse_x, mouse_y) {
-        let old_hover = st.ai_panel.hover_action;
         let rel_x = mouse_x - right_panel_region.x;
         let rel_y = mouse_y - right_panel_region.y;
-        let actions = crate::ai_panel::AiPanel::quick_actions();
         let margin = 10.0;
-        let btn_w = (right_panel_region.width - margin * 2.0 - 8.0) / 2.0;
-        let btn_h = 28.0;
-        let btn_gap = 8.0;
-        let action_start_y = 52.0;
-        let mut new_hover = None;
-        for (i, action) in actions.iter().enumerate() {
-            let col = i % 2;
-            let row = i / 2;
-            let bx = margin + col as f32 * (btn_w + btn_gap);
-            let by = action_start_y + row as f32 * (btn_h + 6.0);
-            if rel_x >= bx && rel_x < bx + btn_w && rel_y >= by && rel_y < by + btn_h {
-                new_hover = Some(*action);
-                break;
-            }
-        }
-        st.ai_panel.hover_action = new_hover;
         let apply_y = right_panel_region.height - 76.0;
         let apply_btn_w = 80.0;
         let apply_btn_h = 24.0;
@@ -408,7 +390,7 @@ unsafe fn omm_ai_hover(
             && rel_x < apply_btn_x + apply_btn_w
             && rel_y >= apply_y
             && rel_y < apply_y + apply_btn_h;
-        old_hover != new_hover || old_apply_hover != st.ai_panel.hover_apply_button
+        old_apply_hover != st.ai_panel.hover_apply_button
     } else {
         let old = st.ai_panel.hover_apply_button;
         st.ai_panel.hover_apply_button = false;
@@ -511,8 +493,19 @@ unsafe fn omm_resize_drag(
         && (mouse_y >= bottom_region.y - 4.0 && mouse_y <= bottom_region.y + 4.0)
         && mouse_x >= bottom_region.x
         && mouse_x < bottom_region.x + bottom_region.width;
+    // 侧边栏右侧调整区域
+    let sidebar_region = layout.sidebar_region();
+    let sidebar_resize_zone = layout.sidebar_visible
+        && (mouse_x >= sidebar_region.right() - 4.0 && mouse_x <= sidebar_region.right() + 4.0)
+        && mouse_y >= sidebar_region.y
+        && mouse_y < sidebar_region.y + sidebar_region.height;
+    // 更新 hover 状态
+    st.hover_sidebar_resize = sidebar_resize_zone;
     // 设置拖拽光标
     if right_panel_resize_zone || st.layout.right_panel_resizing {
+        let hcursor = LoadCursorW(None, IDC_SIZEWE).unwrap_or_default();
+        let _ = SetCursor(hcursor);
+    } else if sidebar_resize_zone || st.layout.sidebar_resizing {
         let hcursor = LoadCursorW(None, IDC_SIZEWE).unwrap_or_default();
         let _ = SetCursor(hcursor);
     } else if bottom_panel_resize_zone || st.layout.bottom_panel_resizing {
@@ -527,6 +520,12 @@ unsafe fn omm_resize_drag(
         if st.layout.right_panel_resizing {
             let delta = mouse_x - editor_region.right();
             st.layout.resize_right_panel(-delta);
+            drop(st);
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        } else if st.layout.sidebar_resizing {
+            let delta = mouse_x - sidebar_region.right();
+            st.layout.resize_sidebar(delta);
             drop(st);
             invalidate_window(hwnd);
             return Some(LRESULT(0));
