@@ -6482,8 +6482,14 @@ impl EditorState {
 
     /// 保存 AI 代码块为文件
     /// 如果 filename 为空，则尝试从代码块内容推断或使用默认名称
-    pub fn save_ai_code_block(&mut self, code: &str, suggested_filename: Option<&str>) -> std::result::Result<PathBuf, String> {
-        let root = self.current_folder.clone()
+    pub fn save_ai_code_block(
+        &mut self,
+        code: &str,
+        suggested_filename: Option<&str>,
+    ) -> std::result::Result<PathBuf, String> {
+        let root = self
+            .current_folder
+            .clone()
             .ok_or_else(|| "请先打开一个工作区文件夹".to_string())?;
 
         // 确定文件名
@@ -6495,7 +6501,8 @@ impl EditorState {
                 "rs"
             } else if code.contains("def ") || code.contains("import ") {
                 "py"
-            } else if code.contains("function ") || code.contains("const ") || code.contains("let ") {
+            } else if code.contains("function ") || code.contains("const ") || code.contains("let ")
+            {
                 "js"
             } else if code.contains("package ") || code.contains("import java.") {
                 "java"
@@ -6517,13 +6524,11 @@ impl EditorState {
 
         // 确保父目录存在
         if let Some(parent) = full_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("创建目录失败: {}", e))?;
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
         }
 
         // 写入文件
-        std::fs::write(&full_path, code)
-            .map_err(|e| format!("写入文件失败: {}", e))?;
+        std::fs::write(&full_path, code).map_err(|e| format!("写入文件失败: {}", e))?;
 
         // 打开新创建的文件
         self.load_file(full_path.clone());

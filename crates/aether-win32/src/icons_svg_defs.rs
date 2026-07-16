@@ -794,8 +794,14 @@ const UI_MIC: SvgDef = SvgDef {
 const UI_SPARKLES: SvgDef = SvgDef {
     viewbox: (0.0, 0.0, 24.0, 24.0),
     shapes: &[
-        SvgShape::Path("M12 2l1.5 4.5L18 8l-4.5 1.5L12 14l-1.5-4.5L6 8l4.5-1.5z", None),
-        SvgShape::Path("M18 12l.8 2.4L21 15l-2.4.8L18 18l-.8-2.4L15 15l2.4-.8z", None),
+        SvgShape::Path(
+            "M12 2l1.5 4.5L18 8l-4.5 1.5L12 14l-1.5-4.5L6 8l4.5-1.5z",
+            None,
+        ),
+        SvgShape::Path(
+            "M18 12l.8 2.4L21 15l-2.4.8L18 18l-.8-2.4L15 15l2.4-.8z",
+            None,
+        ),
     ],
 };
 

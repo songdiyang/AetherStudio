@@ -262,7 +262,9 @@ pub(super) unsafe fn lbd_right_panel(
         return None;
     }
     // 先检测输入框和按钮点击，如果命中则直接返回（不取消聚焦）
-    if let Some(result) = lbd_right_panel_apply_input(hwnd, state, mouse_x, mouse_y, &right_panel_region) {
+    if let Some(result) =
+        lbd_right_panel_apply_input(hwnd, state, mouse_x, mouse_y, &right_panel_region)
+    {
         return Some(result);
     }
 
@@ -334,8 +336,13 @@ pub(super) unsafe fn lbd_right_panel(
                     {
                         // 点击了保存按钮 - 先收集需要的信息，然后释放借用
                         let code_to_save = seg_text.clone();
-                        let suggested_name = msg.content.lines()
-                            .find(|l| l.trim_start().starts_with("```") && !l.trim_start().starts_with("```\n"))
+                        let suggested_name = msg
+                            .content
+                            .lines()
+                            .find(|l| {
+                                l.trim_start().starts_with("```")
+                                    && !l.trim_start().starts_with("```\n")
+                            })
                             .and_then(|l| crate::ai_panel::AiPanel::extract_filename_from_fence(l));
                         drop(st);
                         let mut st_mut = state.borrow_mut();

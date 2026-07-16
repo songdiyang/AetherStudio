@@ -5021,7 +5021,9 @@ impl EditorState {
                             bottom: save_btn_y + save_btn_h,
                         };
                         let save_bg = color_f(0.2, 0.5, 0.3, 1.0);
-                        if let Ok(save_brush) = self.render_ctx.brush_cache.get_brush(target, &save_bg) {
+                        if let Ok(save_brush) =
+                            self.render_ctx.brush_cache.get_brush(target, &save_bg)
+                        {
                             target.FillRectangle(&save_btn_rect, &save_brush);
                         }
                         let save_text: Vec<u16> = "保存".encode_utf16().chain(Some(0)).collect();
@@ -5594,11 +5596,7 @@ impl EditorState {
                     let input_width = self
                         .render_ctx
                         .text_format_cache
-                        .measure_text_width(
-                            caret_prefix,
-                            11.0,
-                            DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
-                        )
+                        .measure_text_width(caret_prefix, 11.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32)
                         .unwrap_or(0.0);
                     let comp_x = text_input_rect.left + 4.0 + input_width;
                     let comp_rect = D2D_RECT_F {
@@ -5641,7 +5639,8 @@ impl EditorState {
                     text_input_rect.left + 4.0
                 } else {
                     // 根据 caret_pos 计算光标位置
-                    let text_before_caret = if self.ai_panel.caret_pos <= self.ai_panel.input.len() {
+                    let text_before_caret = if self.ai_panel.caret_pos <= self.ai_panel.input.len()
+                    {
                         &self.ai_panel.input[..self.ai_panel.caret_pos]
                     } else {
                         &self.ai_panel.input
@@ -5685,14 +5684,11 @@ impl EditorState {
                 Err(_) => return,
             };
             let btn_hover_bg = color_f(0.25, 0.25, 0.28, 1.0);
-            let _btn_hover_brush = match self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &btn_hover_bg)
-            {
-                Ok(b) => b,
-                Err(_) => return,
-            };
+            let _btn_hover_brush =
+                match self.render_ctx.brush_cache.get_brush(target, &btn_hover_bg) {
+                    Ok(b) => b,
+                    Err(_) => return,
+                };
 
             // 左侧：智能体下拉按钮
             let agent_btn_w = 80.0f32;
@@ -7813,8 +7809,8 @@ impl EditorState {
             let add_btn_w = 80.0f32;
             let add_btn_h = 28.0f32;
             let add_btn_x = x + width - margin - add_btn_w;
-            let is_add_hover = self.settings_panel.hover_model_button
-                == Some(crate::settings::ModelButton::Add);
+            let is_add_hover =
+                self.settings_panel.hover_model_button == Some(crate::settings::ModelButton::Add);
             let add_bg = if is_add_hover {
                 color_f(0.30, 0.30, 0.32, 1.0)
             } else {
@@ -8098,7 +8094,11 @@ impl EditorState {
                         right: del_x + del_w,
                         bottom: op_y + 24.0,
                     },
-                    if is_del_hover { &op_hover_brush } else { &op_normal_brush },
+                    if is_del_hover {
+                        &op_hover_brush
+                    } else {
+                        &op_normal_brush
+                    },
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
@@ -8126,7 +8126,11 @@ impl EditorState {
                         right: edit_x + edit_w,
                         bottom: op_y + 24.0,
                     },
-                    if is_edit_hover { &op_hover_brush } else { &op_normal_brush },
+                    if is_edit_hover {
+                        &op_hover_brush
+                    } else {
+                        &op_normal_brush
+                    },
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
@@ -11218,7 +11222,11 @@ impl EditorState {
                 let ai_input_width = self
                     .render_ctx
                     .text_format_cache
-                    .measure_text_width(&self.ai_panel.input, 11.0, DWRITE_FONT_WEIGHT_NORMAL.0 as u32)
+                    .measure_text_width(
+                        &self.ai_panel.input,
+                        11.0,
+                        DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+                    )
                     .unwrap_or(0.0);
                 let ai_cursor_x = ai_value_x + ai_input_width;
                 self.ime.set_composition_window_position(

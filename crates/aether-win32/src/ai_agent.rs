@@ -129,7 +129,10 @@ pub fn parse_run_commands(response: &str) -> Vec<String> {
         }
         // 跳过结束标记到行尾
         let after_end = &after_header[end_start..];
-        let end_marker_end = after_end.find('\n').map(|i| i + 1).unwrap_or(after_end.len());
+        let end_marker_end = after_end
+            .find('\n')
+            .map(|i| i + 1)
+            .unwrap_or(after_end.len());
         remaining = &after_end[end_marker_end..];
     }
 
@@ -192,7 +195,10 @@ cargo build
 cargo test
 >>>>>>> END RUN >>>>>>>"#;
         let cmds = parse_run_commands(text);
-        assert_eq!(cmds, vec!["cargo build".to_string(), "cargo test".to_string()]);
+        assert_eq!(
+            cmds,
+            vec!["cargo build".to_string(), "cargo test".to_string()]
+        );
     }
 
     #[test]
