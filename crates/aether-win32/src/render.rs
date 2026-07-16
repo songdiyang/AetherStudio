@@ -6914,7 +6914,7 @@ impl EditorState {
                     .settings_panel
                     .model_dropdown_options()
                     .into_iter()
-                    .map(|(id, name)| name)
+                    .map(|(_id, name)| name)
                     .collect();
                 cy = self.render_settings_dropdown(
                     target,
@@ -8112,7 +8112,7 @@ impl EditorState {
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
                 DWRITE_MEASURING_MODE_NATURAL,
             );
-            let mut cy = cy + label_h + 4.0;
+            let cy = cy + label_h + 4.0;
             let input_bg = color_f(0.18, 0.18, 0.18, 1.0);
             let input_bg_brush = self
                 .render_ctx
@@ -8254,7 +8254,7 @@ impl EditorState {
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
                 DWRITE_MEASURING_MODE_NATURAL,
             );
-            let mut cy = cy + label_h + 4.0;
+            let cy = cy + label_h + 4.0;
 
             // 下拉框背景
             let input_bg = color_f(0.18, 0.18, 0.18, 1.0);
@@ -8514,7 +8514,7 @@ impl EditorState {
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
                 DWRITE_MEASURING_MODE_NATURAL,
             );
-            let mut cy = cy + label_h + 4.0;
+            let cy = cy + label_h + 4.0;
 
             // 下拉框背景
             let input_bg = color_f(0.18, 0.18, 0.18, 1.0);
@@ -8960,7 +8960,7 @@ impl EditorState {
         margin: f32,
         input_w: f32,
         label_format: &IDWriteTextFormat,
-        text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+        _text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
     ) -> f32 {
         unsafe {
             // 根据当前选中的服务商生成提示文本
@@ -9066,7 +9066,7 @@ impl EditorState {
         field: crate::settings::SettingsField,
         value: &str,
         suffix: &str,
-        label_format: &IDWriteTextFormat,
+        _label_format: &IDWriteTextFormat,
         input_format: &IDWriteTextFormat,
         text_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
     ) {
@@ -9478,7 +9478,7 @@ impl EditorState {
                 .brush_cache
                 .get_brush(target, &card_bg)
                 .unwrap();
-            let card_radius = 6.0_f32;
+            let _card_radius = 6.0_f32;
             let card_h = 168.0_f32;
             let card_rect = D2D_RECT_F {
                 left: card_x,

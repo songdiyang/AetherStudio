@@ -143,7 +143,7 @@ impl EditorState {
                     eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
                     panic!("D2D device lost")
                 });
-            let subtitle_brush = target
+            let _subtitle_brush = target
                 .CreateSolidColorBrush(&color_f(0.6, 0.6, 0.6, 1.0), None)
                 .unwrap_or_else(|e| {
                     eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
