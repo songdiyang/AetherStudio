@@ -829,7 +829,7 @@ impl AiClient {
             let mut buf = BufReader::new(reader);
             let mut data_buf = String::new();
             let mut line = String::new();
-            let mut done = false;
+            let done = false;
 
             loop {
                 line.clear();
@@ -846,7 +846,8 @@ impl AiClient {
                 if trimmed.is_empty() {
                     if !data_buf.is_empty() {
                         if data_buf.trim() == "[DONE]" {
-                            done = true;
+                            let _ = tx.send(AiStreamEvent::Done);
+                            break;
                         } else {
                             match serde_json::from_str::<serde_json::Value>(&data_buf) {
                                 Ok(json) => {

@@ -766,6 +766,59 @@ const FILE_DOCKER: SvgDef = SvgDef {
 };
 
 // ===========================================================================
+// AI 面板输入框工具栏图标（Lucide 风格，stroke 模式）
+// ===========================================================================
+
+/// Lucide "send" - 发送（纸飞机/箭头）
+const UI_SEND: SvgDef = SvgDef {
+    viewbox: (0.0, 0.0, 24.0, 24.0),
+    shapes: &[
+        SvgShape::Path("M22 2L11 13", None),
+        SvgShape::Path("M22 2l-7 20-4-9-9-4 20-7z", None),
+    ],
+};
+
+/// Lucide "mic" - 麦克风
+const UI_MIC: SvgDef = SvgDef {
+    viewbox: (0.0, 0.0, 24.0, 24.0),
+    shapes: &[
+        SvgShape::Path("M12 19v3", None),
+        SvgShape::Path("M8 12v1a4 4 0 0 0 8 0v-1", None),
+        SvgShape::Path("M12 19c-2.8 0-5-2.2-5-5v-4", None),
+        SvgShape::Path("M17 8v4a5 5 0 0 1-10 0V8", None),
+        SvgShape::Path("M12 1a3 3 0 0 1 3 3v5a3 3 0 0 1-6 0V4a3 3 0 0 1 3-3z", None),
+    ],
+};
+
+/// Lucide "sparkles" - 星星/闪光
+const UI_SPARKLES: SvgDef = SvgDef {
+    viewbox: (0.0, 0.0, 24.0, 24.0),
+    shapes: &[
+        SvgShape::Path(
+            "M12 2l1.5 4.5L18 8l-4.5 1.5L12 14l-1.5-4.5L6 8l4.5-1.5z",
+            None,
+        ),
+        SvgShape::Path(
+            "M18 12l.8 2.4L21 15l-2.4.8L18 18l-.8-2.4L15 15l2.4-.8z",
+            None,
+        ),
+    ],
+};
+
+/// Lucide "list" - 菜单/列表
+const UI_LIST: SvgDef = SvgDef {
+    viewbox: (0.0, 0.0, 24.0, 24.0),
+    shapes: &[
+        SvgShape::Path("M8 6h13", None),
+        SvgShape::Path("M8 12h13", None),
+        SvgShape::Path("M8 18h13", None),
+        SvgShape::Path("M3 6h.01", None),
+        SvgShape::Path("M3 12h.01", None),
+        SvgShape::Path("M3 18h.01", None),
+    ],
+};
+
+// ===========================================================================
 // 图标定义表（按 IconKind 索引）
 // ===========================================================================
 
@@ -809,28 +862,32 @@ pub(crate) const SVG_DEFS: &[SvgDef] = &[
     /* 35 ChevronRight  */ UI_CHEVRON_RIGHT,
     /* 36 EmojiSheep    */ UI_EMOJI_SHEEP,
     /* 37 Bot           */ UI_BOT,
-    /* 38 FilePython    */ FILE_PYTHON,
-    /* 39 FileJava      */ FILE_JAVA,
-    /* 40 FileText      */ FILE_TEXT,
-    /* 41 FileC         */ FILE_C,
-    /* 42 FileCpp       */ FILE_CPP,
-    /* 43 FileCSharp    */ FILE_CSHARP,
-    /* 44 FileGo        */ FILE_GO,
-    /* 45 FileRust      */ FILE_RUST,
-    /* 46 FileJs        */ FILE_JS,
-    /* 47 FileTs        */ FILE_TS,
-    /* 48 FileHtml      */ FILE_HTML,
-    /* 49 FileCss       */ FILE_CSS,
-    /* 50 FileJson      */ FILE_JSON,
-    /* 51 FileYaml      */ FILE_YAML,
-    /* 52 FileToml      */ FILE_TOML,
-    /* 53 FileMarkdown  */ FILE_MARKDOWN,
-    /* 54 FileShell     */ FILE_SHELL,
-    /* 55 FileSql       */ FILE_SQL,
-    /* 56 FileRuby      */ FILE_RUBY,
-    /* 57 FilePhp       */ FILE_PHP,
-    /* 58 FileLua       */ FILE_LUA,
-    /* 59 FileSwift     */ FILE_SWIFT,
-    /* 60 FileKotlin    */ FILE_KOTLIN,
-    /* 61 FileDocker    */ FILE_DOCKER,
+    /* 38 Send          */ UI_SEND,
+    /* 39 Mic           */ UI_MIC,
+    /* 40 Sparkles      */ UI_SPARKLES,
+    /* 41 List          */ UI_LIST,
+    /* 42 FilePython    */ FILE_PYTHON,
+    /* 43 FileJava      */ FILE_JAVA,
+    /* 44 FileText      */ FILE_TEXT,
+    /* 45 FileC         */ FILE_C,
+    /* 46 FileCpp       */ FILE_CPP,
+    /* 47 FileCSharp    */ FILE_CSHARP,
+    /* 48 FileGo        */ FILE_GO,
+    /* 49 FileRust      */ FILE_RUST,
+    /* 50 FileJs        */ FILE_JS,
+    /* 51 FileTs        */ FILE_TS,
+    /* 52 FileHtml      */ FILE_HTML,
+    /* 53 FileCss       */ FILE_CSS,
+    /* 54 FileJson      */ FILE_JSON,
+    /* 55 FileYaml      */ FILE_YAML,
+    /* 56 FileToml      */ FILE_TOML,
+    /* 57 FileMarkdown  */ FILE_MARKDOWN,
+    /* 58 FileShell     */ FILE_SHELL,
+    /* 59 FileSql       */ FILE_SQL,
+    /* 60 FileRuby      */ FILE_RUBY,
+    /* 61 FilePhp       */ FILE_PHP,
+    /* 62 FileLua       */ FILE_LUA,
+    /* 63 FileSwift     */ FILE_SWIFT,
+    /* 64 FileKotlin    */ FILE_KOTLIN,
+    /* 65 FileDocker    */ FILE_DOCKER,
 ];

@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use aether_ai::{AiClient, AiStreamEvent};
@@ -159,6 +160,20 @@ pub struct AiPanel {
     pub show_diff_view: bool,
     /// 变更列表中当前选中的索引
     pub selected_change_index: usize,
+    /// 上一帧渲染的消息内容总高度（用于滚动条与自动滚底）
+    pub content_height: f32,
+    /// 代码块保存按钮区域 (msg_index, seg_index, x, y, w, h, suggested_filename)
+    pub code_save_regions: Vec<(usize, usize, f32, f32, f32, f32, String)>,
+    /// 是否吸附底部：新消息/流式到达时自动滚动到底部
+    pub stick_to_bottom: bool,
+    /// 输入框光标位置（字符索引，0 = 开头）
+    pub caret_pos: usize,
+    /// 输入框光标可见状态（闪烁，由 CARET_TIMER 切换）
+    pub caret_visible: bool,
+    /// IME 合成串（中文输入法预编辑文本），渲染时显示在 input 之后
+    pub composition: Option<String>,
+    /// 停止生成标志：后台流式线程在下一次循环检查时退出
+    pub should_stop: Arc<AtomicBool>,
 }
 
 impl AiPanel {
@@ -175,7 +190,7 @@ impl AiPanel {
             hover_apply_button: false,
             stream_state: Arc::new(Mutex::new(AiStreamState::default())),
             input_focused: false,
-            mode: AiMode::Ask,
+            mode: AiMode::Agent,
             attachments: Vec::new(),
             mode_button_regions: Vec::new(),
             attachment_chip_regions: Vec::new(),
@@ -185,6 +200,13 @@ impl AiPanel {
             diff_view: DiffView::new(),
             show_diff_view: false,
             selected_change_index: 0,
+            content_height: 0.0,
+            code_save_regions: Vec::new(),
+            stick_to_bottom: true,
+            caret_pos: 0,
+            caret_visible: false,
+            composition: None,
+            should_stop: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -194,6 +216,7 @@ impl AiPanel {
             role: AiRole::User,
             content,
         });
+        self.stick_to_bottom = true;
     }
 
     /// 添加助手消息
@@ -202,6 +225,7 @@ impl AiPanel {
             role: AiRole::Assistant,
             content,
         });
+        self.stick_to_bottom = true;
     }
 
     /// 发送消息（AI-H01: 非阻塞 — HTTP 调用在后台线程执行，结果通过 stream_state 流式返回）
@@ -257,7 +281,9 @@ impl AiPanel {
 
         self.add_user_message(user_input.clone());
         self.input.clear();
+        self.caret_pos = 0;
         self.is_generating = true;
+        self.should_stop.store(false, Ordering::SeqCst);
         self.clear_pending_changes();
         // 重置流式状态
         if let Ok(mut s) = self.stream_state.lock() {
@@ -289,12 +315,19 @@ impl AiPanel {
         let context = context.unwrap_or_default();
         let messages = build_chat_prompt(&settings, &context, &user_input, mode);
         let stream_state = Arc::clone(&self.stream_state);
+        let should_stop = Arc::clone(&self.should_stop);
 
         std::thread::spawn(move || {
             let client = AiClient::new(&settings);
             match client.chat_completion_stream(&messages) {
                 Ok(rx) => {
                     while let Ok(event) = rx.recv() {
+                        if should_stop.load(Ordering::SeqCst) {
+                            if let Ok(mut s) = stream_state.lock() {
+                                s.done = true;
+                            }
+                            break;
+                        }
                         match event {
                             AiStreamEvent::Token(token) => {
                                 if let Ok(mut s) = stream_state.lock() {
@@ -331,19 +364,125 @@ impl AiPanel {
         Ok("请求已提交".to_string())
     }
 
-    /// 输入字符
+    /// 输入字符（在光标位置插入）
     pub fn input_char(&mut self, ch: char) {
-        self.input.push(ch);
+        if self.caret_pos > self.input.len() {
+            self.caret_pos = self.input.len();
+        }
+        self.input.insert(self.caret_pos, ch);
+        self.caret_pos += ch.len_utf8();
     }
 
-    /// 退格
+    /// 在光标位置插入字符串（用于 IME 提交等一次性多字符输入）
+    pub fn insert_str(&mut self, s: &str) {
+        if self.caret_pos > self.input.len() {
+            self.caret_pos = self.input.len();
+        }
+        self.input.insert_str(self.caret_pos, s);
+        self.caret_pos += s.len();
+    }
+
+    /// 退格（删除光标前一个字符）
     pub fn backspace(&mut self) {
-        self.input.pop();
+        if self.caret_pos > 0 {
+            let prev_pos = self.prev_char_boundary();
+            self.input.drain(prev_pos..self.caret_pos);
+            self.caret_pos = prev_pos;
+        }
+    }
+
+    /// 删除（删除光标后一个字符）
+    pub fn delete(&mut self) {
+        if self.caret_pos < self.input.len() {
+            let next_pos = self.next_char_boundary();
+            self.input.drain(self.caret_pos..next_pos);
+        }
+    }
+
+    /// 光标左移
+    pub fn move_caret_left(&mut self) {
+        if self.caret_pos > 0 {
+            self.caret_pos = self.prev_char_boundary();
+        }
+    }
+
+    /// 光标右移
+    pub fn move_caret_right(&mut self) {
+        if self.caret_pos < self.input.len() {
+            self.caret_pos = self.next_char_boundary();
+        }
+    }
+
+    /// 光标移到行首
+    pub fn move_caret_home(&mut self) {
+        self.caret_pos = 0;
+    }
+
+    /// 光标移到行尾
+    pub fn move_caret_end(&mut self) {
+        self.caret_pos = self.input.len();
+    }
+
+    /// 获取前一个字符边界（UTF-8）
+    fn prev_char_boundary(&self) -> usize {
+        let mut pos = self.caret_pos;
+        while pos > 0 {
+            pos -= 1;
+            if self.input.is_char_boundary(pos) {
+                return pos;
+            }
+        }
+        0
+    }
+
+    /// 获取后一个字符边界（UTF-8）
+    fn next_char_boundary(&self) -> usize {
+        let mut pos = self.caret_pos + 1;
+        while pos < self.input.len() {
+            if self.input.is_char_boundary(pos) {
+                return pos;
+            }
+            pos += 1;
+        }
+        self.input.len()
     }
 
     /// 清除输入
     pub fn clear_input(&mut self) {
         self.input.clear();
+        self.caret_pos = 0;
+    }
+
+    /// 停止当前生成（后台线程在下一次循环检查时退出）
+    pub fn stop_generation(&mut self) {
+        self.should_stop.store(true, Ordering::SeqCst);
+        self.is_generating = false;
+        if let Ok(mut s) = self.stream_state.lock() {
+            s.done = true;
+        }
+    }
+
+    /// 重新生成：移除末尾助手消息，用最近一条用户消息重新发送
+    pub fn regenerate(&mut self, settings: &AiSettings) {
+        if self.is_generating {
+            return;
+        }
+        while matches!(self.messages.last(), Some(m) if m.role == AiRole::Assistant) {
+            self.messages.pop();
+        }
+        let last_user = self
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == AiRole::User)
+            .map(|m| m.content.clone());
+        if let Some(input) = last_user {
+            if matches!(self.messages.last(), Some(m) if m.role == AiRole::User) {
+                self.messages.pop();
+            }
+            self.input = input;
+            let _ = self.send_message(settings);
+        }
     }
 
     /// 清除所有对话
@@ -363,9 +502,11 @@ impl AiPanel {
     /// AI-H01: 轮询后台线程结果，应在渲染循环中调用
     ///
     /// `current_folder` 用于 Edit/Agent 模式解析编辑相对路径，生成正确的 diff 预览。
-    pub fn check_background_result(&mut self, current_folder: Option<&Path>) {
+    /// 返回 `true` 表示本帧生成刚刚完成（done 边沿），调用方应在此时处理 Agent 动作
+    /// （创建/修改文件、执行终端命令）。
+    pub fn check_background_result(&mut self, current_folder: Option<&Path>) -> bool {
         if !self.is_generating {
-            return;
+            return false;
         }
         let delta = {
             if let Ok(mut s) = self.stream_state.lock() {
@@ -380,8 +521,10 @@ impl AiPanel {
                 None
             }
         };
+        let mut just_completed = false;
         if let Some((partial, done, error)) = delta {
             if !partial.is_empty() {
+                self.stick_to_bottom = true;
                 if let Some(last) = self.messages.last_mut() {
                     if last.role == AiRole::Assistant {
                         last.content.push_str(&partial);
@@ -395,15 +538,28 @@ impl AiPanel {
             if let Some(err) = error {
                 self.add_assistant_message(err);
                 self.is_generating = false;
-                return;
+                return false;
             }
             if done {
                 self.is_generating = false;
-                if matches!(self.mode, AiMode::Edit | AiMode::Agent) {
+                // 仅 Edit 模式构建差异预览等待用户确认；Agent 模式由
+                // EditorState::process_ai_agent_actions 直接落盘应用。
+                if matches!(self.mode, AiMode::Edit) {
                     self.parse_pending_edits(None, current_folder);
                 }
+                just_completed = true;
             }
         }
+        just_completed
+    }
+
+    /// 从最后一条助手消息中提取文件创建编辑（search 为空的编辑）
+    pub fn extract_file_creates(&self) -> Vec<crate::ai_agent::AiEdit> {
+        let Some(text) = self.last_assistant_text() else {
+            return Vec::new();
+        };
+        let edits = parse_edits(&text, None);
+        edits.into_iter().filter(|e| e.is_create_new()).collect()
     }
 
     /// 解析最后一条助手消息中的编辑标记，生成 diff 预览
@@ -509,6 +665,33 @@ impl AiPanel {
         }
     }
 
+    /// 从代码围栏行提取建议的文件名
+    /// 例如 ```python:main.py 或 ```rust src/main.rs
+    pub fn extract_filename_from_fence(line: &str) -> Option<String> {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("```") {
+            return None;
+        }
+        let after_fence = trimmed.strip_prefix("```")?.trim();
+        // 检查是否包含冒号或空格分隔的文件名
+        if let Some(colon_pos) = after_fence.find(':') {
+            let filename = after_fence[colon_pos + 1..].trim();
+            if !filename.is_empty() && !filename.contains(' ') {
+                return Some(filename.to_string());
+            }
+        }
+        // 检查格式：语言 文件名（如 "python main.py"）
+        let parts: Vec<&str> = after_fence.split_whitespace().collect();
+        if parts.len() >= 2 {
+            // 第二部分看起来像文件名（包含 . 或 /）
+            let candidate = parts[1];
+            if candidate.contains('.') || candidate.contains('/') || candidate.contains("\\") {
+                return Some(candidate.to_string());
+            }
+        }
+        None
+    }
+
     /// 获取最后一条助手消息的纯文本（去掉代码块标记）
     pub fn last_assistant_text(&self) -> Option<String> {
         for msg in self.messages.iter().rev() {
@@ -612,5 +795,99 @@ impl AiPanel {
         self.mode_button_regions.clear();
         self.attachment_chip_regions.clear();
         self.change_action_regions.clear();
+        self.code_save_regions.clear();
     }
+}
+
+/// 解析段落内的轻量 Markdown：标题(`#`/`##`/`###`)、无序列表(`-`/`*`/`+`)、粗体(`**`)。
+///
+/// 返回 `(清洗后的 UTF-16 文本, 粗体范围, 标题范围[start,len,字号])`，
+/// 范围以 UTF-16 code unit 为单位，直接供 `IDWriteTextLayout` 的 range 样式使用。
+pub fn parse_markdown_segment(text: &str) -> (Vec<u16>, Vec<(u32, u32)>, Vec<(u32, u32, f32)>) {
+    let mut clean: Vec<u16> = Vec::new();
+    let mut bolds: Vec<(u32, u32)> = Vec::new();
+    let mut headings: Vec<(u32, u32, f32)> = Vec::new();
+
+    for (li, line) in text.lines().enumerate() {
+        if li > 0 {
+            clean.push(b'\n' as u16);
+        }
+        let line_start = clean.len() as u32;
+
+        // 行首标题标记
+        let trimmed = line.trim_start();
+        let (mut content, heading_size): (&str, Option<f32>) =
+            if let Some(rest) = trimmed.strip_prefix("### ") {
+                (rest, Some(13.5))
+            } else if let Some(rest) = trimmed.strip_prefix("## ") {
+                (rest, Some(15.0))
+            } else if let Some(rest) = trimmed.strip_prefix("# ") {
+                (rest, Some(17.0))
+            } else {
+                (line, None)
+            };
+
+        // 行首无序列表标记（非标题时），替换为圆点
+        if heading_size.is_none() {
+            let t = content.trim_start();
+            if let Some(rest) = t
+                .strip_prefix("- ")
+                .or_else(|| t.strip_prefix("* "))
+                .or_else(|| t.strip_prefix("+ "))
+            {
+                clean.push(0x2022); // •
+                clean.push(b' ' as u16);
+                content = rest;
+            }
+        }
+
+        // 行内粗体 **text**
+        let chars: Vec<char> = content.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
+                if let Some(end) = find_double_star(&chars, i + 2) {
+                    let b_start = clean.len() as u32;
+                    for &c in &chars[i + 2..end] {
+                        push_utf16(&mut clean, c);
+                    }
+                    let b_len = clean.len() as u32 - b_start;
+                    if b_len > 0 {
+                        bolds.push((b_start, b_len));
+                    }
+                    i = end + 2;
+                    continue;
+                }
+            }
+            push_utf16(&mut clean, chars[i]);
+            i += 1;
+        }
+
+        if let Some(size) = heading_size {
+            let line_len = clean.len() as u32 - line_start;
+            if line_len > 0 {
+                headings.push((line_start, line_len, size));
+            }
+        }
+    }
+
+    (clean, bolds, headings)
+}
+
+fn push_utf16(buf: &mut Vec<u16>, c: char) {
+    let mut tmp = [0u16; 2];
+    for u in c.encode_utf16(&mut tmp) {
+        buf.push(*u);
+    }
+}
+
+fn find_double_star(chars: &[char], from: usize) -> Option<usize> {
+    let mut i = from;
+    while i + 1 < chars.len() {
+        if chars[i] == '*' && chars[i + 1] == '*' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }

@@ -95,6 +95,50 @@ fn extract_path_from_header(header: &str) -> Option<String> {
     }
 }
 
+/// 从 AI 回复中解析待执行的终端命令
+///
+/// 支持标记：
+/// ```text
+/// <<<<<<< RUN >>>>>>>
+/// python src/main.py
+/// >>>>>>> END RUN >>>>>>>
+/// ```
+/// 每个 RUN 块内可包含一条或多条命令（按行拆分，空行忽略）。
+pub fn parse_run_commands(response: &str) -> Vec<String> {
+    let mut commands = Vec::new();
+    let mut remaining = response;
+
+    while let Some(start) = remaining.find("<<<<<<< RUN") {
+        remaining = &remaining[start..];
+        // 跳过起始标记到行尾
+        let Some(header_end) = remaining.find(">>>>>>>") else {
+            break;
+        };
+        let after_header = &remaining[header_end + ">>>>>>>".len()..];
+
+        // 查找结束标记
+        let Some(end_start) = after_header.find(">>>>>>> END RUN") else {
+            break;
+        };
+        let body = &after_header[..end_start];
+        for line in body.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                commands.push(trimmed.to_string());
+            }
+        }
+        // 跳过结束标记到行尾
+        let after_end = &after_header[end_start..];
+        let end_marker_end = after_end
+            .find('\n')
+            .map(|i| i + 1)
+            .unwrap_or(after_end.len());
+        remaining = &after_end[end_marker_end..];
+    }
+
+    commands
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +175,35 @@ pub fn hello() {}
     fn test_parse_no_markers() {
         let edits = parse_edits("普通回答，没有编辑", None);
         assert!(edits.is_empty());
+    }
+
+    #[test]
+    fn test_parse_run_commands_single() {
+        let text = r#"我将运行脚本：
+<<<<<<< RUN >>>>>>>
+python src/main.py
+>>>>>>> END RUN >>>>>>>
+"#;
+        let cmds = parse_run_commands(text);
+        assert_eq!(cmds, vec!["python src/main.py".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_run_commands_multi() {
+        let text = r#"<<<<<<< RUN >>>>>>>
+cargo build
+cargo test
+>>>>>>> END RUN >>>>>>>"#;
+        let cmds = parse_run_commands(text);
+        assert_eq!(
+            cmds,
+            vec!["cargo build".to_string(), "cargo test".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_parse_run_commands_none() {
+        let cmds = parse_run_commands("没有命令");
+        assert!(cmds.is_empty());
     }
 }

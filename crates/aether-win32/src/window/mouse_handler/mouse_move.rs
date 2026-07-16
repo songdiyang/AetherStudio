@@ -364,6 +364,47 @@ unsafe fn omm_settings_hover(
             st.settings_panel.hover_tab = None;
             changed = true;
         }
+        // 模型管理页悬停检测
+        if st.settings_panel.active_tab == crate::settings::SettingsTab::Models {
+            let editor_region = layout.editor_region();
+            if editor_region.contains(mouse_x, mouse_y) {
+                let rel_x = mouse_x - editor_region.x;
+                let rel_y = mouse_y - editor_region.y;
+                // 检测模型项悬停
+                let new_hover_id = st.settings_panel.hit_test_model_item(rel_x, rel_y);
+                if st.settings_panel.hover_model_id != new_hover_id {
+                    st.settings_panel.hover_model_id = new_hover_id.clone();
+                    changed = true;
+                }
+                // 检测模型按钮悬停
+                let new_hover_btn = st.settings_panel.hit_test_model_button(rel_x, rel_y);
+                let (new_btn, new_btn_id) = match new_hover_btn {
+                    Some((btn, id)) => (Some(btn), Some(id)),
+                    None => (None, None),
+                };
+                if st.settings_panel.hover_model_button != new_btn {
+                    st.settings_panel.hover_model_button = new_btn;
+                    changed = true;
+                }
+                if st.settings_panel.hover_model_button_id != new_btn_id {
+                    st.settings_panel.hover_model_button_id = new_btn_id;
+                    changed = true;
+                }
+            } else {
+                if st.settings_panel.hover_model_id.is_some() {
+                    st.settings_panel.hover_model_id = None;
+                    changed = true;
+                }
+                if st.settings_panel.hover_model_button.is_some() {
+                    st.settings_panel.hover_model_button = None;
+                    changed = true;
+                }
+                if st.settings_panel.hover_model_button_id.is_some() {
+                    st.settings_panel.hover_model_button_id = None;
+                    changed = true;
+                }
+            }
+        }
         changed
     }
 }

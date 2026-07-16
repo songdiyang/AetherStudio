@@ -50,6 +50,8 @@ pub struct TerminalPanel {
     size_synced: bool,
     /// ConPTY 启动时间（用于在初始阶段抑制清屏序列）
     conpty_start_time: Option<std::time::Instant>,
+    /// AI Agent 待执行命令队列（终端就绪后自动发送）
+    pending_commands: std::collections::VecDeque<String>,
 }
 
 impl TerminalPanel {
@@ -73,6 +75,7 @@ impl TerminalPanel {
             rows: 24,
             size_synced: false,
             conpty_start_time: None,
+            pending_commands: std::collections::VecDeque::new(),
         }
     }
 
@@ -250,6 +253,38 @@ impl TerminalPanel {
                 "send_bytes: conpty 为 None，无法发送（可能子进程已退出）"
             );
         }
+    }
+
+    /// AI Agent：将命令加入待执行队列，终端就绪后自动发送执行。
+    pub fn queue_command(&mut self, command: String) {
+        self.pending_commands.push_back(command);
+    }
+
+    /// 是否有待执行的命令
+    pub fn has_pending_commands(&self) -> bool {
+        !self.pending_commands.is_empty()
+    }
+
+    /// 刷新待执行命令：当 ConPTY 就绪且 shell 提示符已显示后，发送队列中的命令。
+    /// 应在主线程每帧调用（与 poll_startup / flush_output 同级）。
+    pub fn flush_pending_commands(&mut self) {
+        if self.pending_commands.is_empty() || self.conpty.is_none() {
+            return;
+        }
+        // 等待 shell 提示符就绪（启动后短暂延迟），避免命令被 shell 初始化吞掉
+        if let Some(start) = self.conpty_start_time {
+            if start.elapsed() < std::time::Duration::from_millis(600) {
+                return;
+            }
+        } else {
+            return;
+        }
+        while let Some(cmd) = self.pending_commands.pop_front() {
+            self.send_bytes(cmd.as_bytes());
+            self.send_bytes(b"\r");
+        }
+        // 发送后回到底部显示最新输出
+        self.scroll_offset = 0;
     }
 
     /// 发送回车键，同时重置滚动到最新输出。

@@ -205,6 +205,24 @@ pub(crate) unsafe fn on_mouse_wheel(
                     return;
                 }
             }
+            // 检查光标是否在右侧 AI 面板区域内
+            if state.layout.right_panel_visible {
+                let right_panel = state.layout.right_panel_region();
+                if right_panel.contains(cursor_x, cursor_y) {
+                    let chat_top = 52.0f32;
+                    let chat_bottom = right_panel.height - 80.0f32;
+                    // 只有当光标在聊天消息区域（非输入框）时才滚动
+                    if cursor_y >= chat_top && cursor_y < chat_bottom {
+                        let scroll_amount = delta * 2.0; // 每滚轮单位滚动 2 像素
+                        state.ai_panel.scroll_y = (state.ai_panel.scroll_y - scroll_amount)
+                            .clamp(0.0, state.ai_panel.content_height.max(0.0));
+                        state.ai_panel.stick_to_bottom = false; // 用户手动滚动时取消吸附底部
+                        invalidate_window(hwnd);
+                        return;
+                    }
+                }
+            }
+
             // 检查光标是否在侧边栏区域内
             let sidebar = state.layout.sidebar_region();
             if state.layout.sidebar_visible

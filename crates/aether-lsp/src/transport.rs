@@ -266,18 +266,29 @@ pub(crate) fn build_command(config: &crate::types::ServerConfig) -> tokio::proce
         .and_then(|p| p.to_str())
         .unwrap_or("rust-analyzer"); // 默认尝试 rust-analyzer
 
-    let mut cmd = tokio::process::Command::new(command);
-    cmd.args(&config.args)
+    // 先用 std::process::Command 构建，设置 Windows 标志后再转换为 tokio
+    let mut std_cmd = std::process::Command::new(command);
+    std_cmd
+        .args(&config.args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    // 设置环境变量
-    for (key, value) in &config.env {
-        cmd.env(key, value);
+    // Windows: 禁止创建控制台窗口，避免启动 rust-analyzer 时弹出终端窗口
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        std_cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    cmd
+    // 设置环境变量
+    for (key, value) in &config.env {
+        std_cmd.env(key, value);
+    }
+
+    // 转换为 tokio::process::Command
+    tokio::process::Command::from(std_cmd)
 }
 
 /// 后台持续读取子进程 stderr，避免管道缓冲区满导致子进程阻塞。

@@ -112,6 +112,11 @@ pub(crate) unsafe fn on_key_down(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         return LRESULT(0);
     }
 
+    // AI 面板输入框聚焦时，处理方向键、Home/End、Delete
+    if let Some(r) = okd_ai_panel_input(hwnd, vk) {
+        return r;
+    }
+
     super::key_down_edit::okd_edit_dispatch(hwnd, vk, shift);
     LRESULT(0)
 }
@@ -933,6 +938,72 @@ unsafe fn okd_command_palette(hwnd: HWND, vk: VIRTUAL_KEY) -> Option<LRESULT> {
             EDITOR_STATE.with(|s| {
                 if let Some(state) = s.borrow().as_ref() {
                     state.borrow_mut().command_palette.backspace_query();
+                    invalidate_window(hwnd);
+                }
+            });
+            Some(LRESULT(0))
+        }
+        _ => None,
+    }
+}
+
+/// AI 面板输入框聚焦时处理方向键、Home/End、Delete
+unsafe fn okd_ai_panel_input(hwnd: HWND, vk: VIRTUAL_KEY) -> Option<LRESULT> {
+    let active = EDITOR_STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|state| state.borrow().ai_panel.input_focused)
+            .unwrap_or(false)
+    });
+    if !active {
+        return None;
+    }
+    match vk {
+        VK_LEFT => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    state.borrow_mut().ai_panel.move_caret_left();
+                    state.borrow_mut().ai_panel.caret_visible = true;
+                    invalidate_window(hwnd);
+                }
+            });
+            Some(LRESULT(0))
+        }
+        VK_RIGHT => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    state.borrow_mut().ai_panel.move_caret_right();
+                    state.borrow_mut().ai_panel.caret_visible = true;
+                    invalidate_window(hwnd);
+                }
+            });
+            Some(LRESULT(0))
+        }
+        VK_HOME => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    state.borrow_mut().ai_panel.move_caret_home();
+                    state.borrow_mut().ai_panel.caret_visible = true;
+                    invalidate_window(hwnd);
+                }
+            });
+            Some(LRESULT(0))
+        }
+        VK_END => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    state.borrow_mut().ai_panel.move_caret_end();
+                    state.borrow_mut().ai_panel.caret_visible = true;
+                    invalidate_window(hwnd);
+                }
+            });
+            Some(LRESULT(0))
+        }
+        VK_DELETE => {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    state.borrow_mut().ai_panel.delete();
+                    state.borrow_mut().ai_panel.caret_visible = true;
                     invalidate_window(hwnd);
                 }
             });
