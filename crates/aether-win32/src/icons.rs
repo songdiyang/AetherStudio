@@ -242,6 +242,7 @@ impl IconCache {
     }
 
     /// 在指定矩形内绘制图标（保持 viewBox 比例居中）
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
         target: &ID2D1RenderTarget,

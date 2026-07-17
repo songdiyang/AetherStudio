@@ -79,11 +79,7 @@ pub(crate) fn load_app_icons() -> (Option<HICON>, Option<HICON>) {
             LR_LOADFROMFILE,
         )
         .ok()
-        .and_then(|h| {
-            // LoadImageW 在 IMAGE_ICON 模式下返回 HANDLE，需要转为 HICON
-            // windows crate 的 HICON 实际上就是 isize 包装
-            Some(HICON(h.0))
-        });
+        .map(|h| HICON(h.0));
 
         // 小图标：标题栏（DPI 缩放后取最近 ICO 尺寸）
         let hicon_small = LoadImageW(
@@ -129,6 +125,5 @@ fn ensure_ico_on_disk() -> Option<PathBuf> {
 }
 
 fn temp_aether_dir() -> PathBuf {
-    let base = std::env::temp_dir().join("Aether");
-    base
+    std::env::temp_dir().join("Aether")
 }

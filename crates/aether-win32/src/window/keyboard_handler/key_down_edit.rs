@@ -175,7 +175,7 @@ unsafe fn okd_edit_return(hwnd: HWND) {
     } else if ai_panel_active {
         EDITOR_STATE.with(|s| {
             if let Some(state) = s.borrow().as_ref() {
-                let settings = state.borrow().app_settings.ai.clone();
+                let settings = state.borrow().app_settings.active_ai_settings();
                 let mode = state.borrow().ai_panel.mode;
                 let attachments = state.borrow().ai_panel.attachments.clone();
                 let context = state.borrow().gather_context(&attachments);

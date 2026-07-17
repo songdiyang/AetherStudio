@@ -803,6 +803,7 @@ impl AiPanel {
 ///
 /// 返回 `(清洗后的 UTF-16 文本, 粗体范围, 标题范围[start,len,字号])`，
 /// 范围以 UTF-16 code unit 为单位，直接供 `IDWriteTextLayout` 的 range 样式使用。
+#[allow(clippy::type_complexity)]
 pub fn parse_markdown_segment(text: &str) -> (Vec<u16>, Vec<(u32, u32)>, Vec<(u32, u32, f32)>) {
     let mut clean: Vec<u16> = Vec::new();
     let mut bolds: Vec<(u32, u32)> = Vec::new();
