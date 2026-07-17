@@ -1,4 +1,4 @@
-use aether_shared::settings::{AiSettings, AppSettings};
+use aether_shared::settings::{AiModelProfile, AiSettings, AppSettings};
 use std::sync::{Arc, Mutex};
 
 /// 设置面板字段标识
@@ -11,12 +11,6 @@ pub enum SettingsField {
     Temperature,
     MaxTokens,
     SystemPrompt,
-    /// 添加模型对话框字段
-    ContextInput,
-    ContextOutput,
-    ToolCallRounds,
-    /// 展示名称
-    DisplayName,
 }
 
 /// 设置面板按钮标识
@@ -89,20 +83,6 @@ pub enum ModelButton {
     ToggleEnabled,
 }
 
-/// 添加模型对话框按钮
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AddModelDialogButton {
-    Close,
-    AddModel,
-}
-
-/// 添加模型对话框标签页
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AddModelDialogTab {
-    Provider,
-    Custom,
-}
-
 /// 测试连接轮询结果
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TestPollResult {
@@ -118,25 +98,6 @@ pub enum TestPollResult {
     Pending,
 }
 
-impl AddModelDialogTab {
-    pub const ALL: [AddModelDialogTab; 2] =
-        [AddModelDialogTab::Provider, AddModelDialogTab::Custom];
-
-    pub fn label(&self) -> &'static str {
-        match self {
-            AddModelDialogTab::Provider => "服务商",
-            AddModelDialogTab::Custom => "自定义",
-        }
-    }
-}
-
-/// 添加模型下拉类型
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AddModelDropdownKind {
-    Provider,
-    Model,
-}
-
 /// 模型配置项
 #[derive(Clone, Debug)]
 pub struct ModelConfig {
@@ -146,115 +107,64 @@ pub struct ModelConfig {
     pub provider: String,
     pub description: String,
     pub enabled: bool,
-}
-
-/// 添加模型对话框状态
-#[derive(Clone, Debug)]
-pub struct AddModelDialog {
-    pub visible: bool,
-    pub active_tab: AddModelDialogTab,
-    pub hover_tab: Option<AddModelDialogTab>,
-    pub hover_button: Option<AddModelDialogButton>,
-    pub close_region: Option<(f32, f32, f32, f32)>,
-    pub open_dropdown: Option<AddModelDropdownKind>,
-    pub hover_dropdown: Option<AddModelDropdownKind>,
-    pub hover_dropdown_index: Option<usize>,
-    pub selected_provider_button: Option<ProviderTemplateButton>,
-    pub selected_model_id: String,
-    pub display_name: String,
-    pub context_input: String,
-    pub context_output: String,
-    pub tool_call_rounds: String,
-    pub provider: String,
+    // 多模型：完整配置字段
+    pub api_key: String,
     pub base_url: String,
-    pub model: String,
-    pub field_regions: Vec<(SettingsField, f32, f32, f32, f32)>,
-    pub button_regions: Vec<(AddModelDialogButton, f32, f32, f32, f32)>,
-    pub dropdown_trigger_regions: Vec<(AddModelDropdownKind, f32, f32, f32, f32)>,
-    pub dropdown_item_regions: Vec<(AddModelDropdownKind, usize, f32, f32, f32, f32)>,
-    pub provider_template_regions: Vec<(ProviderTemplateButton, f32, f32, f32, f32)>,
-    pub advanced_toggle_region: Option<(f32, f32, f32, f32)>,
-    pub advanced_expanded: bool,
-    pub tab_regions: Vec<(AddModelDialogTab, f32, f32, f32, f32)>,
-    pub active_field: Option<SettingsField>,
+    pub temperature: String,
+    pub max_tokens: String,
+    pub system_prompt: String,
 }
 
-impl AddModelDialog {
-    pub fn new() -> Self {
-        Self {
-            visible: false,
-            active_tab: AddModelDialogTab::Provider,
-            hover_tab: None,
-            hover_button: None,
-            close_region: None,
-            open_dropdown: None,
-            hover_dropdown: None,
-            hover_dropdown_index: None,
-            selected_provider_button: None,
-            selected_model_id: String::new(),
-            display_name: String::new(),
-            context_input: String::new(),
-            context_output: String::new(),
-            tool_call_rounds: "3".to_string(),
-            provider: String::new(),
-            base_url: String::new(),
-            model: String::new(),
-            field_regions: Vec::new(),
-            button_regions: Vec::new(),
-            dropdown_trigger_regions: Vec::new(),
-            dropdown_item_regions: Vec::new(),
-            provider_template_regions: Vec::new(),
-            advanced_toggle_region: None,
-            advanced_expanded: false,
-            tab_regions: Vec::new(),
-            active_field: None,
+impl ModelConfig {
+    /// 转换为持久化用的 AiModelProfile
+    pub fn to_profile(&self) -> AiModelProfile {
+        AiModelProfile {
+            id: self.id.clone(),
+            display_name: self.display_name.clone(),
+            provider: self.provider.clone(),
+            api_key: self.api_key.clone(),
+            base_url: if self.base_url.is_empty() {
+                None
+            } else {
+                Some(self.base_url.clone())
+            },
+            model: self.name.clone(),
+            temperature: self.temperature.trim().parse().ok(),
+            max_tokens: self.max_tokens.trim().parse().ok(),
+            system_prompt: if self.system_prompt.is_empty() {
+                None
+            } else {
+                Some(self.system_prompt.clone())
+            },
+            enabled: self.enabled,
         }
     }
 
-    pub fn provider_label(&self) -> String {
-        self.selected_provider_button
-            .map(|b| match b {
-                ProviderTemplateButton::DeepSeek => "DeepSeek".to_string(),
-                ProviderTemplateButton::Kimi => "Kimi".to_string(),
-                ProviderTemplateButton::Custom => "自定义".to_string(),
-            })
-            .unwrap_or_else(|| "请选择".to_string())
-    }
-
-    pub fn masked_api_key(&self) -> String {
-        "••••".to_string()
-    }
-
-    pub fn model_options(&self) -> Vec<String> {
-        vec![]
-    }
-
-    pub fn reset(&mut self) {
-        self.active_tab = AddModelDialogTab::Provider;
-        self.hover_tab = None;
-        self.hover_button = None;
-        self.close_region = None;
-        self.open_dropdown = None;
-        self.hover_dropdown = None;
-        self.hover_dropdown_index = None;
-        self.selected_provider_button = None;
-        self.selected_model_id = String::new();
-        self.display_name = String::new();
-        self.context_input = String::new();
-        self.context_output = String::new();
-        self.tool_call_rounds = "3".to_string();
-        self.provider = String::new();
-        self.base_url = String::new();
-        self.model = String::new();
-        self.field_regions.clear();
-        self.button_regions.clear();
-        self.dropdown_trigger_regions.clear();
-        self.dropdown_item_regions.clear();
-        self.provider_template_regions.clear();
-        self.advanced_toggle_region = None;
-        self.advanced_expanded = false;
-        self.tab_regions.clear();
-        self.active_field = None;
+    /// 从持久化的 AiModelProfile 构造
+    pub fn from_profile(p: &AiModelProfile) -> Self {
+        Self {
+            id: p.id.clone(),
+            name: p.model.clone(),
+            display_name: if p.display_name.is_empty() {
+                p.model.clone()
+            } else {
+                p.display_name.clone()
+            },
+            provider: p.provider.clone(),
+            description: String::new(),
+            enabled: p.enabled,
+            api_key: p.api_key.clone(),
+            base_url: p.base_url.clone().unwrap_or_default(),
+            temperature: p
+                .temperature
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "0.7".to_string()),
+            max_tokens: p
+                .max_tokens
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| "2048".to_string()),
+            system_prompt: p.system_prompt.clone().unwrap_or_default(),
+        }
     }
 }
 
@@ -297,8 +207,6 @@ pub struct SettingsPanel {
     pub hover_model_button: Option<ModelButton>,
     /// 悬停按钮对应的模型ID（用于区分不同模型项上的按钮）
     pub hover_model_button_id: Option<String>,
-    // 添加模型对话框
-    pub add_model_dialog: AddModelDialog,
     // 模型按钮/项命中区域
     model_button_regions: Vec<(ModelButton, f32, f32, f32, f32)>,
     model_item_regions: Vec<(String, f32, f32, f32, f32)>,
@@ -308,6 +216,19 @@ pub struct SettingsPanel {
     pub dropdown_item_regions: Vec<(SettingsDropdownKind, usize, f32, f32, f32, f32)>,
     pub hover_dropdown: Option<SettingsDropdownKind>,
     pub hover_dropdown_index: Option<usize>,
+    // 滚动：scroll_offset 为当前偏移，content_height 为最大可滚动距离（总内容高 - 可视高）
+    pub scroll_offset: f32,
+    pub content_height: f32,
+    // API 密钥显隐
+    pub show_api_key: bool,
+    pub hover_api_key_toggle: bool,
+    pub api_key_toggle_region: Option<(f32, f32, f32, f32)>,
+    // 温度滑块轨道命中区
+    pub temp_slider_region: Option<(f32, f32, f32, f32)>,
+    /// 温度滑块是否处于拖拽中
+    pub temp_slider_dragging: bool,
+    /// 打开设置面板时的 AI 配置快照，用于"未保存更改"检测
+    pub baseline_ai: Option<AiSettings>,
 }
 
 impl SettingsPanel {
@@ -334,38 +255,12 @@ impl SettingsPanel {
             nav_width: 160.0,
             hover_nav_resize: false,
             nav_resizing: false,
-            models: vec![
-                ModelConfig {
-                    id: "kimi-for-coding".to_string(),
-                    name: "kimi-code".to_string(),
-                    display_name: "Kimi-for-coding".to_string(),
-                    provider: "kimi".to_string(),
-                    description: "Coding plan".to_string(),
-                    enabled: true,
-                },
-                ModelConfig {
-                    id: "deepseek-v4-pro".to_string(),
-                    name: "deepseek-v4-pro".to_string(),
-                    display_name: "DeepSeek-V4-Pro".to_string(),
-                    provider: "deepseek".to_string(),
-                    description: "按量付费".to_string(),
-                    enabled: true,
-                },
-                ModelConfig {
-                    id: "deepseek-v4-flash".to_string(),
-                    name: "deepseek-v4-flash".to_string(),
-                    display_name: "DeepSeek-V4-Flash".to_string(),
-                    provider: "deepseek".to_string(),
-                    description: "按量付费".to_string(),
-                    enabled: true,
-                },
-            ],
+            models: Vec::new(),
             selected_model_id: None,
             hover_model_id: None,
             active_model_id: None,
             hover_model_button: None,
             hover_model_button_id: None,
-            add_model_dialog: AddModelDialog::new(),
             model_button_regions: Vec::new(),
             model_item_regions: Vec::new(),
             open_dropdown: None,
@@ -373,6 +268,14 @@ impl SettingsPanel {
             dropdown_item_regions: Vec::new(),
             hover_dropdown: None,
             hover_dropdown_index: None,
+            scroll_offset: 0.0,
+            content_height: 0.0,
+            show_api_key: false,
+            hover_api_key_toggle: false,
+            api_key_toggle_region: None,
+            temp_slider_region: None,
+            temp_slider_dragging: false,
+            baseline_ai: None,
         }
     }
 
@@ -413,7 +316,6 @@ impl SettingsPanel {
             active_model_id: None,
             hover_model_button: None,
             hover_model_button_id: None,
-            add_model_dialog: AddModelDialog::new(),
             model_button_regions: Vec::new(),
             model_item_regions: Vec::new(),
             open_dropdown: None,
@@ -421,6 +323,14 @@ impl SettingsPanel {
             dropdown_item_regions: Vec::new(),
             hover_dropdown: None,
             hover_dropdown_index: None,
+            scroll_offset: 0.0,
+            content_height: 0.0,
+            show_api_key: false,
+            hover_api_key_toggle: false,
+            api_key_toggle_region: None,
+            temp_slider_region: None,
+            temp_slider_dragging: false,
+            baseline_ai: None,
         }
     }
 
@@ -445,21 +355,170 @@ impl SettingsPanel {
     }
 
     pub fn apply_settings(&mut self, settings: &AppSettings) {
-        self.provider = settings.ai.provider.clone();
-        self.api_key = settings.ai.api_key.clone();
-        self.base_url = settings.ai.base_url.clone().unwrap_or_default();
-        self.model = settings.ai.model.clone();
-        self.temperature = settings
-            .ai
-            .temperature
-            .map(|t| t.to_string())
-            .unwrap_or_else(|| "0.7".to_string());
-        self.max_tokens = settings
-            .ai
-            .max_tokens
-            .map(|m| m.to_string())
-            .unwrap_or_else(|| "2048".to_string());
-        self.system_prompt = settings.ai.system_prompt.clone().unwrap_or_default();
+        // 加载模型列表（多模型架构）
+        self.models = settings
+            .ai_models
+            .iter()
+            .map(ModelConfig::from_profile)
+            .collect();
+        self.active_model_id = settings
+            .active_model_id
+            .clone()
+            .filter(|id| self.models.iter().any(|m| &m.id == id))
+            .or_else(|| self.models.first().map(|m| m.id.clone()));
+        // 加载激活模型（或回退旧单一配置）到 AI 页字段
+        self.load_active_model_fields(&settings.ai);
+        // 记录打开时的快照，作为未保存更改检测的基准
+        self.baseline_ai = Some(self.to_ai_settings());
+    }
+
+    /// 把激活模型的配置加载到 AI 页编辑字段；无模型时回退到传入的 fallback 配置
+    pub fn load_active_model_fields(&mut self, fallback_ai: &AiSettings) {
+        let found = self
+            .active_model_id
+            .as_ref()
+            .and_then(|id| self.models.iter().find(|m| &m.id == id))
+            .cloned();
+        if let Some(m) = found {
+            self.provider = m.provider;
+            self.api_key = m.api_key;
+            self.base_url = m.base_url;
+            self.model = m.name;
+            self.temperature = m.temperature;
+            self.max_tokens = m.max_tokens;
+            self.system_prompt = m.system_prompt;
+        } else {
+            self.provider = fallback_ai.provider.clone();
+            self.api_key = fallback_ai.api_key.clone();
+            self.base_url = fallback_ai.base_url.clone().unwrap_or_default();
+            self.model = fallback_ai.model.clone();
+            self.temperature = fallback_ai
+                .temperature
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "0.7".to_string());
+            self.max_tokens = fallback_ai
+                .max_tokens
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| "2048".to_string());
+            self.system_prompt = fallback_ai.system_prompt.clone().unwrap_or_default();
+        }
+    }
+
+    /// 把当前 AI 页编辑字段写回激活模型档案（无激活模型时用当前字段自动创建）
+    pub fn store_fields_to_active_model(&mut self) {
+        let has_active = self
+            .active_model_id
+            .as_ref()
+            .map(|id| self.models.iter().any(|m| &m.id == id))
+            .unwrap_or(false);
+        if !has_active {
+            // 完全空配置则不创建
+            if self.provider.is_empty() && self.api_key.is_empty() && self.model.is_empty() {
+                return;
+            }
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let new_id = format!("model-{}", stamp);
+            self.models.push(ModelConfig {
+                id: new_id.clone(),
+                name: String::new(),
+                display_name: String::new(),
+                provider: "deepseek".to_string(),
+                description: String::new(),
+                enabled: true,
+                api_key: String::new(),
+                base_url: String::new(),
+                temperature: "0.7".to_string(),
+                max_tokens: "2048".to_string(),
+                system_prompt: String::new(),
+            });
+            self.active_model_id = Some(new_id);
+        }
+        let provider = self.provider.clone();
+        let api_key = self.api_key.clone();
+        let base_url = self.base_url.clone();
+        let model = self.model.clone();
+        let temperature = self.temperature.clone();
+        let max_tokens = self.max_tokens.clone();
+        let system_prompt = self.system_prompt.clone();
+        if let Some(id) = self.active_model_id.clone() {
+            if let Some(m) = self.models.iter_mut().find(|m| m.id == id) {
+                m.provider = provider;
+                m.api_key = api_key;
+                m.base_url = base_url;
+                m.name = model.clone();
+                m.temperature = temperature;
+                m.max_tokens = max_tokens;
+                m.system_prompt = system_prompt;
+                if m.display_name.is_empty() && !model.is_empty() {
+                    m.display_name = model;
+                }
+            }
+        }
+    }
+
+    /// 切换激活模型：先保存当前编辑，再加载目标模型字段
+    pub fn set_active_model(&mut self, id: &str, fallback_ai: &AiSettings) {
+        self.store_fields_to_active_model();
+        self.active_model_id = Some(id.to_string());
+        self.load_active_model_fields(fallback_ai);
+    }
+
+    /// 新建一个模型档案并设为激活，返回其 id
+    pub fn create_new_model(&mut self) -> String {
+        self.store_fields_to_active_model();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let id = format!("model-{}", stamp);
+        self.models.push(ModelConfig {
+            id: id.clone(),
+            name: String::new(),
+            display_name: "新模型".to_string(),
+            provider: "deepseek".to_string(),
+            description: String::new(),
+            enabled: true,
+            api_key: String::new(),
+            base_url: "https://api.deepseek.com/v1".to_string(),
+            temperature: "0.7".to_string(),
+            max_tokens: "2048".to_string(),
+            system_prompt: String::new(),
+        });
+        self.active_model_id = Some(id.clone());
+        self.provider = "deepseek".to_string();
+        self.api_key = String::new();
+        self.base_url = "https://api.deepseek.com/v1".to_string();
+        self.model = String::new();
+        self.temperature = "0.7".to_string();
+        self.max_tokens = "2048".to_string();
+        self.system_prompt = String::new();
+        id
+    }
+
+    /// 把模型列表与激活选择同步回 AppSettings（供持久化）
+    pub fn sync_to_app_settings(&self, app: &mut AppSettings) {
+        app.ai_models = self.models.iter().map(|m| m.to_profile()).collect();
+        app.active_model_id = self.active_model_id.clone();
+    }
+
+    /// 当前激活/编辑模型的展示名（用于 AI 页指示）
+    pub fn active_model_display(&self) -> String {
+        if let Some(id) = &self.active_model_id {
+            if let Some(m) = self.models.iter().find(|m| &m.id == id) {
+                let name = if m.display_name.is_empty() {
+                    &m.name
+                } else {
+                    &m.display_name
+                };
+                if !name.is_empty() {
+                    return name.clone();
+                }
+            }
+        }
+        "新模型".to_string()
     }
 
     pub fn clear_regions(&mut self) {
@@ -589,34 +648,40 @@ impl SettingsPanel {
         }
     }
 
+    /// 当前可用键盘聚焦的字段序列。
+    /// 下拉框（Provider / Model）由鼠标操作，不参与 Tab 循环；
+    /// BaseUrl 仅在自定义服务商模式下可编辑。
+    fn focusable_fields(&self) -> Vec<SettingsField> {
+        let mut fields = vec![SettingsField::ApiKey];
+        if self.provider == "custom" {
+            fields.push(SettingsField::BaseUrl);
+        }
+        // 温度已改为滑块交互，不参与键盘 Tab 循环
+        fields.push(SettingsField::MaxTokens);
+        fields.push(SettingsField::SystemPrompt);
+        fields
+    }
+
     pub fn next_field(&mut self) {
-        let next = match self.active_field {
-            None => Some(SettingsField::Provider),
-            Some(SettingsField::Provider) => Some(SettingsField::ApiKey),
-            Some(SettingsField::ApiKey) => Some(SettingsField::BaseUrl),
-            Some(SettingsField::BaseUrl) => Some(SettingsField::Model),
-            Some(SettingsField::Model) => Some(SettingsField::Temperature),
-            Some(SettingsField::Temperature) => Some(SettingsField::MaxTokens),
-            Some(SettingsField::MaxTokens) => Some(SettingsField::SystemPrompt),
-            Some(SettingsField::SystemPrompt) => None,
-            _ => None,
+        let fields = self.focusable_fields();
+        self.active_field = match self.active_field {
+            None => fields.first().copied(),
+            Some(cur) => match fields.iter().position(|f| *f == cur) {
+                Some(i) if i + 1 < fields.len() => Some(fields[i + 1]),
+                _ => None,
+            },
         };
-        self.active_field = next;
     }
 
     pub fn prev_field(&mut self) {
-        let prev = match self.active_field {
-            None => Some(SettingsField::SystemPrompt),
-            Some(SettingsField::SystemPrompt) => Some(SettingsField::MaxTokens),
-            Some(SettingsField::MaxTokens) => Some(SettingsField::Temperature),
-            Some(SettingsField::Temperature) => Some(SettingsField::Model),
-            Some(SettingsField::Model) => Some(SettingsField::BaseUrl),
-            Some(SettingsField::BaseUrl) => Some(SettingsField::ApiKey),
-            Some(SettingsField::ApiKey) => Some(SettingsField::Provider),
-            Some(SettingsField::Provider) => None,
-            _ => None,
+        let fields = self.focusable_fields();
+        self.active_field = match self.active_field {
+            None => fields.last().copied(),
+            Some(cur) => match fields.iter().position(|f| *f == cur) {
+                Some(i) if i > 0 => Some(fields[i - 1]),
+                _ => None,
+            },
         };
-        self.active_field = prev;
     }
 
     /// Mask API key for display (show last 4 chars, rest as dots)
@@ -629,6 +694,90 @@ impl SettingsPanel {
             let last_four: String = chars.iter().rev().take(4).rev().collect();
             format!("{}{}", dots, last_four)
         }
+    }
+
+    /// 显示用的 API 密钥文本：显隐开关打开时明文，否则掩码
+    pub fn display_api_key(&self) -> String {
+        if self.show_api_key {
+            self.api_key.clone()
+        } else {
+            self.masked_api_key()
+        }
+    }
+
+    /// 切换 API 密钥显隐
+    pub fn toggle_api_key_visibility(&mut self) {
+        self.show_api_key = !self.show_api_key;
+    }
+
+    /// 温度是否合法（0.0-2.0）
+    pub fn temperature_valid(&self) -> bool {
+        matches!(self.temperature.trim().parse::<f32>(), Ok(v) if (0.0..=2.0).contains(&v))
+    }
+
+    /// Max Tokens 是否合法（1..=1_000_000 的正整数）
+    pub fn max_tokens_valid(&self) -> bool {
+        matches!(self.max_tokens.trim().parse::<u32>(), Ok(v) if (1..=1_000_000).contains(&v))
+    }
+
+    /// 滚动内容（delta>0 向下），并夹紧到有效范围
+    pub fn scroll_by(&mut self, delta: f32) {
+        self.scroll_offset = (self.scroll_offset + delta).clamp(0.0, self.content_height.max(0.0));
+    }
+
+    /// 夹紧滚动偏移（内容高度变化后调用）
+    pub fn clamp_scroll(&mut self) {
+        self.scroll_offset = self.scroll_offset.clamp(0.0, self.content_height.max(0.0));
+    }
+
+    /// 命中：API 密钥显隐按钮
+    pub fn hit_test_api_key_toggle(&self, x: f32, y: f32) -> bool {
+        if let Some((rx, ry, rw, rh)) = self.api_key_toggle_region {
+            x >= rx && x < rx + rw && y >= ry && y < ry + rh
+        } else {
+            false
+        }
+    }
+
+    /// 命中：温度滑块轨道，返回点击位置对应的温度（0.0-2.0，步进 0.1）
+    pub fn hit_test_temp_slider(&self, x: f32, y: f32) -> Option<f32> {
+        if let Some((rx, ry, rw, rh)) = self.temp_slider_region {
+            if x >= rx - 4.0 && x <= rx + rw + 4.0 && y >= ry - 8.0 && y <= ry + rh + 8.0 {
+                let ratio = ((x - rx) / rw).clamp(0.0, 1.0);
+                let val = (ratio * 2.0 * 10.0).round() / 10.0;
+                return Some(val);
+            }
+        }
+        None
+    }
+
+    /// 拖拽中根据鼠标 x 更新温度（忽略 y，超出轨道两端自动夹紧）。返回是否有变化。
+    pub fn set_temperature_from_slider_x(&mut self, x: f32) -> bool {
+        if let Some((rx, _ry, rw, _rh)) = self.temp_slider_region {
+            if rw > 0.0 {
+                let ratio = ((x - rx) / rw).clamp(0.0, 1.0);
+                let val = (ratio * 2.0 * 10.0).round() / 10.0;
+                let new_str = format!("{:.1}", val);
+                if self.temperature != new_str {
+                    self.temperature = new_str;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// 当前 AI 配置相对打开时的快照是否有未保存更改
+    pub fn is_dirty(&self) -> bool {
+        match &self.baseline_ai {
+            Some(baseline) => self.to_ai_settings() != *baseline,
+            None => false,
+        }
+    }
+
+    /// 标记当前配置为已保存（更新基准快照）
+    pub fn mark_saved(&mut self) {
+        self.baseline_ai = Some(self.to_ai_settings());
     }
 
     // 模型管理方法
@@ -818,36 +967,6 @@ impl SettingsPanel {
         }
         if self.selected_model_id.as_deref() == Some(model_id) {
             self.selected_model_id = None;
-        }
-    }
-
-    /// 编辑模型（打开弹窗并填充数据）
-    pub fn edit_model(&mut self, model_id: &str) {
-        if let Some(model) = self.models.iter().find(|m| m.id == model_id) {
-            self.add_model_dialog.visible = true;
-            self.add_model_dialog.display_name = model.display_name.clone();
-            self.add_model_dialog.model = model.name.clone();
-            self.add_model_dialog.provider = model.provider.clone();
-            // 根据provider设置selected_provider_button
-            self.add_model_dialog.selected_provider_button = match model.provider.as_str() {
-                "deepseek" => Some(ProviderTemplateButton::DeepSeek),
-                "kimi" => Some(ProviderTemplateButton::Kimi),
-                _ => Some(ProviderTemplateButton::Custom),
-            };
-        }
-    }
-
-    pub fn dropdown_items(&self, kind: AddModelDropdownKind) -> Vec<String> {
-        match kind {
-            AddModelDropdownKind::Provider => Self::provider_dropdown_options()
-                .into_iter()
-                .map(|(_, name)| name.to_string())
-                .collect(),
-            AddModelDropdownKind::Model => self
-                .model_dropdown_options()
-                .into_iter()
-                .map(|(_, name)| name)
-                .collect(),
         }
     }
 

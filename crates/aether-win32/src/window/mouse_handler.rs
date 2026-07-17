@@ -38,6 +38,7 @@ pub(crate) unsafe fn on_l_button_up(
             st.layout.right_panel_resizing = false;
             st.layout.bottom_panel_resizing = false;
             st.layout.sidebar_resizing = false;
+            st.settings_panel.temp_slider_dragging = false;
             // 长按检测状态清理
             st.lbutton_down = false;
             st.lpress_target = None;
@@ -220,6 +221,17 @@ pub(crate) unsafe fn on_mouse_wheel(
                         invalidate_window(hwnd);
                         return;
                     }
+                }
+            }
+
+            // 设置页：光标在编辑器内容区内 → 滚动设置内容
+            if state.active_tab_is_settings() {
+                let editor = state.layout.editor_region();
+                if editor.contains(cursor_x, cursor_y) {
+                    // delta>0（上滚）减小偏移查看上方内容
+                    state.settings_panel.scroll_by(-delta * 0.5);
+                    invalidate_window(hwnd);
+                    return;
                 }
             }
 

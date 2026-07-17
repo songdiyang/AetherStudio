@@ -8,6 +8,12 @@ pub struct AppSettings {
     pub ui: UiSettings,
     pub remote: RemoteSettings,
     pub auto_save: AutoSaveSettings,
+    /// 多模型配置列表（每个模型独立 provider/key/参数）
+    #[serde(default)]
+    pub ai_models: Vec<AiModelProfile>,
+    /// 当前激活的模型 ID
+    #[serde(default)]
+    pub active_model_id: Option<String>,
 }
 
 impl std::fmt::Debug for AppSettings {
@@ -55,7 +61,7 @@ impl Default for AutoSaveSettings {
     }
 }
 
-#[derive(Serialize, Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct AiSettings {
     pub provider: String,
     // C-10: api_key 不再序列化到 settings.json，改为 DPAPI 加密单独存储
@@ -81,6 +87,86 @@ impl std::fmt::Debug for AiSettings {
                 "system_prompt",
                 &self.system_prompt.as_deref().map(|_| "[PRESENT]"),
             )
+            .finish()
+    }
+}
+
+/// 单个 AI 模型配置档案（多模型架构）。
+/// API Key 不序列化到 settings.json，集中加密存储于 api_key.enc。
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
+pub struct AiModelProfile {
+    pub id: String,
+    pub display_name: String,
+    pub provider: String,
+    #[serde(skip_serializing, default)]
+    pub api_key: String,
+    pub base_url: Option<String>,
+    pub model: String,
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<u32>,
+    pub system_prompt: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// 用于兼容旧版单一 api_key 存储的特殊键名
+const LEGACY_KEY_ID: &str = "__legacy_single__";
+
+impl AiModelProfile {
+    /// 转换为运行时 AiSettings
+    pub fn to_ai_settings(&self) -> AiSettings {
+        AiSettings {
+            provider: self.provider.clone(),
+            api_key: self.api_key.clone(),
+            base_url: self.base_url.clone(),
+            model: self.model.clone(),
+            temperature: self.temperature,
+            max_tokens: self.max_tokens,
+            system_prompt: self.system_prompt.clone(),
+        }
+    }
+
+    /// 从 AiSettings 生成一个模型档案（用于旧配置迁移）
+    pub fn from_ai_settings(
+        id: impl Into<String>,
+        display_name: impl Into<String>,
+        ai: &AiSettings,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            display_name: display_name.into(),
+            provider: ai.provider.clone(),
+            api_key: ai.api_key.clone(),
+            base_url: ai.base_url.clone(),
+            model: ai.model.clone(),
+            temperature: ai.temperature,
+            max_tokens: ai.max_tokens,
+            system_prompt: ai.system_prompt.clone(),
+            enabled: true,
+        }
+    }
+}
+
+impl std::fmt::Debug for AiModelProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AiModelProfile")
+            .field("id", &self.id)
+            .field("display_name", &self.display_name)
+            .field("provider", &self.provider)
+            .field("api_key", &"[REDACTED]")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .field(
+                "system_prompt",
+                &self.system_prompt.as_deref().map(|_| "[PRESENT]"),
+            )
+            .field("enabled", &self.enabled)
             .finish()
     }
 }
@@ -157,8 +243,17 @@ pub struct RemoteSettings {
 }
 
 impl AppSettings {
-    /// 返回 AI 设置副本（供 AI 面板调用）
+    /// 返回当前激活模型的 AI 设置副本（供 AI 面板/运行时调用）。
+    /// 优先级：激活模型 → 首个启用模型 → 回退旧的单一 ai。
     pub fn active_ai_settings(&self) -> AiSettings {
+        if let Some(id) = &self.active_model_id {
+            if let Some(m) = self.ai_models.iter().find(|m| &m.id == id && m.enabled) {
+                return m.to_ai_settings();
+            }
+        }
+        if let Some(m) = self.ai_models.iter().find(|m| m.enabled) {
+            return m.to_ai_settings();
+        }
         self.ai.clone()
     }
 
@@ -187,11 +282,42 @@ impl AppSettings {
         if let Ok(content) = std::fs::read_to_string(settings_path) {
             match serde_json::from_str::<AppSettings>(&content) {
                 Ok(mut settings) => {
-                    // C-10: 从单独加密文件加载 API 密钥
+                    // C-10 + 多模型：解密 API Key 存储
                     if let Ok(encrypted) = std::fs::read(api_key_path) {
-                        if let Ok(api_key) = decrypt_api_key(&encrypted) {
-                            settings.ai.api_key = api_key;
+                        if let Ok(decrypted) = decrypt_api_key(&encrypted) {
+                            if let Ok(map) = serde_json::from_str::<
+                                std::collections::BTreeMap<String, String>,
+                            >(&decrypted)
+                            {
+                                // 新格式：JSON map（model_id -> key）
+                                for m in settings.ai_models.iter_mut() {
+                                    if let Some(k) = map.get(&m.id) {
+                                        m.api_key = k.clone();
+                                    }
+                                }
+                                if let Some(legacy) = map.get(LEGACY_KEY_ID) {
+                                    settings.ai.api_key = legacy.clone();
+                                }
+                            } else {
+                                // 旧格式：单一明文 key
+                                settings.ai.api_key = decrypted;
+                            }
                         }
+                    }
+
+                    // 多模型迁移：无模型但旧 ai 配置有效 → 生成默认模型并激活
+                    if settings.ai_models.is_empty()
+                        && (!settings.ai.provider.is_empty() || !settings.ai.model.is_empty())
+                    {
+                        let display = if settings.ai.model.is_empty() {
+                            "默认模型".to_string()
+                        } else {
+                            settings.ai.model.clone()
+                        };
+                        let profile =
+                            AiModelProfile::from_ai_settings("default", display, &settings.ai);
+                        settings.active_model_id = Some(profile.id.clone());
+                        settings.ai_models.push(profile);
                     }
 
                     // P1-2: 密码认证禁用——加载时扫描并中和遗留的 password 配置。
@@ -291,13 +417,24 @@ impl AppSettings {
             let _ = std::fs::remove_file(&tmp_path);
         })?;
 
-        // C-10: settings.json 不再包含明文 api_key，单独加密保存
+        // C-10 + 多模型：所有模型的 API Key 集中为 JSON map，整体 DPAPI 加密存储
+        let mut key_map: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        for m in &self.ai_models {
+            if !m.api_key.is_empty() {
+                key_map.insert(m.id.clone(), m.api_key.clone());
+            }
+        }
+        // 兼容：旧的单一 ai.api_key 以特殊键保存
         if !self.ai.api_key.is_empty() {
-            if let Ok(encrypted) = encrypt_api_key(&self.ai.api_key) {
+            key_map.insert(LEGACY_KEY_ID.to_string(), self.ai.api_key.clone());
+        }
+        if key_map.is_empty() {
+            let _ = std::fs::remove_file(api_key_path);
+        } else if let Ok(json) = serde_json::to_string(&key_map) {
+            if let Ok(encrypted) = encrypt_api_key(&json) {
                 let _ = std::fs::write(api_key_path, encrypted);
             }
-        } else {
-            let _ = std::fs::remove_file(api_key_path);
         }
 
         Ok(())
@@ -401,6 +538,8 @@ impl Default for AppSettings {
             ui: UiSettings::default(),
             remote: RemoteSettings::default(),
             auto_save: AutoSaveSettings::default(),
+            ai_models: Vec::new(),
+            active_model_id: None,
         }
     }
 }

@@ -502,7 +502,7 @@ unsafe fn lbd_right_panel_apply_input(
         // 发送消息（使用当前模式 + 编辑器上下文，与 Enter 键行为一致，
         // 以便 Agent 模式收到工具指令并输出 FILE/RUN 标记）
         let mut st = state.borrow_mut();
-        let settings = st.app_settings.ai.clone();
+        let settings = st.app_settings.active_ai_settings();
         let mode = st.ai_panel.mode;
         let attachments = st.ai_panel.attachments.clone();
         let context = st.gather_context(&attachments);
@@ -613,8 +613,24 @@ pub(super) unsafe fn lbd_settings_page(
         return Some(LRESULT(0));
     }
 
-    // 5. 按钮：保存 / 测试连接（仅AI设置页）
+    // 5. AI 设置页：显隐按钮 / 温度滑块 / 保存 / 测试连接
     if st.settings_panel.active_tab == crate::settings::SettingsTab::Ai {
+        // API 密钥显隐切换
+        if st.settings_panel.hit_test_api_key_toggle(mouse_x, mouse_y) {
+            st.settings_panel.toggle_api_key_visibility();
+            drop(st);
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        }
+        // 温度滑块：点击轨道即定位，并进入拖拽
+        if let Some(v) = st.settings_panel.hit_test_temp_slider(mouse_x, mouse_y) {
+            st.settings_panel.temperature = format!("{:.1}", v);
+            st.settings_panel.temp_slider_dragging = true;
+            st.settings_panel.active_field = None;
+            drop(st);
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        }
         if let Some(btn) = st.settings_panel.hit_test_button(mouse_x, mouse_y) {
             let started_test = match btn {
                 crate::settings::SettingsButton::Save => {
@@ -644,26 +660,43 @@ pub(super) unsafe fn lbd_settings_page(
         if let Some((btn, model_id)) = st.settings_panel.hit_test_model_button(rel_x, rel_y) {
             match btn {
                 crate::settings::ModelButton::Add => {
-                    st.settings_panel.add_model_dialog.visible = true;
-                    st.settings_panel.add_model_dialog.reset();
+                    // 新建模型并切到 AI 页编辑
+                    st.settings_panel.create_new_model();
+                    st.settings_panel.active_tab = crate::settings::SettingsTab::Ai;
+                    st.persist_models();
                 }
                 crate::settings::ModelButton::Edit => {
-                    st.settings_panel.edit_model(&model_id);
+                    // 设为激活并切到 AI 页编辑
+                    let fallback = st.app_settings.ai.clone();
+                    st.settings_panel.set_active_model(&model_id, &fallback);
+                    st.settings_panel.active_tab = crate::settings::SettingsTab::Ai;
+                    st.persist_models();
                 }
                 crate::settings::ModelButton::Delete => {
                     st.settings_panel.delete_model(&model_id);
+                    if st.settings_panel.active_model_id.is_none() {
+                        st.settings_panel.active_model_id =
+                            st.settings_panel.models.first().map(|m| m.id.clone());
+                    }
+                    let fallback = st.app_settings.ai.clone();
+                    st.settings_panel.load_active_model_fields(&fallback);
+                    st.persist_models();
                 }
                 crate::settings::ModelButton::ToggleEnabled => {
                     st.settings_panel.toggle_model_enabled(&model_id);
+                    st.persist_models();
                 }
             }
             drop(st);
             invalidate_window(hwnd);
             return Some(LRESULT(0));
         }
-        // 点击模型卡片（选择）
+        // 点击模型卡片 → 设为激活模型
         if let Some(model_id) = st.settings_panel.hit_test_model_item(rel_x, rel_y) {
-            st.settings_panel.selected_model_id = Some(model_id);
+            st.settings_panel.selected_model_id = Some(model_id.clone());
+            let fallback = st.app_settings.ai.clone();
+            st.settings_panel.set_active_model(&model_id, &fallback);
+            st.persist_models();
             drop(st);
             invalidate_window(hwnd);
             return Some(LRESULT(0));

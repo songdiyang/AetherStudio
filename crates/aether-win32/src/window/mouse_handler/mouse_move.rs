@@ -45,7 +45,7 @@ pub(crate) unsafe fn on_mouse_move(
     let titlebar_changed = omm_titlebar_menu_hover(&state, mouse_x, mouse_y, &layout);
     let (tab_changed, editor_content) = omm_activity_tab_hover(&state, mouse_x, mouse_y, &layout);
     let tree_changed = omm_file_tree_hover(&state, mouse_x, mouse_y, &layout);
-    let settings_changed = omm_settings_hover(&state, mouse_x, mouse_y, &layout);
+    let settings_changed = omm_settings_hover(&state, mouse_x, mouse_y, is_dragging, &layout);
     let ai_changed = omm_ai_hover(&state, mouse_x, mouse_y, &layout);
     let welcome_changed = omm_welcome_hover(&state, mouse_x, mouse_y, &layout);
     let status_bar_changed = omm_status_bar_hover(&state, mouse_x, mouse_y, &layout);
@@ -349,6 +349,7 @@ unsafe fn omm_settings_hover(
     state: &Rc<RefCell<EditorState>>,
     mouse_x: f32,
     mouse_y: f32,
+    is_dragging: bool,
     layout: &crate::layout::LayoutManager,
 ) -> bool {
     let mut st = state.borrow_mut();
@@ -403,6 +404,24 @@ unsafe fn omm_settings_hover(
                     st.settings_panel.hover_model_button_id = None;
                     changed = true;
                 }
+            }
+        }
+        // AI 页：API 密钥显隐按钮悬停
+        if st.settings_panel.active_tab == crate::settings::SettingsTab::Ai {
+            let new_eye_hover = st.settings_panel.hit_test_api_key_toggle(mouse_x, mouse_y);
+            if st.settings_panel.hover_api_key_toggle != new_eye_hover {
+                st.settings_panel.hover_api_key_toggle = new_eye_hover;
+                changed = true;
+            }
+        }
+        // 温度滑块拖拽：拖拽中根据鼠标 x 实时更新温度
+        if st.settings_panel.temp_slider_dragging {
+            if is_dragging {
+                if st.settings_panel.set_temperature_from_slider_x(mouse_x) {
+                    changed = true;
+                }
+            } else {
+                st.settings_panel.temp_slider_dragging = false;
             }
         }
         changed
