@@ -581,7 +581,6 @@ impl SettingsPanel {
                 SettingsField::Temperature => self.temperature.push(ch),
                 SettingsField::MaxTokens => self.max_tokens.push(ch),
                 SettingsField::SystemPrompt => self.system_prompt.push(ch),
-                _ => {}
             }
         }
     }
@@ -597,7 +596,6 @@ impl SettingsPanel {
                 SettingsField::Temperature => self.temperature.push_str(text),
                 SettingsField::MaxTokens => self.max_tokens.push_str(text),
                 SettingsField::SystemPrompt => self.system_prompt.push_str(text),
-                _ => {}
             }
         }
     }
@@ -627,7 +625,6 @@ impl SettingsPanel {
                 SettingsField::SystemPrompt => {
                     self.system_prompt.pop();
                 }
-                _ => {}
             }
         }
     }
@@ -643,7 +640,6 @@ impl SettingsPanel {
                 SettingsField::Temperature => self.temperature.clear(),
                 SettingsField::MaxTokens => self.max_tokens.clear(),
                 SettingsField::SystemPrompt => self.system_prompt.clear(),
-                _ => {}
             }
         }
     }

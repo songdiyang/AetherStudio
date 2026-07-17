@@ -6750,7 +6750,8 @@ impl EditorState {
     pub fn save_ai_settings(&mut self) {
         // 写回激活模型 + 同步模型列表到持久化设置
         self.settings_panel.store_fields_to_active_model();
-        self.settings_panel.sync_to_app_settings(&mut self.app_settings);
+        self.settings_panel
+            .sync_to_app_settings(&mut self.app_settings);
         // 兼容：同时更新旧的单一 ai 字段（作为无模型时的回退）
         self.app_settings.ai = self.settings_panel.to_ai_settings();
         match self.app_settings.save() {
@@ -6767,7 +6768,8 @@ impl EditorState {
 
     /// 持久化模型列表变更（删除/启用切换/设为激活/新建后调用）
     pub fn persist_models(&mut self) {
-        self.settings_panel.sync_to_app_settings(&mut self.app_settings);
+        self.settings_panel
+            .sync_to_app_settings(&mut self.app_settings);
         if let Err(e) = self.app_settings.save() {
             self.settings_panel.test_status = format!("✗ 保存失败：{}", e);
         }
