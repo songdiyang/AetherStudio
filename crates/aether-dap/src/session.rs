@@ -1,6 +1,5 @@
 #![allow(clippy::items_after_test_module)]
 
-use std::collections::HashMap;
 use std::time::Duration;
 use tokio::process::Child;
 use tokio::sync::mpsc;
@@ -26,8 +25,6 @@ const DISCONNECT_KILL_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct DebugSession {
     transport: DapTransport,
     state: DebugSessionState,
-    #[allow(dead_code)]
-    breakpoints: HashMap<String, Vec<Breakpoint>>,
     event_tx: mpsc::UnboundedSender<DapEventUi>,
     seq_generator: RequestIdGenerator,
     /// H-04: 子进程句柄，disconnect 后超时未退出则强制 kill
@@ -64,7 +61,6 @@ impl DebugSession {
         let mut session = Self {
             transport,
             state: DebugSessionState::Initializing,
-            breakpoints: HashMap::new(),
             event_tx,
             seq_generator: RequestIdGenerator::new(),
             child: Some(process),
@@ -1102,7 +1098,6 @@ impl DebugSession {
         Self {
             transport,
             state: DebugSessionState::Initializing,
-            breakpoints: HashMap::new(),
             event_tx,
             seq_generator: RequestIdGenerator::new(),
             child: None,
