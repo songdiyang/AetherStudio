@@ -456,6 +456,86 @@ unsafe fn lbd_right_panel_apply_input(
     let margin = 10.0;
     let input_margin = 8.0;
 
+    // ===== 当前模型下拉（底部工具栏，在对话框内切换当前使用的模型）=====
+    // 几何与 render_ai_assistant_sidebar 中的模型按钮/弹层保持一致（相对右侧面板坐标）。
+    {
+        let toolbar_y = right_panel_region.height - 30.0;
+        let toolbar_h = 26.0f32;
+        let agent_btn_w = 80.0f32;
+        let model_btn_x = margin + input_margin + agent_btn_w + 6.0;
+        let model_btn_w = 140.0f32;
+
+        let menu_open = state.borrow().ai_panel.model_menu_open;
+        if menu_open {
+            // 收集已启用模型（可作为"当前使用"的候选）
+            let models: Vec<(String, String)> = {
+                let st = state.borrow();
+                st.app_settings
+                    .ai_models
+                    .iter()
+                    .filter(|m| m.enabled)
+                    .map(|m| {
+                        let label = if !m.display_name.is_empty() {
+                            m.display_name.clone()
+                        } else if !m.model.is_empty() {
+                            m.model.clone()
+                        } else {
+                            "(未命名模型)".to_string()
+                        };
+                        (m.id.clone(), label)
+                    })
+                    .collect()
+            };
+            if !models.is_empty() {
+                let item_h = 30.0f32;
+                let menu_w = model_btn_w.max(200.0);
+                let menu_x = model_btn_x;
+                let menu_bottom = toolbar_y - 4.0;
+                let menu_h = models.len() as f32 * item_h + 8.0;
+                let menu_top = menu_bottom - menu_h;
+                // 命中某个菜单项 → 切换为当前使用的模型并持久化
+                if rp_rel_x >= menu_x
+                    && rp_rel_x < menu_x + menu_w
+                    && rp_rel_y >= menu_top
+                    && rp_rel_y < menu_bottom
+                {
+                    let idx = ((rp_rel_y - (menu_top + 4.0)) / item_h).floor() as i32;
+                    if idx >= 0 && (idx as usize) < models.len() {
+                        let (id, label) = models[idx as usize].clone();
+                        let mut st = state.borrow_mut();
+                        st.app_settings.active_model_id = Some(id.clone());
+                        // 同步设置面板高亮（设置页已加载时生效）
+                        st.settings_panel.active_model_id = Some(id);
+                        match st.app_settings.save() {
+                            Ok(_) => {
+                                st.status_message = format!("已切换当前模型：{}", label)
+                            }
+                            Err(e) => st.status_message = format!("切换模型失败：{}", e),
+                        }
+                        st.ai_panel.model_menu_open = false;
+                        drop(st);
+                        invalidate_window(hwnd);
+                        return Some(LRESULT(0));
+                    }
+                }
+            }
+            // 菜单展开时点击其它区域 → 收起
+            state.borrow_mut().ai_panel.model_menu_open = false;
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        }
+        // 命中模型按钮 → 展开下拉
+        if rp_rel_x >= model_btn_x
+            && rp_rel_x < model_btn_x + model_btn_w
+            && rp_rel_y >= toolbar_y
+            && rp_rel_y < toolbar_y + toolbar_h
+        {
+            state.borrow_mut().ai_panel.model_menu_open = true;
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        }
+    }
+
     // ===== 输入框区域（新设计：参考图样式，总高度 80.0）=====
     let input_area_h = 80.0f32;
     let input_y = right_panel_region.height - input_area_h;
@@ -608,13 +688,19 @@ pub(super) unsafe fn lbd_settings_page(
     if let Some(tab) = st.settings_panel.hit_test_tab(mouse_x, mouse_y) {
         st.settings_panel.active_tab = tab;
         st.settings_panel.active_field = None;
+        // 切换导航时退出模型编辑态，返回「模型」页默认展示列表
+        st.settings_panel.model_editing = false;
         drop(st);
         invalidate_window(hwnd);
         return Some(LRESULT(0));
     }
 
-    // 5. AI 设置页：显隐按钮 / 温度滑块 / 保存 / 测试连接
-    if st.settings_panel.active_tab == crate::settings::SettingsTab::Ai {
+    // 5. 模型编辑表单（AI 配置）：显隐按钮 / 温度滑块 / 保存 / 测试连接 / 返回列表
+    // AI 配置已并入「模型」页，仅在 model_editing 编辑态下展示与响应。
+    if st.settings_panel.active_tab == crate::settings::SettingsTab::Ai
+        || (st.settings_panel.active_tab == crate::settings::SettingsTab::Models
+            && st.settings_panel.model_editing)
+    {
         // API 密钥显隐切换
         if st.settings_panel.hit_test_api_key_toggle(mouse_x, mouse_y) {
             st.settings_panel.toggle_api_key_visibility();
@@ -632,16 +718,21 @@ pub(super) unsafe fn lbd_settings_page(
             return Some(LRESULT(0));
         }
         if let Some(btn) = st.settings_panel.hit_test_button(mouse_x, mouse_y) {
-            let started_test = match btn {
+            match btn {
+                crate::settings::SettingsButton::BackToModels => {
+                    // 返回模型列表：先写回当前编辑到激活模型并持久化
+                    st.settings_panel.store_fields_to_active_model();
+                    st.settings_panel.model_editing = false;
+                    st.persist_models();
+                }
                 crate::settings::SettingsButton::Save => {
                     st.save_ai_settings_with_test();
-                    st.settings_panel.is_testing
                 }
                 crate::settings::SettingsButton::TestConnection => {
                     st.start_ai_test_connection();
-                    st.settings_panel.is_testing
                 }
-            };
+            }
+            let started_test = st.settings_panel.is_testing;
             st.settings_panel.active_field = None;
             drop(st);
             // 测试期间启动后台刷新定时器，结果到达后自动停止
@@ -653,23 +744,25 @@ pub(super) unsafe fn lbd_settings_page(
         }
     }
 
-    // 5b. 模型管理页：模型按钮点击
-    if st.settings_panel.active_tab == crate::settings::SettingsTab::Models {
-        let rel_x = mouse_x - editor_region.x;
-        let rel_y = mouse_y - editor_region.y;
-        if let Some((btn, model_id)) = st.settings_panel.hit_test_model_button(rel_x, rel_y) {
+    // 5b. 模型管理页（列表视图）：模型按钮点击
+    // 命中区由 render_models_management 以绝对坐标注册（原点为 editor_content_region），
+    // 因此这里必须用绝对 mouse_x/mouse_y 命中测试，与标签栏 / 编辑表单保持一致。
+    if st.settings_panel.active_tab == crate::settings::SettingsTab::Models
+        && !st.settings_panel.model_editing
+    {
+        if let Some((btn, model_id)) = st.settings_panel.hit_test_model_button(mouse_x, mouse_y) {
             match btn {
                 crate::settings::ModelButton::Add => {
-                    // 新建模型并切到 AI 页编辑
+                    // 新建模型并进入内嵌编辑表单
                     st.settings_panel.create_new_model();
-                    st.settings_panel.active_tab = crate::settings::SettingsTab::Ai;
+                    st.settings_panel.model_editing = true;
                     st.persist_models();
                 }
                 crate::settings::ModelButton::Edit => {
-                    // 设为激活并切到 AI 页编辑
+                    // 设为激活并进入内嵌编辑表单
                     let fallback = st.app_settings.ai.clone();
                     st.settings_panel.set_active_model(&model_id, &fallback);
-                    st.settings_panel.active_tab = crate::settings::SettingsTab::Ai;
+                    st.settings_panel.model_editing = true;
                     st.persist_models();
                 }
                 crate::settings::ModelButton::Delete => {
@@ -692,7 +785,7 @@ pub(super) unsafe fn lbd_settings_page(
             return Some(LRESULT(0));
         }
         // 点击模型卡片 → 设为激活模型
-        if let Some(model_id) = st.settings_panel.hit_test_model_item(rel_x, rel_y) {
+        if let Some(model_id) = st.settings_panel.hit_test_model_item(mouse_x, mouse_y) {
             st.settings_panel.selected_model_id = Some(model_id.clone());
             let fallback = st.app_settings.ai.clone();
             st.settings_panel.set_active_model(&model_id, &fallback);

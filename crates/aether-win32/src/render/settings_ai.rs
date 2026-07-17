@@ -191,24 +191,23 @@ impl EditorState {
                 input_h,
                 &apikey_border_brush,
             );
-            // 眼睛按钮（右侧）：切换明文 / 掩码
-            let eye_w = 34.0_f32;
+            // 显示/隐藏 按钮（右侧）：切换明文 / 掩码。用文字避免图标字体缺失显示为方块。
+            let eye_w = 48.0_f32;
             let eye_x = x + margin + input_w - eye_w;
             let eye_color = if self.settings_panel.hover_api_key_toggle {
-                color_f(0.85, 0.85, 0.85, 1.0)
+                color_f(0.55, 0.78, 1.0, 1.0)
             } else {
-                color_f(0.55, 0.55, 0.55, 1.0)
+                color_f(0.60, 0.60, 0.62, 1.0)
             };
             let eye_brush = self
                 .render_ctx
                 .brush_cache
                 .get_brush(target, &eye_color)
                 .unwrap();
-            // Segoe MDL2：0xE7B3 = 显示，0xED1A = 隐藏
             let eye_glyph = if self.settings_panel.show_api_key {
-                "\u{ED1A}"
+                "隐藏"
             } else {
-                "\u{E7B3}"
+                "显示"
             };
             let eye_wide: Vec<u16> = eye_glyph.encode_utf16().chain(Some(0)).collect();
             let eye_rect = D2D_RECT_F {

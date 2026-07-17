@@ -246,7 +246,13 @@ impl EditorState {
             let page_title = match self.settings_panel.active_tab {
                 crate::settings::SettingsTab::Account => "账号",
                 crate::settings::SettingsTab::General => "通用",
-                crate::settings::SettingsTab::Models => "模型",
+                crate::settings::SettingsTab::Models => {
+                    if self.settings_panel.model_editing {
+                        "编辑模型"
+                    } else {
+                        "模型"
+                    }
+                }
                 crate::settings::SettingsTab::Ai => "AI",
                 crate::settings::SettingsTab::Appearance => "外观",
                 crate::settings::SettingsTab::Remote => "远程",
@@ -306,39 +312,49 @@ impl EditorState {
                     );
                 }
                 crate::settings::SettingsTab::Models => {
-                    let label_format_clone = label_format.clone();
-                    let input_format_clone = input_format.clone();
-                    let button_format_clone = button_format.clone();
-                    let title_format_clone = title_format.clone();
-                    self.render_models_management(
-                        target,
-                        page_x,
-                        page_w,
-                        page_y,
-                        0.0,
-                        label_format_clone,
-                        input_format_clone,
-                        button_format_clone,
-                        title_format_clone,
-                        text_brush,
-                    );
-                }
-                crate::settings::SettingsTab::Ai => {
-                    self.render_ai_settings_fields(
-                        target,
-                        page_x,
-                        page_w,
-                        page_y,
-                        0.0,
-                        20.0,
-                        32.0,
-                        12.0,
-                        label_format,
-                        input_format,
-                        button_format,
-                        text_brush,
-                        content_h - 80.0,
-                    );
+                    if self.settings_panel.model_editing {
+                        // 编辑/新建模型：顶部「返回模型列表」按钮 + 内嵌 AI 配置表单
+                        let back_h = self.render_model_edit_back_button(
+                            target,
+                            page_x,
+                            page_y,
+                            &button_format,
+                        );
+                        let form_y = page_y + back_h + 10.0;
+                        let form_avail = (content_h - 80.0 - back_h - 10.0).max(60.0);
+                        self.render_ai_settings_fields(
+                            target,
+                            page_x,
+                            page_w,
+                            form_y,
+                            0.0,
+                            20.0,
+                            32.0,
+                            12.0,
+                            label_format,
+                            input_format,
+                            button_format,
+                            text_brush,
+                            form_avail,
+                        );
+                    } else {
+                        let label_format_clone = label_format.clone();
+                        let input_format_clone = input_format.clone();
+                        let button_format_clone = button_format.clone();
+                        let title_format_clone = title_format.clone();
+                        self.render_models_management(
+                            target,
+                            page_x,
+                            page_w,
+                            page_y,
+                            0.0,
+                            label_format_clone,
+                            input_format_clone,
+                            button_format_clone,
+                            title_format_clone,
+                            text_brush,
+                        );
+                    }
                 }
                 _ => {}
             }

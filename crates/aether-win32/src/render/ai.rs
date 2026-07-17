@@ -1176,6 +1176,105 @@ impl EditorState {
                 DWRITE_MEASURING_MODE_NATURAL,
             );
 
+            // 当前模型下拉弹层（点击模型按钮展开，向上弹出，列出所有已启用模型）
+            if self.ai_panel.model_menu_open {
+                let models: Vec<(String, String, bool)> = self
+                    .app_settings
+                    .ai_models
+                    .iter()
+                    .filter(|m| m.enabled)
+                    .map(|m| {
+                        let label = if !m.display_name.is_empty() {
+                            m.display_name.clone()
+                        } else if !m.model.is_empty() {
+                            m.model.clone()
+                        } else {
+                            "(未命名模型)".to_string()
+                        };
+                        let is_active =
+                            self.app_settings.active_model_id.as_deref() == Some(m.id.as_str());
+                        (m.id.clone(), label, is_active)
+                    })
+                    .collect();
+                if !models.is_empty() {
+                    let item_h = 30.0f32;
+                    let menu_w = model_btn_w.max(200.0);
+                    let menu_x = model_btn_x;
+                    let menu_bottom = toolbar_y - 4.0;
+                    let menu_h = models.len() as f32 * item_h + 8.0;
+                    let menu_top = menu_bottom - menu_h;
+                    // 弹层背景 + 边框
+                    let menu_bg = color_f(0.15, 0.15, 0.17, 1.0);
+                    if let Ok(menu_bg_brush) =
+                        self.render_ctx.brush_cache.get_brush(target, &menu_bg)
+                    {
+                        target.FillRectangle(
+                            &D2D_RECT_F {
+                                left: menu_x,
+                                top: menu_top,
+                                right: menu_x + menu_w,
+                                bottom: menu_bottom,
+                            },
+                            &menu_bg_brush,
+                        );
+                    }
+                    let menu_border = color_f(0.32, 0.32, 0.36, 1.0);
+                    if let Ok(menu_border_brush) =
+                        self.render_ctx.brush_cache.get_brush(target, &menu_border)
+                    {
+                        target.DrawRectangle(
+                            &D2D_RECT_F {
+                                left: menu_x,
+                                top: menu_top,
+                                right: menu_x + menu_w,
+                                bottom: menu_bottom,
+                            },
+                            &menu_border_brush,
+                            1.0,
+                            None,
+                        );
+                    }
+                    let sel_bg = color_f(0.16, 0.30, 0.46, 1.0);
+                    let sel_bg_brush = self.render_ctx.brush_cache.get_brush(target, &sel_bg).ok();
+                    for (i, (_id, label, is_active)) in models.iter().enumerate() {
+                        let iy = menu_top + 4.0 + i as f32 * item_h;
+                        if *is_active {
+                            if let Some(b) = &sel_bg_brush {
+                                target.FillRectangle(
+                                    &D2D_RECT_F {
+                                        left: menu_x + 2.0,
+                                        top: iy,
+                                        right: menu_x + menu_w - 2.0,
+                                        bottom: iy + item_h,
+                                    },
+                                    b,
+                                );
+                            }
+                        }
+                        let item_str = if *is_active {
+                            format!("● {}", label)
+                        } else {
+                            format!("    {}", label)
+                        };
+                        let item_wide: Vec<u16> =
+                            item_str.encode_utf16().chain(Some(0)).collect();
+                        target.DrawText(
+                            &item_wide,
+                            &small_format,
+                            &D2D_RECT_F {
+                                left: menu_x + 10.0,
+                                top: iy + 6.0,
+                                right: menu_x + menu_w - 10.0,
+                                bottom: iy + item_h,
+                            },
+                            if *is_active { &white_brush } else { text_brush },
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                    }
+                }
+            }
+
             // 右侧功能按钮区域
             let right_btn_area_x = x + width - margin - input_margin;
 
