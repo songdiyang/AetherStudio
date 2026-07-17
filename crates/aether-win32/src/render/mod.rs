@@ -1,26 +1,26 @@
-use aether_core::char_width::char_width as unicode_char_width;
-use aether_core::lexer::Language;
-use aether_core::workspace::file_tree::{FileKind, FileTree};
-use aether_render::d2d::factory::color_f;
-use aether_render::d2d::glass;
-use windows::Win32::Graphics::Direct2D::Common::{D2D_POINT_2F, D2D_RECT_F};
-use windows::Win32::Graphics::Direct2D::{
+pub(crate) use aether_core::char_width::char_width as unicode_char_width;
+pub(crate) use aether_core::lexer::Language;
+pub(crate) use aether_core::workspace::file_tree::{FileKind, FileTree};
+pub(crate) use aether_render::d2d::factory::color_f;
+pub(crate) use aether_render::d2d::glass;
+pub(crate) use windows::Win32::Graphics::Direct2D::Common::{D2D_POINT_2F, D2D_RECT_F};
+pub(crate) use windows::Win32::Graphics::Direct2D::{
     ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_ALIASED, D2D1_DRAW_TEXT_OPTIONS_CLIP,
     D2D1_DRAW_TEXT_OPTIONS_NONE,
 };
-use windows::Win32::Graphics::DirectWrite::{
+pub(crate) use windows::Win32::Graphics::DirectWrite::{
     IDWriteTextFormat, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
     DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
     DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
     DWRITE_TEXT_ALIGNMENT_TRAILING,
 };
 
-use crate::editor::{BottomPanelTab, EditorState};
-use crate::layout::{Region, ACTIVITY_BAR_BUTTON_SIZE};
-use crate::settings::ProviderTemplateButton;
+pub(crate) use crate::editor::{BottomPanelTab, EditorState};
+pub(crate) use crate::layout::{Region, ACTIVITY_BAR_BUTTON_SIZE};
+pub(crate) use crate::settings::ProviderTemplateButton;
 
 /// 绘制输入框的四条边框
-unsafe fn draw_input_borders(
+pub(crate) unsafe fn draw_input_borders(
     target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
     x: f32,
     y: f32,
