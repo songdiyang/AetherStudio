@@ -83,6 +83,8 @@ impl EditorState {
         match self.settings_panel.poll_test_result() {
             crate::settings::TestPollResult::SuccessWithPendingSave => {
                 self.save_ai_settings();
+                // 保存成功后退出模型编辑态，返回模型列表
+                self.settings_panel.model_editing = false;
                 self.dirty_tracker.mark_full_window();
             }
             crate::settings::TestPollResult::Success

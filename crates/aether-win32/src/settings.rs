@@ -18,6 +18,8 @@ pub enum SettingsField {
 pub enum SettingsButton {
     Save,
     TestConnection,
+    /// 模型编辑视图返回模型列表
+    BackToModels,
 }
 
 /// 设置标签页类型
@@ -49,9 +51,10 @@ impl SettingsTab {
         }
     }
 
-    pub const ALL: [SettingsTab; 6] = [
+    /// 导航中展示的标签页。AI 配置已并入「模型」页（新建/编辑模型时以内嵌表单形式出现），
+    /// 因此不再单独列出 AI 项。
+    pub const ALL: [SettingsTab; 5] = [
         SettingsTab::General,
-        SettingsTab::Ai,
         SettingsTab::Appearance,
         SettingsTab::Remote,
         SettingsTab::Account,
@@ -204,6 +207,8 @@ pub struct SettingsPanel {
     pub selected_model_id: Option<String>,
     pub hover_model_id: Option<String>,
     pub active_model_id: Option<String>,
+    /// 「模型」页当前是否处于新建/编辑模型的内嵌表单视图（false=模型列表，true=AI 配置表单）
+    pub model_editing: bool,
     pub hover_model_button: Option<ModelButton>,
     /// 悬停按钮对应的模型ID（用于区分不同模型项上的按钮）
     pub hover_model_button_id: Option<String>,
@@ -249,16 +254,17 @@ impl SettingsPanel {
             test_result: Arc::new(Mutex::new(None)),
             field_regions: Vec::new(),
             button_regions: Vec::new(),
-            active_tab: SettingsTab::Ai,
+            active_tab: SettingsTab::Models,
             hover_tab: None,
             tab_regions: Vec::new(),
-            nav_width: 160.0,
+            nav_width: 120.0,
             hover_nav_resize: false,
             nav_resizing: false,
             models: Vec::new(),
             selected_model_id: None,
             hover_model_id: None,
             active_model_id: None,
+            model_editing: false,
             hover_model_button: None,
             hover_model_button_id: None,
             model_button_regions: Vec::new(),
@@ -304,16 +310,17 @@ impl SettingsPanel {
             test_result: Arc::new(Mutex::new(None)),
             field_regions: Vec::new(),
             button_regions: Vec::new(),
-            active_tab: SettingsTab::Ai,
+            active_tab: SettingsTab::Models,
             hover_tab: None,
             tab_regions: Vec::new(),
-            nav_width: 160.0,
+            nav_width: 120.0,
             hover_nav_resize: false,
             nav_resizing: false,
             models: Vec::new(),
             selected_model_id: None,
             hover_model_id: None,
             active_model_id: None,
+            model_editing: false,
             hover_model_button: None,
             hover_model_button_id: None,
             model_button_regions: Vec::new(),
@@ -355,6 +362,8 @@ impl SettingsPanel {
     }
 
     pub fn apply_settings(&mut self, settings: &AppSettings) {
+        // 打开设置面板时默认展示模型列表（非编辑态）
+        self.model_editing = false;
         // 加载模型列表（多模型架构）
         self.models = settings
             .ai_models
