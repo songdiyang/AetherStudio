@@ -1256,8 +1256,7 @@ impl EditorState {
                         } else {
                             format!("    {}", label)
                         };
-                        let item_wide: Vec<u16> =
-                            item_str.encode_utf16().chain(Some(0)).collect();
+                        let item_wide: Vec<u16> = item_str.encode_utf16().chain(Some(0)).collect();
                         target.DrawText(
                             &item_wide,
                             &small_format,

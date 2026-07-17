@@ -507,9 +507,7 @@ unsafe fn lbd_right_panel_apply_input(
                         // 同步设置面板高亮（设置页已加载时生效）
                         st.settings_panel.active_model_id = Some(id);
                         match st.app_settings.save() {
-                            Ok(_) => {
-                                st.status_message = format!("已切换当前模型：{}", label)
-                            }
+                            Ok(_) => st.status_message = format!("已切换当前模型：{}", label),
                             Err(e) => st.status_message = format!("切换模型失败：{}", e),
                         }
                         st.ai_panel.model_menu_open = false;

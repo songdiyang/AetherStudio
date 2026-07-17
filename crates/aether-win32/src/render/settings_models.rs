@@ -215,8 +215,7 @@ impl EditorState {
                         .brush_cache
                         .get_brush(target, &color_f(0.40, 0.72, 1.0, 1.0))
                         .unwrap();
-                    let cur_wide: Vec<u16> =
-                        "● 当前使用".encode_utf16().chain(Some(0)).collect();
+                    let cur_wide: Vec<u16> = "● 当前使用".encode_utf16().chain(Some(0)).collect();
                     target.DrawText(
                         &cur_wide,
                         &cur_format,
@@ -309,7 +308,11 @@ impl EditorState {
                     toggle_h,
                 );
                 // 开关状态文字（开关左侧）
-                let state_text = if model.enabled { "已启用" } else { "已停用" };
+                let state_text = if model.enabled {
+                    "已启用"
+                } else {
+                    "已停用"
+                };
                 let state_color = if model.enabled {
                     color_f(0.42, 0.80, 0.54, 1.0)
                 } else {
@@ -350,7 +353,11 @@ impl EditorState {
                 } else {
                     color_f(0.16, 0.16, 0.18, 1.0)
                 };
-                let del_bg_brush = self.render_ctx.brush_cache.get_brush(target, &del_bg).unwrap();
+                let del_bg_brush = self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &del_bg)
+                    .unwrap();
                 target.FillRectangle(&del_rect, &del_bg_brush);
                 let del_border = if is_del_hover {
                     color_f(0.78, 0.36, 0.36, 1.0)
