@@ -1,48 +1,48 @@
 #![allow(clippy::collapsible_match, clippy::cmp_owned)]
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+pub(crate) use std::collections::HashMap;
+pub(crate) use std::path::{Path, PathBuf};
+pub(crate) use std::sync::Arc;
 
-use windows::core::Result;
-use windows::Win32::Foundation::HWND;
+pub(crate) use windows::core::Result;
+pub(crate) use windows::Win32::Foundation::HWND;
 
-use aether_core::buffer::history::{CursorPosition, OpType};
-use aether_core::buffer::piece_table::PieceTable;
-use aether_core::buffer::text_buffer::{Cursor, MultiCursorState};
-use aether_core::char_width::char_width as unicode_char_width;
-use aether_core::lexer::Language;
-use aether_core::workspace::file_tree::{FileKind, FileTree};
-use aether_lsp::client::{default_server_config, LspEvent};
-use aether_lsp::LspClient;
-use aether_render::d2d::factory::D2DFactory;
-use aether_render::d2d::text::TextRenderer;
-use aether_render::theme::Theme;
-use lsp_types::{CompletionItem, Diagnostic};
-use url::Url;
+pub(crate) use aether_core::buffer::history::{CursorPosition, OpType};
+pub(crate) use aether_core::buffer::piece_table::PieceTable;
+pub(crate) use aether_core::buffer::text_buffer::{Cursor, MultiCursorState};
+pub(crate) use aether_core::char_width::char_width as unicode_char_width;
+pub(crate) use aether_core::lexer::Language;
+pub(crate) use aether_core::workspace::file_tree::{FileKind, FileTree};
+pub(crate) use aether_lsp::client::{default_server_config, LspEvent};
+pub(crate) use aether_lsp::LspClient;
+pub(crate) use aether_render::d2d::factory::D2DFactory;
+pub(crate) use aether_render::d2d::text::TextRenderer;
+pub(crate) use aether_render::theme::Theme;
+pub(crate) use lsp_types::{CompletionItem, Diagnostic};
+pub(crate) use url::Url;
 
-use crate::activity_bar::ActivityBar;
-use crate::ai_agent::AiEdit;
-use crate::ai_context::{truncate_middle, wrap_code_block, AiContextAttachment};
-use crate::ai_panel::AiPanel;
-use crate::command_palette::CommandPalette;
-use crate::dialogs::Dialogs;
-use crate::focus_manager::FocusManager;
-use crate::git::GitIntegration;
-use crate::input::{KeyMap, PressTarget};
-use crate::layout::{
+pub(crate) use crate::activity_bar::ActivityBar;
+pub(crate) use crate::ai_agent::AiEdit;
+pub(crate) use crate::ai_context::{truncate_middle, wrap_code_block, AiContextAttachment};
+pub(crate) use crate::ai_panel::AiPanel;
+pub(crate) use crate::command_palette::CommandPalette;
+pub(crate) use crate::dialogs::Dialogs;
+pub(crate) use crate::focus_manager::FocusManager;
+pub(crate) use crate::git::GitIntegration;
+pub(crate) use crate::input::{KeyMap, PressTarget};
+pub(crate) use crate::layout::{
     ActivityBarView, LayoutManager, SidebarContent, SIDEBAR_RESIZE_GRAB, TAB_BAR_HEIGHT,
 };
-use crate::menu_bar::MenuBar;
-use crate::ssh::{
+pub(crate) use crate::menu_bar::MenuBar;
+pub(crate) use crate::ssh::{
     CloneRepoDialog, RemoteFileTree, RemoteSession, SshConnectionDialog, SshManagerPanel,
 };
-use crate::status_bar::StatusBar;
-use crate::tabs::{Tab, TabContent, TabLayout};
-use crate::terminal::TerminalPanel;
-use aether_shared::settings::AppSettings;
+pub(crate) use crate::status_bar::StatusBar;
+pub(crate) use crate::tabs::{Tab, TabContent, TabLayout};
+pub(crate) use crate::terminal::TerminalPanel;
+pub(crate) use aether_shared::settings::AppSettings;
 // P0-1: RemoteFs trait 为 SshRemoteFs::list_dir 等方法提供作用域
-use aether_remote::RemoteFs;
+pub(crate) use aether_remote::RemoteFs;
 
 /// 查找替换焦点状态
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
