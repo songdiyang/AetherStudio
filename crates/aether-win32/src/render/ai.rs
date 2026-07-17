@@ -348,6 +348,7 @@ impl EditorState {
                     };
 
                     // 普通段解析轻量 Markdown；代码段保持原文
+                    #[allow(clippy::type_complexity)]
                     let (layout_wide, bolds, headings): (
                         Vec<u16>,
                         Vec<(u32, u32)>,

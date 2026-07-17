@@ -562,10 +562,11 @@ unsafe fn omm_resize_drag(
     // 更新 hover 状态
     st.hover_sidebar_resize = sidebar_resize_zone;
     // 设置拖拽光标
-    if right_panel_resize_zone || st.layout.right_panel_resizing {
-        let hcursor = LoadCursorW(None, IDC_SIZEWE).unwrap_or_default();
-        let _ = SetCursor(hcursor);
-    } else if sidebar_resize_zone || st.layout.sidebar_resizing {
+    if right_panel_resize_zone
+        || st.layout.right_panel_resizing
+        || sidebar_resize_zone
+        || st.layout.sidebar_resizing
+    {
         let hcursor = LoadCursorW(None, IDC_SIZEWE).unwrap_or_default();
         let _ = SetCursor(hcursor);
     } else if bottom_panel_resize_zone || st.layout.bottom_panel_resizing {

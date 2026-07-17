@@ -1154,12 +1154,12 @@ impl EditorState {
                     let is_selected = match kind {
                         crate::settings::SettingsDropdownKind::Provider => {
                             // dropdown_items() 顺序：DeepSeek, Kimi, 自定义
-                            match (self.settings_panel.current_provider_button(), i) {
-                                (Some(ProviderTemplateButton::DeepSeek), 0) => true,
-                                (Some(ProviderTemplateButton::Kimi), 1) => true,
-                                (Some(ProviderTemplateButton::Custom), 2) => true,
-                                _ => false,
-                            }
+                            matches!(
+                                (self.settings_panel.current_provider_button(), i),
+                                (Some(ProviderTemplateButton::DeepSeek), 0)
+                                    | (Some(ProviderTemplateButton::Kimi), 1)
+                                    | (Some(ProviderTemplateButton::Custom), 2)
+                            )
                         }
                         crate::settings::SettingsDropdownKind::Model => {
                             self.settings_panel.model == *item_label

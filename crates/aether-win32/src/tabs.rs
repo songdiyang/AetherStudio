@@ -185,6 +185,7 @@ impl TabContent {
 
 /// 标签页类型 — 支持文件、设置、欢迎三种标签页
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Tab {
     /// 文件编辑标签页
     File(TabContent),

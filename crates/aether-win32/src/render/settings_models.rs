@@ -122,7 +122,7 @@ impl EditorState {
             let card_h = 72.0f32;
             let card_gap = 8.0f32;
             let _card_radius = 6.0f32;
-            let models_clone: Vec<_> = self.settings_panel.models.iter().cloned().collect();
+            let models_clone: Vec<_> = self.settings_panel.models.to_vec();
             let active_id = self.settings_panel.active_model_id.clone();
 
             let name_color = color_f(0.90, 0.90, 0.90, 1.0);

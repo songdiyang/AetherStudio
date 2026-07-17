@@ -101,7 +101,7 @@ impl BackgroundHighlighter {
             Ok(result) => {
                 self.pending = false;
                 // 排空可能残留的旧结果
-                while let Ok(_) = self.result_rx.try_recv() {}
+                while self.result_rx.try_recv().is_ok() {}
                 Some(result)
             }
             Err(TryRecvError::Empty) => None,

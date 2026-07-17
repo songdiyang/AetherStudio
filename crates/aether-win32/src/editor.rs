@@ -18,7 +18,6 @@ use aether_lsp::LspClient;
 use aether_render::d2d::factory::D2DFactory;
 use aether_render::d2d::text::TextRenderer;
 use aether_render::theme::Theme;
-use aether_tree_sitter::TreeSitterHighlighter;
 use lsp_types::{CompletionItem, Diagnostic};
 use url::Url;
 
@@ -447,8 +446,6 @@ pub struct EditorState {
     pub lbutton_down: bool,
     /// P0-2: IME 合成串（pre-edit text），中文/日文输入过程中显示在光标处
     pub composition: Option<String>,
-    /// tree-sitter 高亮器（主线程持有，非 Send，不能进 rayon 并行）
-    pub(crate) ts_highlighter: TreeSitterHighlighter,
     /// 后台语法高亮器（独立线程，避免阻塞 UI 输入）
     pub(crate) bg_highlighter: aether_tree_sitter::BackgroundHighlighter,
     /// 已发送后台高亮请求对应的 buffer_version（变化时触发新请求）
@@ -467,10 +464,6 @@ pub struct EditorState {
     pub(crate) completion_trigger_col: usize,
     // Phase H: 悬停 tooltip 状态
     pub(crate) hover_content: Option<String>,
-    #[allow(dead_code)]
-    pub(crate) hover_x: f32,
-    #[allow(dead_code)]
-    pub(crate) hover_y: f32,
     /// UI Tooltip 状态（500ms 延迟显示、4px 移动容差的悬停提示）
     pub tooltip_state: crate::tooltip::TooltipState,
     /// Task 13.3: 最后关闭的标签内容（用于 Ctrl+Shift+T 恢复）
@@ -576,11 +569,6 @@ impl EditorState {
     pub fn show_tab_bar(&self) -> bool {
         !self.tabs.is_empty() && !self.active_tab_is_welcome()
     }
-
-    /// 是否显示欢迎页
-    // pub fn show_welcome(&self) -> bool {
-    //     self.tabs.is_empty() || self.active_tab_is_welcome()
-    // }
 
     /// 是否显示空占位页（tabs 为空时的默认状态）
     pub fn show_empty_placeholder(&self) -> bool {
@@ -1211,7 +1199,6 @@ impl EditorState {
             }
         });
 
-        let ts_highlighter = TreeSitterHighlighter::new();
         let lsp_diagnostics = std::collections::HashMap::new();
         // Phase H: 补全/悬停状态初始化
         let completion_items = Vec::new();
@@ -1336,7 +1323,6 @@ impl EditorState {
             lpress_index: 0,
             lbutton_down: false,
             composition: None,
-            ts_highlighter,
             bg_highlighter: aether_tree_sitter::BackgroundHighlighter::new(),
             hl_request_version: 0,
             tokio_runtime,
@@ -1348,8 +1334,6 @@ impl EditorState {
             completion_trigger_line: 0,
             completion_trigger_col: 0,
             hover_content,
-            hover_x: 0.0,
-            hover_y: 0.0,
             tooltip_state: crate::tooltip::TooltipState::default(),
             last_closed_tab: None,
             logo_bitmap: None,
@@ -2425,19 +2409,6 @@ fn populate_children_one_level(
     }
 
     Ok(count)
-}
-
-/// 递归构建文件树（已弃用递归逻辑，保留兼容）
-/// 现在仅用于 open_folder 加载根层；深层目录由懒加载按需扫描
-#[allow(dead_code)]
-fn populate_file_tree(
-    tree: &mut FileTree,
-    path: &PathBuf,
-    parent_idx: u32,
-    depth: u8,
-) -> std::io::Result<()> {
-    let _ = populate_children_one_level(tree, path, parent_idx, depth)?;
-    Ok(())
 }
 
 impl EditorState {
@@ -6149,88 +6120,6 @@ impl EditorState {
                 self.cached_line_numbers[i] = num_str.encode_utf16().chain(Some(0)).collect();
             }
         }
-    }
-
-    /// 全量重建缓存（用于初始化或强制刷新）
-    #[allow(dead_code)]
-    pub(crate) fn rebuild_cache_full(&mut self) {
-        let total_lines = self.content.buffer.len_lines().max(1);
-
-        if self.content.cached_lines.len() != total_lines {
-            self.content
-                .cached_lines
-                .resize_with(total_lines, String::new);
-            self.content
-                .cached_tokens
-                .resize_with(total_lines, Vec::new);
-            self.content.line_cache_versions.resize(total_lines, 0);
-        }
-
-        let ts_lang = language_to_ts_str(self.content.language);
-        let mut lexer: Option<Box<dyn aether_core::lexer::Lexer>> = None;
-
-        for i in 0..total_lines {
-            if self.content.line_cache_versions[i] != self.content.buffer_version {
-                let line = self.content.buffer.get_line(i).unwrap_or_default();
-                let tokens = if let Some(lang) = ts_lang {
-                    self.ts_highlighter.highlight_line(&line, lang)
-                } else {
-                    if lexer.is_none() {
-                        lexer = Some(self.content.language.create_lexer());
-                    }
-                    if let Some(lex) = lexer.as_ref() {
-                        lex.lex_full(&line)
-                    } else {
-                        Vec::new()
-                    }
-                };
-                self.content.cached_lines[i] = line;
-                self.content.cached_tokens[i] = tokens;
-                self.content.line_cache_versions[i] = self.content.buffer_version;
-            }
-        }
-    }
-
-    /// 标记指定行范围的缓存为失效
-    /// 在编辑操作后调用，只标记受影响的行，避免全量重建
-    #[allow(dead_code)]
-    pub(crate) fn invalidate_line_cache(&mut self, start_line: usize, end_line: usize) {
-        let total_lines = self.content.line_cache_versions.len();
-        if total_lines == 0 {
-            return;
-        }
-        let start = start_line.min(total_lines - 1);
-        let end = end_line.min(total_lines - 1);
-        for i in start..=end {
-            self.content.line_cache_versions[i] = 0; // 0 表示未缓存，强制重建
-        }
-    }
-
-    /// 处理编辑结果，更新缓存和行版本
-    #[allow(dead_code)]
-    pub(crate) fn apply_edit_result(&mut self, result: &aether_core::buffer::EditResult) {
-        self.content.buffer_version += 1;
-        let total_lines = self.content.buffer.len_lines().max(1);
-
-        if result.line_delta != 0 {
-            // 行数变化，重新调整缓存向量
-            self.content
-                .cached_lines
-                .resize_with(total_lines, String::new);
-            self.content
-                .cached_tokens
-                .resize_with(total_lines, Vec::new);
-            self.content.line_cache_versions.resize(total_lines, 0);
-        }
-
-        // 标记受影响的行为失效
-        let end_line = if result.line_delta > 0 {
-            // 插入导致行增加，需要重建从起始行到新增行末尾
-            (result.end_line + result.line_delta as usize).min(total_lines - 1)
-        } else {
-            result.end_line.min(total_lines.saturating_sub(1))
-        };
-        self.invalidate_line_cache(result.start_line, end_line);
     }
 
     /// 查找所有匹配位置

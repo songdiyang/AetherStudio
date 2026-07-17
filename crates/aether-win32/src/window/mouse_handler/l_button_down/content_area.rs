@@ -343,7 +343,7 @@ pub(super) unsafe fn lbd_right_panel(
                                 l.trim_start().starts_with("```")
                                     && !l.trim_start().starts_with("```\n")
                             })
-                            .and_then(|l| crate::ai_panel::AiPanel::extract_filename_from_fence(l));
+                            .and_then(crate::ai_panel::AiPanel::extract_filename_from_fence);
                         drop(st);
                         let mut st_mut = state.borrow_mut();
                         match st_mut.save_ai_code_block(&code_to_save, suggested_name.as_deref()) {
