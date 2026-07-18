@@ -230,8 +230,11 @@ mod tests {
     fn roundtrip_conversation_file() {
         use crate::ai_panel::{AiMessage, AiRole};
         let mut conv = AiConversation::new("test-123".to_string(), "测试".to_string());
-        conv.messages.push(AiMessage::new(AiRole::User, "你好".to_string()));
-        conv.messages.push(AiMessage::new(AiRole::Assistant, "你好！".to_string()));
+        // AiConversation::new 已包含系统欢迎语，所以 messages 初始有 1 条
+        conv.messages
+            .push(AiMessage::new(AiRole::User, "你好".to_string()));
+        conv.messages
+            .push(AiMessage::new(AiRole::Assistant, "你好！".to_string()));
 
         let file = ConversationFile::from_conversation(&conv);
         let json = serde_json::to_string_pretty(&file).unwrap();
@@ -239,8 +242,9 @@ mod tests {
 
         assert_eq!(restored.id, "test-123");
         assert_eq!(restored.title, "测试");
-        assert_eq!(restored.messages.len(), 2);
-        assert_eq!(restored.messages[0].content, "你好");
-        assert_eq!(restored.messages[1].content, "你好！");
+        // 包含系统欢迎语 + 用户 + 助手 = 3 条
+        assert_eq!(restored.messages.len(), 3);
+        assert_eq!(restored.messages[1].content, "你好");
+        assert_eq!(restored.messages[2].content, "你好！");
     }
 }

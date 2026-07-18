@@ -389,23 +389,21 @@ impl EditorState {
                     // 悬停高亮
                     if let Some(hover) = self.ai_panel.hover_tab {
                         if hover == hi {
-                            if let Ok(hl) = self.render_ctx.brush_cache.get_brush(
-                                target,
-                                &color_f(0.18, 0.20, 0.26, 1.0),
-                            ) {
+                            if let Ok(hl) = self
+                                .render_ctx
+                                .brush_cache
+                                .get_brush(target, &color_f(0.18, 0.20, 0.26, 1.0))
+                            {
                                 target.FillRectangle(&item_rect, &hl);
                             }
                         }
                     }
                     // 标题
-                    let title_text: Vec<u16> = format!(
-                        "{}  ({})",
-                        hmeta.title,
-                        hmeta.message_count
-                    )
-                    .encode_utf16()
-                    .chain(Some(0))
-                    .collect();
+                    let title_text: Vec<u16> =
+                        format!("{}  ({})", hmeta.title, hmeta.message_count)
+                            .encode_utf16()
+                            .chain(Some(0))
+                            .collect();
                     target.DrawText(
                         &title_text,
                         &small_format,
@@ -421,11 +419,8 @@ impl EditorState {
                     );
                     // 预览（灰色小字）
                     if !hmeta.preview.is_empty() {
-                        let prev_text: Vec<u16> = hmeta
-                            .preview
-                            .encode_utf16()
-                            .chain(Some(0))
-                            .collect();
+                        let prev_text: Vec<u16> =
+                            hmeta.preview.encode_utf16().chain(Some(0)).collect();
                         target.DrawText(
                             &prev_text,
                             &small_format,
@@ -440,19 +435,21 @@ impl EditorState {
                             DWRITE_MEASURING_MODE_NATURAL,
                         );
                     }
-                    self.ai_panel
-                        .history_item_regions
-                        .push((hi, item_rect.left, iy, item_rect.right - item_rect.left, item_h - 2.0));
+                    self.ai_panel.history_item_regions.push((
+                        hi,
+                        item_rect.left,
+                        iy,
+                        item_rect.right - item_rect.left,
+                        item_h - 2.0,
+                    ));
                     iy += item_h;
                 }
                 if self.ai_panel.history.len() > max_items {
-                    let more_text: Vec<u16> = format!(
-                        "… 还有 {} 条",
-                        self.ai_panel.history.len() - max_items
-                    )
-                    .encode_utf16()
-                    .chain(Some(0))
-                    .collect();
+                    let more_text: Vec<u16> =
+                        format!("… 还有 {} 条", self.ai_panel.history.len() - max_items)
+                            .encode_utf16()
+                            .chain(Some(0))
+                            .collect();
                     target.DrawText(
                         &more_text,
                         &small_format,
