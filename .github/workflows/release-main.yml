@@ -33,8 +33,10 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            // 使用 UTC+8（北京时间）生成版本号日期，与本地显示一致
             const date = new Date();
-            const dateStr = `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, '0')}.${String(date.getDate()).padStart(2, '0')}`;
+            const beijingDate = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+            const dateStr = `${beijingDate.getUTCFullYear()}.${String(beijingDate.getUTCMonth() + 1).padStart(2, '0')}.${String(beijingDate.getUTCDate()).padStart(2, '0')}`;
             const sha = context.sha.substring(0, 7);
 
             // 检查当天已有的 release，递增 build 号
@@ -56,7 +58,7 @@ jobs:
             }
 
             const version = `${prefix}${build}`;
-            const dateIso = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+            const dateIso = `${beijingDate.getUTCFullYear()}-${String(beijingDate.getUTCMonth() + 1).padStart(2, '0')}-${String(beijingDate.getUTCDate()).padStart(2, '0')}`;
 
             core.setOutput('version', version);
             core.setOutput('date', dateIso);
