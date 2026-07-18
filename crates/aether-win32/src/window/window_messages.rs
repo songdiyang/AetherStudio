@@ -92,7 +92,7 @@ unsafe fn on_timer_ai_refresh(hwnd: HWND) -> LRESULT {
             .as_ref()
             .map(|state| {
                 let st = state.borrow();
-                st.ai_panel.is_generating || st.settings_panel.is_testing
+                st.ai_panel.any_generating() || st.settings_panel.is_testing
             })
             .unwrap_or(false)
     });

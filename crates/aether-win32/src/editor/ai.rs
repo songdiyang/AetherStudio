@@ -72,11 +72,21 @@ impl EditorState {
     ///
     /// 执行结果以助手消息形式反馈到 AI 面板，并刷新文件树。
     pub fn process_ai_agent_actions(&mut self) {
+        let active = self.ai_panel.active;
+        self.process_ai_agent_actions_for(active);
+    }
+
+    /// 处理指定会话（conv_idx）刚完成生成时的 Agent 动作：创建/修改文件、执行终端命令。
+    /// 支持后台并发会话——反馈写回对应会话，而非总是活动会话。
+    pub fn process_ai_agent_actions_for(&mut self, conv_idx: usize) {
         // Edit 模式走差异预览确认流程，不在此处直接落盘。
-        if matches!(self.ai_panel.mode, crate::ai_prompt::AiMode::Edit) {
+        if matches!(
+            self.ai_panel.mode_of(conv_idx),
+            crate::ai_prompt::AiMode::Edit
+        ) {
             return;
         }
-        let Some(text) = self.ai_panel.last_assistant_text() else {
+        let Some(text) = self.ai_panel.last_assistant_text_of(conv_idx) else {
             return;
         };
 
@@ -84,7 +94,7 @@ impl EditorState {
         let has_actions = text.contains("<<<<<<< FILE") || text.contains("<<<<<<< RUN");
         if has_actions && self.current_folder.is_none() {
             self.ai_panel
-                .add_assistant_message("⚠️ 尚未打开工作区文件夹，无法直接创建/修改文件。请先通过“文件 → 打开文件夹”打开一个项目再试。".to_string());
+                .add_assistant_message_to(conv_idx, "提示：尚未打开工作区文件夹，无法直接创建/修改文件。请先通过“文件 → 打开文件夹”打开一个项目再试。".to_string());
             self.dirty_tracker.mark_full_window();
             return;
         }
@@ -101,16 +111,16 @@ impl EditorState {
                             .as_ref()
                             .and_then(|root| p.strip_prefix(root).ok())
                             .unwrap_or(p.as_path());
-                        file_summary.push(format!("✅ 已写入 `{}`", name.display()));
+                        file_summary.push(format!("✓ 已写入 `{}`", name.display()));
                     }
                 }
                 Err(e) => {
-                    file_summary.push(format!("⚠️ 文件操作失败: {}", e));
+                    file_summary.push(format!("✕ 文件操作失败: {}", e));
                 }
             }
-            // 刷新文件树以显示新文件
-            if let Some(folder) = self.current_folder.clone() {
-                self.open_folder(folder);
+            // 刷新文件树以显示新文件（轻量刷新，保留展开状态，不重启 LSP）
+            if self.current_folder.is_some() {
+                self.refresh_file_tree_light();
             }
         }
 
@@ -131,7 +141,14 @@ impl EditorState {
             }
             for cmd in &commands {
                 self.terminal_panel.queue_command(cmd.clone());
-                cmd_summary.push(format!("▶️ 执行 `{}`", cmd));
+                cmd_summary.push(format!("▶ 已执行 `{}`", cmd));
+            }
+            // 命令可能创建/删除文件：开启一段监视窗口，检测到工作区根目录变化即自动
+            // 轻量刷新资源管理器，无需用户手动刷新。
+            if self.current_folder.is_some() {
+                self.fs_last_root_sig = self.workspace_root_signature();
+                self.fs_watch_until =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(20));
             }
             // 启动终端刷新定时器，保证轮询启动结果并刷新命令队列
             unsafe {
@@ -144,15 +161,34 @@ impl EditorState {
             }
         }
 
-        // 3. 反馈汇总到 AI 面板
+        // 3. 反馈汇总到对应会话
         if !file_summary.is_empty() || !cmd_summary.is_empty() {
             let mut lines = Vec::new();
             lines.extend(file_summary);
             lines.extend(cmd_summary);
-            self.ai_panel.add_assistant_message(lines.join("\n"));
+            self.ai_panel
+                .add_assistant_message_to(conv_idx, lines.join("\n"));
             self.dirty_tracker.mark_full_window();
         }
     }
+    /// 刷新 AI 历史索引。
+    /// 从磁盘 conversations/index.json 加载元数据到内存 history。
+    pub fn refresh_ai_history(&mut self) {
+        if let Some(store) = self.ai_panel.history_store.as_ref() {
+            let meta = store.load_history_meta();
+            if !meta.is_empty() {
+                self.ai_panel.history = meta;
+            }
+        }
+    }
+
+    /// 打开历史记录中的某条会话。
+    /// 基础版：从内存 history 恢复会话元数据到新标签页。
+    /// Phase 2 将支持从磁盘懒加载 conv-{id}.json 完整消息。
+    pub fn open_ai_history_item(&mut self, idx: usize) {
+        self.ai_panel.restore_from_history(idx);
+    }
+
     /// 把当前文件的 LSP 诊断发送给 AI 修复
     pub fn ai_fix_diagnostics(&mut self) {
         let settings = self.app_settings.active_ai_settings();

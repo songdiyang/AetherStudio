@@ -215,8 +215,10 @@ impl ChatMessage {
 /// AI 流式响应事件
 #[derive(Clone, Debug)]
 pub enum AiStreamEvent {
-    /// 一个新的文本 token
+    /// 一个新的文本 token（最终回答内容）
     Token(String),
+    /// 一个新的"深度思考"token（如 DeepSeek reasoner 的 reasoning_content）
+    Reasoning(String),
     /// 流结束
     Done,
     /// 流式过程中出现错误
@@ -857,6 +859,16 @@ impl AiClient {
                                             json["error"]
                                         )));
                                         break;
+                                    }
+                                    if let Some(reasoning) = json
+                                        .pointer("/choices/0/delta/reasoning_content")
+                                        .and_then(|v| v.as_str())
+                                    {
+                                        if !reasoning.is_empty() {
+                                            let _ = tx.send(AiStreamEvent::Reasoning(
+                                                reasoning.to_string(),
+                                            ));
+                                        }
                                     }
                                     if let Some(token) = Self::extract_stream_token(&json) {
                                         if !token.is_empty() {

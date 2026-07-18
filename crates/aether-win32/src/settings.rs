@@ -417,8 +417,9 @@ impl SettingsPanel {
             .map(|id| self.models.iter().any(|m| &m.id == id))
             .unwrap_or(false);
         if !has_active {
-            // 完全空配置则不创建
-            if self.provider.is_empty() && self.api_key.is_empty() && self.model.is_empty() {
+            // 未填写密钥且未填写模型名则不创建（避免「新建」后未填写就误建空模型；
+            // 只有填了有效信息并点击「保存」才应产生一条模型）
+            if self.api_key.trim().is_empty() && self.model.trim().is_empty() {
                 return;
             }
             let stamp = std::time::SystemTime::now()
@@ -501,6 +502,22 @@ impl SettingsPanel {
         self.max_tokens = "2048".to_string();
         self.system_prompt = String::new();
         id
+    }
+
+    /// 开始「新建模型」草稿：把编辑字段重置为默认值，但**不**加入模型列表、**不**持久化。
+    /// 只有用户点击「保存」（且连接验证通过）后，才会真正创建并保存该模型。
+    /// 这样「新建」本身不会产生一条模型，避免误建空模型。
+    pub fn begin_new_model_draft(&mut self) {
+        self.active_model_id = None;
+        self.provider = "deepseek".to_string();
+        self.api_key = String::new();
+        self.base_url = "https://api.deepseek.com/v1".to_string();
+        self.model = String::new();
+        self.temperature = "0.7".to_string();
+        self.max_tokens = "2048".to_string();
+        self.system_prompt = String::new();
+        self.test_status.clear();
+        self.active_field = None;
     }
 
     /// 把模型列表与激活选择同步回 AppSettings（供持久化）

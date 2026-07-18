@@ -2,7 +2,8 @@ use aether_ai::ChatMessage;
 use aether_shared::settings::AiSettings;
 
 /// AI 聊天/编辑模式
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AiMode {
     /// 普通问答，不对输出做结构化解析
     Ask,
@@ -22,13 +23,11 @@ impl AiMode {
     }
 }
 
-/// 根据设置、上下文、用户输入和模式构建聊天消息列表
-pub fn build_chat_prompt(
-    settings: &AiSettings,
-    context: &str,
-    user_input: &str,
-    mode: AiMode,
-) -> Vec<ChatMessage> {
+/// 根据设置、上下文和模式构建"系统前缀"消息（system + Agent 能力 + 模式说明 + 工作区上下文）。
+///
+/// 注意：本函数**不含**对话历史与当前用户输入——调用方需在其后追加经窗口切片的会话历史
+/// （见 `AiPanel::history_to_chat_messages`），以保证同一轮对话的上下文连续性。
+pub fn build_chat_prompt(settings: &AiSettings, context: &str, mode: AiMode) -> Vec<ChatMessage> {
     let mut messages = Vec::new();
 
     // system prompt
@@ -61,16 +60,13 @@ pub fn build_chat_prompt(
         });
     }
 
-    // 上下文
+    // 上下文（工作区/文件等附件）——作为一条 system 消息注入，随每轮请求提供当前上下文
     if !context.is_empty() {
-        messages.push(ChatMessage::user(format!(
-            "这是当前项目的相关上下文：\n\n{}",
-            context
-        )));
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: format!("这是当前项目的相关上下文：\n\n{}", context),
+        });
     }
-
-    // 用户输入
-    messages.push(ChatMessage::user(user_input.to_string()));
 
     messages
 }

@@ -67,7 +67,7 @@ impl EditorState {
                 bottom: cy + card_h,
             };
             target.FillRectangle(&accent_rect, &accent_brush);
-            let info_text = "配置 API 密钥后，AI 助手可在 Agent 模式下新建、修改、删除文件。建议先点击「测试连接」验证密钥有效性，再保存。";
+            let info_text = "配置 API 密钥后，AI 助手可在 Agent 模式下新建、修改、删除文件。点击「保存」时会自动验证密钥有效性并保存；新建的模型只有点击「保存」后才会真正保存。";
             let info_color = color_f(0.72, 0.74, 0.78, 1.0);
             let info_brush = self
                 .render_ctx
@@ -708,7 +708,7 @@ impl EditorState {
                     },
                     &dot_brush,
                 );
-                let dirty_text: Vec<u16> = "有未保存的更改，点击「保存设置」生效"
+                let dirty_text: Vec<u16> = "有未保存的更改，点击「保存」生效"
                     .encode_utf16()
                     .chain(Some(0))
                     .collect();
@@ -729,75 +729,11 @@ impl EditorState {
                 cy += 24.0;
             }
 
-            // 操作按钮：并排 [测试连接(次)] [保存设置(主)]
+            // 操作按钮：单个「保存」（点击时会先验证密钥连通性，通过后再保存）
             let btn_h = 34.0_f32;
-            let btn_gap = 12.0_f32;
             let is_testing = self.settings_panel.is_testing;
-            let test_btn_w = (input_w * 0.4).clamp(120.0, (input_w - 120.0).max(120.0));
-            let test_x = x + margin;
-            let save_x = test_x + test_btn_w + btn_gap;
-            let save_btn_w = (x + margin + input_w - save_x).max(1.0);
-
-            // 测试连接（描边次按钮）
-            let test_hover = self.settings_panel.hover_button
-                == Some(crate::settings::SettingsButton::TestConnection);
-            let test_bg = if is_testing {
-                color_f(0.14, 0.14, 0.14, 1.0)
-            } else if test_hover {
-                color_f(0.25, 0.25, 0.25, 1.0)
-            } else {
-                color_f(0.18, 0.18, 0.18, 1.0)
-            };
-            let test_bg_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &test_bg)
-                .unwrap();
-            let test_rect = D2D_RECT_F {
-                left: test_x,
-                top: cy,
-                right: test_x + test_btn_w,
-                bottom: cy + btn_h,
-            };
-            target.FillRectangle(&test_rect, &test_bg_brush);
-            let test_border_color = color_f(0.3, 0.3, 0.3, 1.0);
-            let test_border_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &test_border_color)
-                .unwrap();
-            draw_input_borders(target, test_x, cy, test_btn_w, btn_h, &test_border_brush);
-            let test_label = if is_testing {
-                "测试中…"
-            } else {
-                "测试连接"
-            };
-            let test_text: Vec<u16> = test_label.encode_utf16().chain(Some(0)).collect();
-            let test_text_color = if is_testing {
-                color_f(0.6, 0.6, 0.6, 1.0)
-            } else {
-                color_f(0.85, 0.85, 0.85, 1.0)
-            };
-            let test_text_brush = self
-                .render_ctx
-                .brush_cache
-                .get_brush(target, &test_text_color)
-                .unwrap();
-            target.DrawText(
-                &test_text,
-                &button_format,
-                &test_rect,
-                &test_text_brush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-            self.settings_panel.add_button_region(
-                crate::settings::SettingsButton::TestConnection,
-                test_x,
-                cy,
-                test_btn_w,
-                btn_h,
-            );
+            let save_x = x + margin;
+            let save_btn_w = input_w;
 
             // 保存设置（主按钮；保存时会自动先测试密钥有效性）
             let save_hover =
@@ -824,7 +760,7 @@ impl EditorState {
             let save_label = if is_testing {
                 "验证并保存中…"
             } else {
-                "保存设置"
+                "保存"
             };
             let save_text: Vec<u16> = save_label.encode_utf16().chain(Some(0)).collect();
             let btn_text_color = color_f(1.0, 1.0, 1.0, 1.0);
