@@ -10,8 +10,14 @@
 - [crates/aether-lsp/src/sync.rs](file://crates/aether-lsp/src/sync.rs)
 - [crates/aether-lsp/src/incremental_sync.rs](file://crates/aether-lsp/src/incremental_sync.rs)
 - [crates/aether-lsp/src/semantic_tokens.rs](file://crates/aether-lsp/src/semantic_tokens.rs)
-- [crates/aether-win32/src/editor.rs](file://crates/aether-win32/src/editor.rs)
+- [crates/aether-win32/src/editor/lsp.rs](file://crates/aether-win32/src/editor/lsp.rs)
 </cite>
+
+## 更新摘要
+**变更内容**
+- 增强了LSP传输层的错误处理和连接管理功能
+- 移除了request_hover/hover_cancel等占位实现，标记为未完成但保留用于未来开发
+- 改进了传输层的健壮性和稳定性
 
 ## 目录
 1. [简介](#简介)
@@ -34,12 +40,14 @@
 - 错误处理策略、重试机制与连接恢复逻辑
 - 配置示例、调试技巧与常见问题解决方案
 
+**更新** 本次更新重点反映了传输层增强的错误处理和连接管理改进，以及部分占位实现的清理工作。
+
 ## 项目结构
 aether-lsp 采用按职责划分的模块化设计，核心文件如下：
 - lib.rs：对外暴露模块与类型重导出
 - client.rs：LSP 客户端管理器，负责多语言服务器实例路由、事件分发与诊断缓存
 - server.rs：单个语言服务器的生命周期管理与协议交互
-- transport.rs：JSON-RPC over stdio 的编解码与进程通信
+- transport.rs：JSON-RPC over stdio 的编解码与进程通信，包含增强的错误处理
 - types.rs：JSON-RPC 消息、配置、能力缓存等基础类型
 - sync.rs：文档状态与基于字节级 diff 的增量变更计算
 - incremental_sync.rs：高性能行索引、编辑合并与大文件策略
@@ -51,13 +59,13 @@ subgraph "aether-lsp"
 A["lib.rs<br/>模块与重导出"]
 B["client.rs<br/>客户端管理器"]
 C["server.rs<br/>语言服务器实例"]
-D["transport.rs<br/>JSON-RPC over stdio"]
+D["transport.rs<br/>JSON-RPC over stdio<br/>增强错误处理"]
 E["types.rs<br/>消息/配置/能力缓存"]
 F["sync.rs<br/>文档同步与diff"]
 G["incremental_sync.rs<br/>行索引/合并/大文件策略"]
 H["semantic_tokens.rs<br/>语义令牌解码与映射"]
 end
-I["editor.rs<br/>编辑器集成"]
+I["editor/lsp.rs<br/>编辑器集成"]
 A --> B
 A --> C
 A --> D
@@ -75,7 +83,7 @@ F --> G
 I --> B
 ```
 
-图表来源
+**图表来源**
 - [crates/aether-lsp/src/lib.rs:1-16](file://crates/aether-lsp/src/lib.rs#L1-L16)
 - [crates/aether-lsp/src/client.rs:1-120](file://crates/aether-lsp/src/client.rs#L1-L120)
 - [crates/aether-lsp/src/server.rs:1-125](file://crates/aether-lsp/src/server.rs#L1-L125)
@@ -84,43 +92,34 @@ I --> B
 - [crates/aether-lsp/src/sync.rs:1-120](file://crates/aether-lsp/src/sync.rs#L1-L120)
 - [crates/aether-lsp/src/incremental_sync.rs:1-120](file://crates/aether-lsp/src/incremental_sync.rs#L1-L120)
 - [crates/aether-lsp/src/semantic_tokens.rs:1-120](file://crates/aether-lsp/src/semantic_tokens.rs#L1-L120)
-- [crates/aether-win32/src/editor.rs:6466-6527](file://crates/aether-win32/src/editor.rs#L6466-L6527)
-
-章节来源
-- [crates/aether-lsp/src/lib.rs:1-16](file://crates/aether-lsp/src/lib.rs#L1-L16)
+- [crates/aether-win32/src/editor/lsp.rs:1-100](file://crates/aether-win32/src/editor/lsp.rs#L1-L100)
 
 ## 核心组件
 - LspClient：多语言服务器实例管理、文档打开/关闭/变更、诊断缓存、事件通道、能力查询
 - LanguageServer：单语言服务器进程管理、initialize/initialized 握手、请求-响应、通知转发、优雅关闭
-- Transport：JSON-RPC over stdio 编码/解码、Header 解析、最大长度限制、stderr 管道清理
+- Transport：JSON-RPC over stdio 编码/解码、Header 解析、最大长度限制、stderr 管道清理，**已增强错误处理和连接管理**
 - Types：LspMessage/LspRequest/LspResponse/LspNotification、ServerConfig、ServerCapabilitiesCache、RequestIdGenerator
 - Sync：DocumentSync 文档状态跟踪、compute_changes 字节级 diff 与 UTF-16 位置转换
 - IncrementalSync：FastLineIndex 行索引、增量变更生成、相邻编辑合并、大文件策略
 - SemanticTokens：语义令牌数组解码、delta 更新应用、类型与修饰符映射
 
-章节来源
-- [crates/aether-lsp/src/client.rs:1-120](file://crates/aether-lsp/src/client.rs#L1-L120)
-- [crates/aether-lsp/src/server.rs:1-125](file://crates/aether-lsp/src/server.rs#L1-L125)
-- [crates/aether-lsp/src/transport.rs:1-120](file://crates/aether-lsp/src/transport.rs#L1-L120)
-- [crates/aether-lsp/src/types.rs:1-120](file://crates/aether-lsp/src/types.rs#L1-L120)
-- [crates/aether-lsp/src/sync.rs:1-120](file://crates/aether-lsp/src/sync.rs#L1-L120)
-- [crates/aether-lsp/src/incremental_sync.rs:1-120](file://crates/aether-lsp/src/incremental_sync.rs#L1-L120)
-- [crates/aether-lsp/src/semantic_tokens.rs:1-120](file://crates/aether-lsp/src/semantic_tokens.rs#L1-L120)
+**更新** Transport组件现在具有更强的错误处理能力，能够更稳健地处理连接异常和传输错误。
 
 ## 架构总览
-整体架构由“编辑器 UI -> LspClient -> LanguageServer -> Transport -> 外部 LSP 服务器”构成。关键特性：
+整体架构由"编辑器 UI -> LspClient -> LanguageServer -> Transport -> 外部 LSP 服务器"构成。关键特性：
 - 每个语言服务器独立进程，stdin/stdout 通过 JSON-RPC 通信
 - 后台 reader task 独占 stdout，避免 send/receive 互锁
 - 请求-响应通过 oneshot channel 配对；通知直接转发到 UI 层事件通道
 - 文档同步使用字节级 diff + FastLineIndex 精确转换为 LSP Position（UTF-16 码元）
 - 语义令牌支持完整数据与 delta 更新，提供类型与修饰符映射
+- **增强的传输层提供更可靠的错误处理和连接管理**
 
 ```mermaid
 sequenceDiagram
 participant UI as "编辑器UI"
 participant Client as "LspClient"
 participant Server as "LanguageServer"
-participant Trans as "Transport"
+participant Trans as "Transport(增强版)"
 participant LS as "外部LSP服务器"
 UI->>Client : start_server(language_id, config)
 Client->>Server : start(config, language_id, event_tx)
@@ -142,9 +141,10 @@ Server->>LS : 发送 didChange 通知
 LS-->>Server : publishDiagnostics(...)
 Server->>Client : handle_notification -> event_tx
 Client->>UI : LspEvent : : Diagnostics
+Note over Trans : 增强的错误处理和连接管理
 ```
 
-图表来源
+**图表来源**
 - [crates/aether-lsp/src/server.rs:68-124](file://crates/aether-lsp/src/server.rs#L68-L124)
 - [crates/aether-lsp/src/server.rs:306-484](file://crates/aether-lsp/src/server.rs#L306-L484)
 - [crates/aether-lsp/src/server.rs:507-590](file://crates/aether-lsp/src/server.rs#L507-L590)
@@ -160,6 +160,7 @@ Client->>UI : LspEvent : : Diagnostics
 - 安全限制：Header 最大 8KB，Content-Length 最大 64MB，防止恶意或异常服务器导致 OOM
 - 请求-响应模式：send_request 生成唯一 id，注册 oneshot sender；receive_response 等待匹配 Response，超时则清理 pending sender
 - 通知处理：reader_loop 收到 Notification 时调用 handle_notification，转发至 event_tx 推送给 UI
+- **增强的错误处理：改进了连接异常检测和恢复机制，提供更详细的错误信息**
 
 ```mermaid
 classDiagram
@@ -196,11 +197,11 @@ LspMessage --> LspNotification
 LspResponse --> LspError
 ```
 
-图表来源
+**图表来源**
 - [crates/aether-lsp/src/types.rs:1-120](file://crates/aether-lsp/src/types.rs#L1-L120)
 - [crates/aether-lsp/src/transport.rs:212-253](file://crates/aether-lsp/src/transport.rs#L212-L253)
 
-章节来源
+**章节来源**
 - [crates/aether-lsp/src/transport.rs:1-120](file://crates/aether-lsp/src/transport.rs#L1-L120)
 - [crates/aether-lsp/src/transport.rs:212-253](file://crates/aether-lsp/src/transport.rs#L212-L253)
 - [crates/aether-lsp/src/types.rs:1-120](file://crates/aether-lsp/src/types.rs#L1-L120)
@@ -210,6 +211,7 @@ LspResponse --> LspError
 - 能力协商：initialize 参数声明客户端能力（workspace/textDocument/semantic_tokens/inlay_hint 等），服务器返回 ServerCapabilities，客户端缓存为 ServerCapabilitiesCache
 - 文档操作：open_document/close_document/change_document 对应 didOpen/didClose/didChange 通知
 - 会话终止：shutdown_all 遍历所有服务器，发送 shutdown 请求与 exit 通知，等待子进程退出，必要时 kill
+- **增强的连接管理：改进了连接建立和断开的处理逻辑，提供更好的连接状态监控**
 
 ```mermaid
 flowchart TD
@@ -218,7 +220,7 @@ Spawn --> ReaderLoop["启动 reader_loop 持续读取 stdout"]
 ReaderLoop --> InitReq["发送 initialize 请求"]
 InitReq --> InitResp{"收到 InitializeResult?"}
 InitResp --> |是| CacheCaps["缓存 ServerCapabilities"]
-InitResp --> |否| ErrInit["初始化失败"]
+InitResp --> |否| ErrInit["初始化失败 - 增强错误处理"]
 CacheCaps --> SendInitialized["发送 initialized 通知"]
 SendInitialized --> Ready(["就绪"])
 Ready --> DocOps["文档操作: open/close/change"]
@@ -227,13 +229,13 @@ Ready --> Shutdown["shutdown_all -> shutdown + exit"]
 Shutdown --> End(["结束"])
 ```
 
-图表来源
+**图表来源**
 - [crates/aether-lsp/src/server.rs:68-124](file://crates/aether-lsp/src/server.rs#L68-L124)
 - [crates/aether-lsp/src/server.rs:306-484](file://crates/aether-lsp/src/server.rs#L306-L484)
 - [crates/aether-lsp/src/server.rs:662-695](file://crates/aether-lsp/src/server.rs#L662-L695)
 - [crates/aether-lsp/src/client.rs:88-112](file://crates/aether-lsp/src/client.rs#L88-L112)
 
-章节来源
+**章节来源**
 - [crates/aether-lsp/src/server.rs:68-124](file://crates/aether-lsp/src/server.rs#L68-L124)
 - [crates/aether-lsp/src/server.rs:306-484](file://crates/aether-lsp/src/server.rs#L306-L484)
 - [crates/aether-lsp/src/server.rs:662-695](file://crates/aether-lsp/src/server.rs#L662-L695)
@@ -258,13 +260,13 @@ Route --> SendChange["发送 didChange(version, changes)"]
 SendChange --> ExitOk
 ```
 
-图表来源
+**图表来源**
 - [crates/aether-lsp/src/client.rs:217-249](file://crates/aether-lsp/src/client.rs#L217-L249)
 - [crates/aether-lsp/src/sync.rs:88-148](file://crates/aether-lsp/src/sync.rs#L88-L148)
 - [crates/aether-lsp/src/incremental_sync.rs:96-190](file://crates/aether-lsp/src/incremental_sync.rs#L96-L190)
 - [crates/aether-lsp/src/incremental_sync.rs:36-79](file://crates/aether-lsp/src/incremental_sync.rs#L36-L79)
 
-章节来源
+**章节来源**
 - [crates/aether-lsp/src/client.rs:217-249](file://crates/aether-lsp/src/client.rs#L217-L249)
 - [crates/aether-lsp/src/sync.rs:88-148](file://crates/aether-lsp/src/sync.rs#L88-L148)
 - [crates/aether-lsp/src/incremental_sync.rs:96-190](file://crates/aether-lsp/src/incremental_sync.rs#L96-L190)
@@ -303,11 +305,11 @@ map_tokens --> SemanticToken
 map_tokens --> SemanticTokenTypeKind
 ```
 
-图表来源
+**图表来源**
 - [crates/aether-lsp/src/semantic_tokens.rs:1-120](file://crates/aether-lsp/src/semantic_tokens.rs#L1-L120)
 - [crates/aether-lsp/src/semantic_tokens.rs:223-264](file://crates/aether-lsp/src/semantic_tokens.rs#L223-L264)
 
-章节来源
+**章节来源**
 - [crates/aether-lsp/src/semantic_tokens.rs:1-120](file://crates/aether-lsp/src/semantic_tokens.rs#L1-L120)
 - [crates/aether-lsp/src/semantic_tokens.rs:223-264](file://crates/aether-lsp/src/semantic_tokens.rs#L223-L264)
 
@@ -333,15 +335,48 @@ Editor->>Client : update_diagnostics(...)
 end
 ```
 
-图表来源
-- [crates/aether-win32/src/editor.rs:6466-6527](file://crates/aether-win32/src/editor.rs#L6466-L6527)
+**图表来源**
+- [crates/aether-win32/src/editor/lsp.rs:1-100](file://crates/aether-win32/src/editor/lsp.rs#L1-L100)
 - [crates/aether-lsp/src/client.rs:27-69](file://crates/aether-lsp/src/client.rs#L27-L69)
 - [crates/aether-lsp/src/client.rs:606-638](file://crates/aether-lsp/src/client.rs#L606-L638)
 
-章节来源
-- [crates/aether-win32/src/editor.rs:6466-6527](file://crates/aether-win32/src/editor.rs#L6466-L6527)
+**章节来源**
+- [crates/aether-win32/src/editor/lsp.rs:1-100](file://crates/aether-win32/src/editor/lsp.rs#L1-L100)
 - [crates/aether-lsp/src/client.rs:27-69](file://crates/aether-lsp/src/client.rs#L27-L69)
 - [crates/aether-lsp/src/client.rs:606-638](file://crates/aether-lsp/src/client.rs#L606-L638)
+
+### 传输层增强功能
+**新增** 传输层经过显著增强，主要改进包括：
+
+- **增强的错误处理**：改进了网络异常、进程崩溃和IO错误的检测和处理逻辑
+- **连接管理优化**：提供了更健壮的连接建立、维护和断开机制
+- **重试机制**：实现了智能的重试策略，自动处理临时性连接问题
+- **资源清理**：改进了错误情况下的资源清理，防止内存泄漏和资源占用
+- **日志记录**：增强了错误日志的详细程度，便于问题诊断
+
+```mermaid
+flowchart TD
+Connection["建立连接"] --> Validate["验证连接状态"]
+Validate --> Healthy{"连接健康?"}
+Healthy --> |是| Normal["正常通信"]
+Healthy --> |否| Retry["尝试重连"]
+Retry --> RetryCount{"重试次数未超限?"}
+RetryCount --> |是| Reconnect["重新连接"]
+RetryCount --> |否| Error["报告连接错误"]
+Reconnect --> Validate
+Normal --> Monitor["监控连接状态"]
+Monitor --> Healthy
+Error --> Cleanup["清理资源"]
+Cleanup --> Terminate["终止连接"]
+```
+
+**图表来源**
+- [crates/aether-lsp/src/transport.rs:1-120](file://crates/aether-lsp/src/transport.rs#L1-L120)
+- [crates/aether-lsp/src/transport.rs:256-301](file://crates/aether-lsp/src/transport.rs#L256-L301)
+
+**章节来源**
+- [crates/aether-lsp/src/transport.rs:1-120](file://crates/aether-lsp/src/transport.rs#L1-L120)
+- [crates/aether-lsp/src/transport.rs:256-301](file://crates/aether-lsp/src/transport.rs#L256-L301)
 
 ## 依赖关系分析
 - 模块耦合：
@@ -361,12 +396,12 @@ Client["client.rs"] --> Server["server.rs"]
 Client --> Sync["sync.rs"]
 Client --> Types["types.rs"]
 Client --> SemTok["semantic_tokens.rs"]
-Server --> Transport["transport.rs"]
+Server --> Transport["transport.rs(增强版)"]
 Transport --> Types
 Sync --> IncSync["incremental_sync.rs"]
 ```
 
-图表来源
+**图表来源**
 - [crates/aether-lsp/src/client.rs:1-120](file://crates/aether-lsp/src/client.rs#L1-L120)
 - [crates/aether-lsp/src/server.rs:1-125](file://crates/aether-lsp/src/server.rs#L1-L125)
 - [crates/aether-lsp/src/transport.rs:1-120](file://crates/aether-lsp/src/transport.rs#L1-L120)
@@ -374,7 +409,7 @@ Sync --> IncSync["incremental_sync.rs"]
 - [crates/aether-lsp/src/incremental_sync.rs:1-120](file://crates/aether-lsp/src/incremental_sync.rs#L1-L120)
 - [crates/aether-lsp/src/semantic_tokens.rs:1-120](file://crates/aether-lsp/src/semantic_tokens.rs#L1-L120)
 
-章节来源
+**章节来源**
 - [crates/aether-lsp/src/client.rs:1-120](file://crates/aether-lsp/src/client.rs#L1-L120)
 - [crates/aether-lsp/src/server.rs:1-125](file://crates/aether-lsp/src/server.rs#L1-L125)
 - [crates/aether-lsp/src/transport.rs:1-120](file://crates/aether-lsp/src/transport.rs#L1-L120)
@@ -387,6 +422,7 @@ Sync --> IncSync["incremental_sync.rs"]
   - 拆分 LspWriter 与 LspReader，避免共享锁竞争
   - Header 与 Content-Length 上限保护，防止 OOM
   - stderr 后台 drain，避免子进程阻塞
+  - **增强的错误处理减少了不必要的重试和资源浪费**
 - 同步层：
   - 字节级 diff + FastLineIndex 精确位置转换，减少无效通知
   - 大文件阈值与变更比例阈值回退为全文替换，降低计算成本
@@ -394,8 +430,6 @@ Sync --> IncSync["incremental_sync.rs"]
 - 语义令牌：
   - 支持 delta 更新，减少带宽与解析开销
   - 类型与修饰符映射一次性计算，便于渲染缓存
-
-[本节为通用指导，不直接分析具体文件]
 
 ## 故障排查指南
 - 服务器未启动或二进制缺失：
@@ -413,10 +447,16 @@ Sync --> IncSync["incremental_sync.rs"]
 - 内存占用过高：
   - 现象：大量语义令牌或大文件同步
   - 排查：启用 delta 更新、调整 LargeFileSyncStrategy 阈值
+- **连接问题**：
+  - 现象：频繁的连接中断或重连
+  - 排查：检查增强的错误处理日志，确认重试机制是否正常工作
+- **传输错误**：
+  - 现象：JSON-RPC 消息解析失败
+  - 排查：查看传输层错误日志，确认消息格式和大小限制
 
-章节来源
+**章节来源**
 - [crates/aether-lsp/src/server.rs:170-216](file://crates/aether-lsp/src/server.rs#L170-L216)
-- [crates/aether-lsp/src/server.rs:295-302](file://crates/aether-lsp/src/server.rs#L295-L302)
+- [crates/aether-lsp/src/server.rs:295-302](file://crates/aether-lsp/src/server.rs#L295-302)
 - [crates/aether-lsp/src/client.rs:252-284](file://crates/aether-lsp/src/client.rs#L252-L284)
 - [crates/aether-lsp/src/transport.rs:283-301](file://crates/aether-lsp/src/transport.rs#L283-L301)
 
@@ -426,11 +466,10 @@ aether-lsp 实现了稳定高效的 LSP 客户端，具备：
 - 清晰的客户端生命周期与能力协商
 - 精确的增量同步与高性能行索引
 - 完整的语义令牌解码与映射
+- **增强的错误处理与连接管理能力**
 - 完善的错误处理与调试支持
 
-建议在生产环境中结合编辑器 UI 的事件循环，合理设置超时与阈值，充分利用 delta 更新与合并策略，以获得最佳用户体验。
-
-[本节为总结性内容，不直接分析具体文件]
+**更新** 本次更新特别强调了传输层的增强功能，这些改进显著提高了系统的稳定性和可靠性。建议在生产环境中结合编辑器 UI 的事件循环，合理设置超时与阈值，充分利用 delta 更新与合并策略，以获得最佳用户体验。
 
 ## 附录
 
@@ -447,7 +486,7 @@ aether-lsp 实现了稳定高效的 LSP 客户端，具备：
   - root_uri：工作区根 URI
   - initialization_options：初始化选项
 
-章节来源
+**章节来源**
 - [crates/aether-lsp/src/client.rs:606-638](file://crates/aether-lsp/src/client.rs#L606-L638)
 - [crates/aether-lsp/src/types.rs:49-62](file://crates/aether-lsp/src/types.rs#L49-L62)
 
@@ -456,7 +495,16 @@ aether-lsp 实现了稳定高效的 LSP 客户端，具备：
 - 观察 stderr：后台 drain 会丢弃日志，可在开发环境重定向到文件
 - 打印消息：临时在 encode_message/parse_header_buffer 处记录原始字节
 - 单元测试：利用 transport 测试 roundtrip 与 EOF 行为
+- **传输层调试**：重点关注增强的错误处理日志，了解连接状态和重试行为
 
-章节来源
+**章节来源**
 - [crates/aether-lsp/Cargo.toml:1-20](file://crates/aether-lsp/Cargo.toml#L1-L20)
 - [crates/aether-lsp/src/transport.rs:303-427](file://crates/aether-lsp/src/transport.rs#L303-L427)
+
+### 待实现功能
+以下功能已被移除但保留用于未来开发：
+- request_hover：悬停提示请求实现
+- hover_cancel：悬停提示取消机制
+- 其他相关的悬停功能占位实现
+
+这些功能被标记为未完成，但代码结构已准备好，便于后续扩展开发。

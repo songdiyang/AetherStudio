@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use aether_ai::{AiClient, AiStreamEvent};
+use aether_ai::{AiClient, AiStreamEvent, ChatMessage};
 use aether_shared::settings::AiSettings;
 
 use crate::ai_agent::{parse_edits, AiEdit};
@@ -97,13 +97,31 @@ pub fn sanitize_error(err: &str) -> String {
 }
 
 /// AI 助手消息
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AiMessage {
     pub role: AiRole,
     pub content: String,
+    /// "深度思考"内容（DeepSeek reasoner 的 reasoning_content）；None 表示无思考。
+    /// 与 content 分离存储，UI 上作为独立的"思考过程"分类展示。
+    pub reasoning: Option<String>,
+    /// 思考块是否折叠（默认展开，生成完成后自动折叠；用户可点击标题切换）
+    #[serde(default)]
+    pub reasoning_collapsed: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl AiMessage {
+    pub fn new(role: AiRole, content: String) -> Self {
+        Self {
+            role,
+            content,
+            reasoning: None,
+            reasoning_collapsed: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AiRole {
     User,
     Assistant,
@@ -113,12 +131,203 @@ pub enum AiRole {
 /// 流式响应的共享状态
 #[derive(Clone, Debug, Default)]
 pub struct AiStreamState {
-    /// 已累积但尚未被 UI 取走的 token
+    /// 已累积但尚未被 UI 取走的 token（最终回答）
     pub partial: String,
+    /// 已累积但尚未被 UI 取走的"深度思考"内容（DeepSeek reasoning_content 等）
+    pub reasoning: String,
     /// 流是否已结束
     pub done: bool,
     /// 流式过程中发生的错误
     pub error: Option<String>,
+}
+
+/// AI 助手欢迎语（新对话初始系统消息）
+pub const AI_WELCOME: &str = "你好！我是 AI 助手，可以帮助你解释代码、重构、修复问题、生成测试等。你可以直接输入问题，或选中代码后使用快捷操作。";
+
+/// 当前 Unix 秒级时间戳（对话创建/更新时间）
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 生成对话 ID（时间戳毫秒 + 计数，保证唯一）
+pub fn gen_conversation_id() -> String {
+    use std::sync::atomic::AtomicU64;
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("conv-{}-{}", ms, n)
+}
+
+/// 单个 AI 对话会话（多标签页 + 历史记录的基本单元）。
+///
+/// 活动会话的实时状态保存在 `AiPanel` 的扁平字段中（沿用旧逻辑，避免大面积改动）；
+/// 非活动会话以本结构存放于 `AiPanel::conversations`，可在后台并发流式生成。
+#[derive(Clone, Debug)]
+pub struct AiConversation {
+    pub id: String,
+    pub title: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub messages: Vec<AiMessage>,
+    pub input: String,
+    pub caret_pos: usize,
+    pub composition: Option<String>,
+    pub is_generating: bool,
+    pub scroll_y: f32,
+    pub content_height: f32,
+    pub stick_to_bottom: bool,
+    pub mode: AiMode,
+    pub attachments: Vec<AiContextAttachment>,
+    pub pending_edits: Vec<AiEdit>,
+    pub diff_view: DiffView,
+    pub show_diff_view: bool,
+    pub selected_change_index: usize,
+    pub stream_state: Arc<Mutex<AiStreamState>>,
+    pub should_stop: Arc<AtomicBool>,
+}
+
+impl AiConversation {
+    pub fn new(id: String, title: String) -> Self {
+        let now = now_secs();
+        Self {
+            id,
+            title,
+            created_at: now,
+            updated_at: now,
+            messages: vec![AiMessage::new(AiRole::System, AI_WELCOME.to_string())],
+            input: String::new(),
+            caret_pos: 0,
+            composition: None,
+            is_generating: false,
+            scroll_y: 0.0,
+            content_height: 0.0,
+            stick_to_bottom: true,
+            mode: AiMode::Agent,
+            attachments: Vec::new(),
+            pending_edits: Vec::new(),
+            diff_view: DiffView::new(),
+            show_diff_view: false,
+            selected_change_index: 0,
+            stream_state: Arc::new(Mutex::new(AiStreamState::default())),
+            should_stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn add_assistant_message(&mut self, content: String) {
+        self.messages
+            .push(AiMessage::new(AiRole::Assistant, content));
+        self.stick_to_bottom = true;
+        self.updated_at = now_secs();
+    }
+
+    /// 最后一条助手消息文本
+    pub fn last_assistant_text(&self) -> Option<String> {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| m.role == AiRole::Assistant)
+            .map(|m| m.content.clone())
+    }
+
+    /// 首条用户消息（用于自动生成标题）
+    pub fn first_user_text(&self) -> Option<String> {
+        self.messages
+            .iter()
+            .find(|m| m.role == AiRole::User)
+            .map(|m| m.content.clone())
+    }
+
+    fn parse_pending_edits(&mut self, current_folder: Option<&Path>) {
+        let Some(text) = self.last_assistant_text() else {
+            return;
+        };
+        self.pending_edits = parse_edits(&text, None);
+        self.diff_view = DiffView::from_edits(&self.pending_edits, current_folder);
+        self.show_diff_view = !self.pending_edits.is_empty();
+    }
+
+    /// 后台（非活动）会话的流式轮询：把新 token 追加到消息，返回本帧是否刚完成。
+    /// 与 `AiPanel::check_background_result` 逻辑一致，但作用于本会话，支持并发。
+    pub fn drain_background(&mut self, current_folder: Option<&Path>) -> bool {
+        if !self.is_generating {
+            return false;
+        }
+        let delta = if let Ok(mut s) = self.stream_state.lock() {
+            let partial = std::mem::take(&mut s.partial);
+            let reasoning = std::mem::take(&mut s.reasoning);
+            let done = s.done;
+            let error = s.error.take();
+            if done {
+                s.done = false;
+            }
+            Some((partial, reasoning, done, error))
+        } else {
+            None
+        };
+        let mut just_completed = false;
+        if let Some((partial, reasoning, done, error)) = delta {
+            // 深度思考通常先于回答到达：确保有一条助手消息承载 reasoning
+            if !reasoning.is_empty() {
+                if !matches!(self.messages.last(), Some(m) if m.role == AiRole::Assistant) {
+                    self.messages
+                        .push(AiMessage::new(AiRole::Assistant, String::new()));
+                }
+                if let Some(last) = self.messages.last_mut() {
+                    last.reasoning
+                        .get_or_insert_with(String::new)
+                        .push_str(&reasoning);
+                }
+                self.stick_to_bottom = true;
+                self.updated_at = now_secs();
+            }
+            if !partial.is_empty() {
+                self.stick_to_bottom = true;
+                if !matches!(self.messages.last(), Some(m) if m.role == AiRole::Assistant) {
+                    self.messages
+                        .push(AiMessage::new(AiRole::Assistant, String::new()));
+                }
+                if let Some(last) = self.messages.last_mut() {
+                    last.content.push_str(&partial);
+                }
+                self.updated_at = now_secs();
+            }
+            if let Some(err) = error {
+                self.add_assistant_message(err);
+                self.is_generating = false;
+                return false;
+            }
+            if done {
+                self.is_generating = false;
+                // 生成完成：自动折叠思考块，保持界面整洁
+                if let Some(last) = self.messages.last_mut() {
+                    if last.role == AiRole::Assistant && last.reasoning.is_some() {
+                        last.reasoning_collapsed = true;
+                    }
+                }
+                if matches!(self.mode, AiMode::Edit) {
+                    self.parse_pending_edits(current_folder);
+                }
+                just_completed = true;
+            }
+        }
+        just_completed
+    }
+}
+
+/// 历史记录轻量元数据（懒加载：列表只用元数据，点击时才读完整会话）
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ConversationMeta {
+    pub id: String,
+    pub title: String,
+    pub updated_at: u64,
+    pub message_count: usize,
+    pub preview: String,
 }
 
 /// AI 助手面板状态
@@ -176,16 +385,38 @@ pub struct AiPanel {
     pub composition: Option<String>,
     /// 停止生成标志：后台流式线程在下一次循环检查时退出
     pub should_stop: Arc<AtomicBool>,
+    /// 全部对话会话（多标签页）。活动会话的实时数据在上面的扁平字段中；
+    /// conversations[active] 作为槽位，其 id/title/时间戳为权威值，切换时回写消息等数据。
+    pub conversations: Vec<AiConversation>,
+    /// 当前活动会话下标
+    pub active: usize,
+    /// 对话标签命中区 (conv_index, x, y, w, h)
+    pub tab_regions: Vec<(usize, f32, f32, f32, f32)>,
+    /// 标签关闭按钮命中区 (conv_index, x, y, w, h)
+    pub tab_close_regions: Vec<(usize, f32, f32, f32, f32)>,
+    /// "新建对话"按钮命中区
+    pub new_tab_region: Option<(f32, f32, f32, f32)>,
+    /// "历史记录"按钮命中区
+    pub history_button_region: Option<(f32, f32, f32, f32)>,
+    /// 悬停的标签下标
+    pub hover_tab: Option<usize>,
+    /// 是否展开历史记录列表
+    pub history_open: bool,
+    /// 历史记录条目命中区 (history_index, x, y, w, h)
+    pub history_item_regions: Vec<(usize, f32, f32, f32, f32)>,
+    /// 历史索引（懒加载：仅元数据，点击时才读取完整会话）
+    pub history: Vec<ConversationMeta>,
+    /// 思考块折叠切换命中区 (msg_index, x, y, w, h)（作用于活动会话 messages 索引）
+    pub reasoning_toggle_regions: Vec<(usize, f32, f32, f32, f32)>,
+    /// 历史持久化存储（Phase 2：磁盘读写）
+    pub history_store: Option<crate::ai_history::AiHistoryStore>,
 }
 
 impl AiPanel {
     pub fn new() -> Self {
         Self {
             visible: false,
-            messages: vec![AiMessage {
-                role: AiRole::System,
-                content: "你好！我是 AI 助手，可以帮助你解释代码、重构、修复问题、生成测试等。你可以直接输入问题，或选中代码后使用快捷操作。".to_string(),
-            }],
+            messages: vec![AiMessage::new(AiRole::System, AI_WELCOME.to_string())],
             input: String::new(),
             is_generating: false,
             scroll_y: 0.0,
@@ -210,24 +441,325 @@ impl AiPanel {
             caret_visible: false,
             composition: None,
             should_stop: Arc::new(AtomicBool::new(false)),
+            conversations: vec![AiConversation::new(
+                gen_conversation_id(),
+                "新对话".to_string(),
+            )],
+            active: 0,
+            tab_regions: Vec::new(),
+            tab_close_regions: Vec::new(),
+            new_tab_region: None,
+            history_button_region: None,
+            hover_tab: None,
+            history_open: false,
+            history_item_regions: Vec::new(),
+            history: Vec::new(),
+            reasoning_toggle_regions: Vec::new(),
+            history_store: Some(crate::ai_history::AiHistoryStore::default()),
+        }
+    }
+
+    // ===== 多会话（标签页 / 并发 / 历史）=====
+
+    /// 活动会话槽位下标越界保护后的引用
+    pub fn active_conversation(&self) -> Option<&AiConversation> {
+        self.conversations.get(self.active)
+    }
+
+    /// 标签标题（活动会话取槽位标题，槽位标题在 sync_active_title 中维护）
+    pub fn conv_title(&self, i: usize) -> &str {
+        self.conversations
+            .get(i)
+            .map(|c| c.title.as_str())
+            .unwrap_or("")
+    }
+
+    /// 某会话是否正在生成（活动会话读扁平字段，其余读槽位）
+    pub fn conv_is_generating(&self, i: usize) -> bool {
+        if i == self.active {
+            self.is_generating
+        } else {
+            self.conversations
+                .get(i)
+                .map(|c| c.is_generating)
+                .unwrap_or(false)
+        }
+    }
+
+    /// 将活动会话的实时（扁平）状态回写到 conversations[active] 槽位。
+    /// 切换/关闭/保存前调用，保证槽位数据最新。
+    pub fn snapshot_active_into_slot(&mut self) {
+        if self.active >= self.conversations.len() {
+            return;
+        }
+        let slot = &mut self.conversations[self.active];
+        slot.messages = self.messages.clone();
+        slot.input = self.input.clone();
+        slot.caret_pos = self.caret_pos;
+        slot.composition = self.composition.clone();
+        slot.is_generating = self.is_generating;
+        slot.scroll_y = self.scroll_y;
+        slot.content_height = self.content_height;
+        slot.stick_to_bottom = self.stick_to_bottom;
+        slot.mode = self.mode;
+        slot.attachments = self.attachments.clone();
+        slot.pending_edits = self.pending_edits.clone();
+        slot.diff_view = self.diff_view.clone();
+        slot.show_diff_view = self.show_diff_view;
+        slot.selected_change_index = self.selected_change_index;
+        slot.stream_state = Arc::clone(&self.stream_state);
+        slot.should_stop = Arc::clone(&self.should_stop);
+        slot.updated_at = now_secs();
+    }
+
+    /// 把某槽位会话加载为活动会话的实时（扁平）状态。
+    fn load_slot_into_active(&mut self, idx: usize) {
+        if idx >= self.conversations.len() {
+            return;
+        }
+        let slot = self.conversations[idx].clone();
+        self.messages = slot.messages;
+        self.input = slot.input;
+        self.caret_pos = slot.caret_pos;
+        self.composition = slot.composition;
+        self.is_generating = slot.is_generating;
+        self.scroll_y = slot.scroll_y;
+        self.content_height = slot.content_height;
+        self.stick_to_bottom = slot.stick_to_bottom;
+        self.mode = slot.mode;
+        self.attachments = slot.attachments;
+        self.pending_edits = slot.pending_edits;
+        self.diff_view = slot.diff_view;
+        self.show_diff_view = slot.show_diff_view;
+        self.selected_change_index = slot.selected_change_index;
+        self.stream_state = slot.stream_state;
+        self.should_stop = slot.should_stop;
+        self.active = idx;
+    }
+
+    /// 切换到指定会话标签
+    pub fn switch_to(&mut self, idx: usize) {
+        if idx == self.active || idx >= self.conversations.len() {
+            return;
+        }
+        self.snapshot_active_into_slot();
+        self.load_slot_into_active(idx);
+        self.model_menu_open = false;
+        self.history_open = false;
+    }
+
+    /// 新建一个空对话并激活
+    pub fn new_conversation(&mut self) {
+        self.snapshot_active_into_slot();
+        let conv = AiConversation::new(gen_conversation_id(), "新对话".to_string());
+        self.conversations.push(conv);
+        let idx = self.conversations.len() - 1;
+        self.load_slot_into_active(idx);
+        self.input_focused = true;
+        self.model_menu_open = false;
+        self.history_open = false;
+    }
+
+    /// 关闭指定会话标签（正在生成的后台线程会被请求停止）
+    /// 关闭前将会话归档到历史记录（内存中，Phase 2 再持久化到磁盘）。
+    pub fn close_conversation(&mut self, idx: usize) {
+        if idx >= self.conversations.len() {
+            return;
+        }
+        self.conversations[idx]
+            .should_stop
+            .store(true, Ordering::SeqCst);
+        // 归档到历史（仅非空对话）
+        let conv = &self.conversations[idx];
+        let msg_count = conv.messages.len();
+        let has_user_msg = conv.messages.iter().any(|m| m.role == AiRole::User);
+        if has_user_msg && msg_count > 1 {
+            let preview = conv
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == AiRole::Assistant)
+                .map(|m| {
+                    let s = m.content.trim();
+                    if s.len() > 60 {
+                        format!("{}…", &s[..s.floor_char_boundary(60)])
+                    } else {
+                        s.to_string()
+                    }
+                })
+                .unwrap_or_default();
+            let meta = ConversationMeta {
+                id: conv.id.clone(),
+                title: conv.title.clone(),
+                updated_at: conv.updated_at,
+                message_count: msg_count,
+                preview,
+            };
+            // 去重：同 id 替换旧记录
+            if let Some(pos) = self.history.iter().position(|h| h.id == meta.id) {
+                self.history.remove(pos);
+            }
+            self.history.insert(0, meta);
+            // 限制内存历史条数（避免无限增长）
+            const MAX_HISTORY: usize = 50;
+            if self.history.len() > MAX_HISTORY {
+                self.history.truncate(MAX_HISTORY);
+            }
+            // 持久化到磁盘
+            if let Some(store) = self.history_store.as_ref() {
+                let _ = store.save_conversation(conv);
+                let _ = store.save_all(&self.history);
+            }
+        }
+        if idx == self.active {
+            self.conversations.remove(idx);
+            if self.conversations.is_empty() {
+                self.conversations.push(AiConversation::new(
+                    gen_conversation_id(),
+                    "新对话".to_string(),
+                ));
+                self.load_slot_into_active(0);
+            } else {
+                let new_active = idx.min(self.conversations.len() - 1);
+                self.load_slot_into_active(new_active);
+            }
+        } else {
+            self.conversations.remove(idx);
+            if idx < self.active {
+                self.active -= 1;
+            }
+        }
+        self.model_menu_open = false;
+        self.history_open = false;
+    }
+
+    /// 从历史记录中恢复指定会话为新的活动标签页
+    pub fn restore_from_history(&mut self, hist_idx: usize) {
+        if hist_idx >= self.history.len() {
+            return;
+        }
+        let (id, title, updated_at) = {
+            let meta = &self.history[hist_idx];
+            (meta.id.clone(), meta.title.clone(), meta.updated_at)
+        };
+        // 若该会话仍在 conversations 中（未真正关闭），直接切换
+        if let Some(pos) = self.conversations.iter().position(|c| c.id == id) {
+            self.switch_to(pos);
+            self.history_open = false;
+            return;
+        }
+        // 否则尝试从磁盘加载完整会话，失败则创建占位会话
+        self.snapshot_active_into_slot();
+        let conv = if let Some(store) = self.history_store.as_ref() {
+            store.load_conversation(&id).unwrap_or_else(|| {
+                let mut c = AiConversation::new(id, title);
+                c.updated_at = updated_at;
+                c
+            })
+        } else {
+            let mut c = AiConversation::new(id, title);
+            c.updated_at = updated_at;
+            c
+        };
+        self.conversations.push(conv);
+        let new_idx = self.conversations.len() - 1;
+        self.load_slot_into_active(new_idx);
+        self.history_open = false;
+    }
+
+    /// 用首条用户消息自动生成活动会话标题（仍为默认标题时）
+    pub fn sync_active_title(&mut self) {
+        if self.active >= self.conversations.len() {
+            return;
+        }
+        if self.conversations[self.active].title == "新对话" {
+            if let Some(u) = self
+                .messages
+                .iter()
+                .find(|m| m.role == AiRole::User)
+                .map(|m| m.content.clone())
+            {
+                let t: String = u.trim().chars().take(18).collect();
+                if !t.is_empty() {
+                    self.conversations[self.active].title = t;
+                }
+            }
+        }
+    }
+
+    /// 并发轮询所有会话：活动会话走扁平逻辑，其余走后台 drain。
+    /// 返回本帧"刚完成"的会话下标列表，供调用方逐个处理 Agent 动作。
+    pub fn poll_all_background(&mut self, current_folder: Option<&Path>) -> Vec<usize> {
+        let mut completed = Vec::new();
+        if self.check_background_result(current_folder) {
+            completed.push(self.active);
+        }
+        let active = self.active;
+        for i in 0..self.conversations.len() {
+            if i == active {
+                continue;
+            }
+            if self.conversations[i].drain_background(current_folder) {
+                completed.push(i);
+            }
+        }
+        completed
+    }
+
+    /// 是否存在任一会话正在生成（用于维持定时重绘）
+    pub fn any_generating(&self) -> bool {
+        self.is_generating
+            || self
+                .conversations
+                .iter()
+                .enumerate()
+                .any(|(i, c)| i != self.active && c.is_generating)
+    }
+
+    /// 指定会话的模式（活动会话读扁平，其余读槽位）
+    pub fn mode_of(&self, conv_idx: usize) -> AiMode {
+        if conv_idx == self.active {
+            self.mode
+        } else {
+            self.conversations
+                .get(conv_idx)
+                .map(|c| c.mode)
+                .unwrap_or(self.mode)
+        }
+    }
+
+    /// 指定会话的最后一条助手消息文本
+    pub fn last_assistant_text_of(&self, conv_idx: usize) -> Option<String> {
+        if conv_idx == self.active {
+            self.last_assistant_text()
+        } else {
+            self.conversations
+                .get(conv_idx)
+                .and_then(|c| c.last_assistant_text())
+        }
+    }
+
+    /// 向指定会话追加一条助手消息（用于会话作用域的 Agent 动作反馈）
+    pub fn add_assistant_message_to(&mut self, conv_idx: usize, content: String) {
+        if conv_idx == self.active {
+            self.add_assistant_message(content);
+        } else if let Some(c) = self.conversations.get_mut(conv_idx) {
+            c.messages.push(AiMessage::new(AiRole::Assistant, content));
+            c.stick_to_bottom = true;
+            c.updated_at = now_secs();
         }
     }
 
     /// 添加用户消息
     pub fn add_user_message(&mut self, content: String) {
-        self.messages.push(AiMessage {
-            role: AiRole::User,
-            content,
-        });
+        self.messages.push(AiMessage::new(AiRole::User, content));
         self.stick_to_bottom = true;
     }
 
     /// 添加助手消息
     pub fn add_assistant_message(&mut self, content: String) {
-        self.messages.push(AiMessage {
-            role: AiRole::Assistant,
-            content,
-        });
+        self.messages
+            .push(AiMessage::new(AiRole::Assistant, content));
         self.stick_to_bottom = true;
     }
 
@@ -293,8 +825,10 @@ impl AiPanel {
             *s = AiStreamState::default();
         }
 
-        // 限制消息历史长度（M-05: 滑动窗口，保留最近 20 条）
-        const MAX_HISTORY: usize = 20;
+        // 限制消息历史长度（M-05: 滑动窗口，保留最近 40 条非系统消息 + 系统消息）。
+        // 显示历史的上界；实际发送给模型的历史再按 token 预算二次窗口切片，见
+        // history_to_chat_messages，兼顾上下文连续性与性能。
+        const MAX_HISTORY: usize = 40;
         if self.messages.len() > MAX_HISTORY + 1 {
             let system_msgs: Vec<AiMessage> = self
                 .messages
@@ -316,7 +850,10 @@ impl AiPanel {
 
         let settings = settings.clone();
         let context = context.unwrap_or_default();
-        let messages = build_chat_prompt(&settings, &context, &user_input, mode);
+        // 系统前缀（system/Agent 能力/模式/上下文）+ 经窗口切片的会话历史（含本轮输入），
+        // 保证同一轮对话上下文连续；历史来自本会话的 self.messages，天然与其它标签页隔离。
+        let mut messages = build_chat_prompt(&settings, &context, mode);
+        messages.extend(Self::history_to_chat_messages(&self.messages));
         let stream_state = Arc::clone(&self.stream_state);
         let should_stop = Arc::clone(&self.should_stop);
 
@@ -335,6 +872,11 @@ impl AiPanel {
                             AiStreamEvent::Token(token) => {
                                 if let Ok(mut s) = stream_state.lock() {
                                     s.partial.push_str(&token);
+                                }
+                            }
+                            AiStreamEvent::Reasoning(r) => {
+                                if let Ok(mut s) = stream_state.lock() {
+                                    s.reasoning.push_str(&r);
                                 }
                             }
                             AiStreamEvent::Done => {
@@ -365,6 +907,47 @@ impl AiPanel {
         });
 
         Ok("请求已提交".to_string())
+    }
+
+    /// 估算文本 token 数（保守上界：按字符数计，CJK≈1 token/字，英文会高估但更安全）
+    fn estimate_tokens(s: &str) -> usize {
+        s.chars().count()
+    }
+
+    /// 将本会话消息转换为发送给模型的历史，应用"窗口切片"：
+    /// - 跳过用于展示的 System 欢迎语（真正的 system 由 build_chat_prompt 注入）；
+    /// - 从最近往前累加，受最大消息数与 token 预算双重限制，避免上下文过长影响性能；
+    /// - 始终至少包含最后一条（当前用户输入）。
+    ///
+    /// 历史取自各会话自身的 messages，因此不同标签页/对话轮次天然隔离、互不串扰。
+    fn history_to_chat_messages(messages: &[AiMessage]) -> Vec<ChatMessage> {
+        const MAX_MSGS: usize = 30;
+        const MAX_TOKENS: usize = 6000;
+        let eligible: Vec<&AiMessage> = messages
+            .iter()
+            .filter(|m| m.role != AiRole::System)
+            .collect();
+        let mut selected: Vec<&AiMessage> = Vec::new();
+        let mut tokens = 0usize;
+        for m in eligible.iter().rev() {
+            let t = Self::estimate_tokens(&m.content);
+            if !selected.is_empty() && (selected.len() >= MAX_MSGS || tokens + t > MAX_TOKENS) {
+                break;
+            }
+            tokens += t;
+            selected.push(m);
+        }
+        selected.reverse();
+        selected
+            .into_iter()
+            .map(|m| match m.role {
+                AiRole::User => ChatMessage::user(m.content.clone()),
+                _ => ChatMessage {
+                    role: "assistant".to_string(),
+                    content: m.content.clone(),
+                },
+            })
+            .collect()
     }
 
     /// 输入字符（在光标位置插入）
@@ -491,11 +1074,10 @@ impl AiPanel {
     /// 清除所有对话
     pub fn clear_history(&mut self) {
         self.messages.clear();
-        self.messages.push(AiMessage {
-            role: AiRole::System,
-            content: "你好！我是 AI 助手，可以帮助你解释代码、重构、修复问题、生成测试等。"
-                .to_string(),
-        });
+        self.messages.push(AiMessage::new(
+            AiRole::System,
+            "你好！我是 AI 助手，可以帮助你解释代码、重构、修复问题、生成测试等。".to_string(),
+        ));
         if let Ok(mut s) = self.stream_state.lock() {
             *s = AiStreamState::default();
         }
@@ -514,28 +1096,40 @@ impl AiPanel {
         let delta = {
             if let Ok(mut s) = self.stream_state.lock() {
                 let partial = std::mem::take(&mut s.partial);
+                let reasoning = std::mem::take(&mut s.reasoning);
                 let done = s.done;
                 let error = s.error.take();
                 if done {
                     s.done = false;
                 }
-                Some((partial, done, error))
+                Some((partial, reasoning, done, error))
             } else {
                 None
             }
         };
         let mut just_completed = false;
-        if let Some((partial, done, error)) = delta {
+        if let Some((partial, reasoning, done, error)) = delta {
+            // 深度思考（DeepSeek reasoning_content）先于回答到达：单独承载于助手消息的 reasoning
+            if !reasoning.is_empty() {
+                if !matches!(self.messages.last(), Some(m) if m.role == AiRole::Assistant) {
+                    self.messages
+                        .push(AiMessage::new(AiRole::Assistant, String::new()));
+                }
+                if let Some(last) = self.messages.last_mut() {
+                    last.reasoning
+                        .get_or_insert_with(String::new)
+                        .push_str(&reasoning);
+                }
+                self.stick_to_bottom = true;
+            }
             if !partial.is_empty() {
                 self.stick_to_bottom = true;
+                if !matches!(self.messages.last(), Some(m) if m.role == AiRole::Assistant) {
+                    self.messages
+                        .push(AiMessage::new(AiRole::Assistant, String::new()));
+                }
                 if let Some(last) = self.messages.last_mut() {
-                    if last.role == AiRole::Assistant {
-                        last.content.push_str(&partial);
-                    } else {
-                        self.add_assistant_message(partial);
-                    }
-                } else {
-                    self.add_assistant_message(partial);
+                    last.content.push_str(&partial);
                 }
             }
             if let Some(err) = error {
@@ -545,6 +1139,12 @@ impl AiPanel {
             }
             if done {
                 self.is_generating = false;
+                // 生成完成：自动折叠思考块，保持界面整洁
+                if let Some(last) = self.messages.last_mut() {
+                    if last.role == AiRole::Assistant && last.reasoning.is_some() {
+                        last.reasoning_collapsed = true;
+                    }
+                }
                 // 仅 Edit 模式构建差异预览等待用户确认；Agent 模式由
                 // EditorState::process_ai_agent_actions 直接落盘应用。
                 if matches!(self.mode, AiMode::Edit) {
@@ -799,6 +1399,12 @@ impl AiPanel {
         self.attachment_chip_regions.clear();
         self.change_action_regions.clear();
         self.code_save_regions.clear();
+        self.tab_regions.clear();
+        self.tab_close_regions.clear();
+        self.new_tab_region = None;
+        self.history_button_region = None;
+        self.history_item_regions.clear();
+        self.reasoning_toggle_regions.clear();
     }
 }
 
@@ -894,4 +1500,63 @@ fn find_double_star(chars: &[char], from: usize) -> Option<usize> {
         i += 1;
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(role: AiRole, content: &str) -> AiMessage {
+        AiMessage::new(role, content.to_string())
+    }
+
+    #[test]
+    fn history_keeps_order_and_maps_roles() {
+        let history = vec![
+            msg(AiRole::System, "欢迎语（应被跳过）"),
+            msg(AiRole::User, "你好"),
+            msg(AiRole::Assistant, "你好！我是助手"),
+            msg(AiRole::User, "我刚刚问了什么"),
+        ];
+        let out = AiPanel::history_to_chat_messages(&history);
+        // System 欢迎语被跳过，其余按序映射
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].role, "user");
+        assert_eq!(out[0].content, "你好");
+        assert_eq!(out[1].role, "assistant");
+        assert_eq!(out[2].role, "user");
+        assert_eq!(out[2].content, "我刚刚问了什么");
+    }
+
+    #[test]
+    fn history_window_always_includes_last_even_if_huge() {
+        // 单条超预算也必须包含（保证当前输入不被丢弃）
+        let big = "字".repeat(20_000);
+        let history = vec![msg(AiRole::User, &big)];
+        let out = AiPanel::history_to_chat_messages(&history);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].role, "user");
+    }
+
+    #[test]
+    fn history_window_drops_oldest_when_over_budget() {
+        // 构造多条大消息，超出 token 预算时应丢弃较早的，保留最近的
+        let mut history = Vec::new();
+        for i in 0..10 {
+            history.push(msg(AiRole::User, &"x".repeat(1000)));
+            history.push(msg(AiRole::Assistant, &format!("回复{}", i)));
+        }
+        let out = AiPanel::history_to_chat_messages(&history);
+        // 至少保留最近若干条，且不超过消息数上限
+        assert!(!out.is_empty());
+        assert!(out.len() <= 30);
+        // 最后一条应为最近的助手回复（保留最近）
+        assert_eq!(out.last().unwrap().content, "回复9");
+    }
+
+    #[test]
+    fn empty_history_yields_empty() {
+        let out = AiPanel::history_to_chat_messages(&[]);
+        assert!(out.is_empty());
+    }
 }

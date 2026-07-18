@@ -214,6 +214,12 @@ pub(crate) fn persist_window_state(state: &EditorState, hwnd: HWND) {
     if let Err(e) = settings.save() {
         eprintln!("警告: 持久化窗口状态失败: {}", e);
     }
+    // Phase 2: 退出前持久化 AI 历史索引
+    if let Some(store) = state.ai_panel.history_store.as_ref() {
+        if let Err(e) = store.save_all(&state.ai_panel.history) {
+            eprintln!("警告: 持久化 AI 历史索引失败: {}", e);
+        }
+    }
 }
 
 /// 应用 CLI 传入的启动参数到指定编辑器状态

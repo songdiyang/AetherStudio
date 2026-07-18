@@ -139,6 +139,123 @@ pub fn parse_run_commands(response: &str) -> Vec<String> {
     commands
 }
 
+/// 文件操作类型（用于面板清晰展示 AI 执行了什么）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileOpKind {
+    Create,
+    Modify,
+    Delete,
+}
+
+/// 面板展示用的有序块：普通文本 / 文件操作 / 运行命令。
+///
+/// 目的：把 AI 回复里的 `<<<<<<< FILE/RUN >>>>>>>` 原始标记转成清晰的操作提示，
+/// 让用户直观看到"新建 / 修改 / 删除了哪个文件、运行了什么命令"，而不是一堆尖括号标记。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentDisplayBlock {
+    Text(String),
+    File { kind: FileOpKind, path: String },
+    Run { cmd: String },
+}
+
+fn push_text_block(blocks: &mut Vec<AgentDisplayBlock>, s: &str) {
+    let t = s.trim_matches('\n');
+    if !t.trim().is_empty() {
+        blocks.push(AgentDisplayBlock::Text(t.to_string()));
+    }
+}
+
+/// 将 AI 回复按出现顺序解析为"文本 + 操作"块，隐藏原始标记，供面板渲染操作卡片。
+///
+/// 解析失败/标记不完整时，剩余内容作为普通文本返回（不丢内容）。
+pub fn parse_display_blocks(response: &str) -> Vec<AgentDisplayBlock> {
+    let mut blocks: Vec<AgentDisplayBlock> = Vec::new();
+    let mut rest = response;
+    loop {
+        let file_pos = rest.find("<<<<<<< FILE");
+        let run_pos = rest.find("<<<<<<< RUN");
+        let (pos, is_file) = match (file_pos, run_pos) {
+            (None, None) => {
+                push_text_block(&mut blocks, rest);
+                break;
+            }
+            (Some(f), None) => (f, true),
+            (None, Some(r)) => (r, false),
+            (Some(f), Some(r)) => {
+                if f < r {
+                    (f, true)
+                } else {
+                    (r, false)
+                }
+            }
+        };
+        push_text_block(&mut blocks, &rest[..pos]);
+        let after = &rest[pos..];
+
+        if is_file {
+            let Some(hend) = after.find(">>>>>>>") else {
+                push_text_block(&mut blocks, after);
+                break;
+            };
+            let header = &after[..hend + ">>>>>>>".len()];
+            let path = extract_path_from_header(header).unwrap_or_else(|| "unknown".to_string());
+            let body_rest = &after[hend + ">>>>>>>".len()..];
+            let Some(sep) = body_rest.find("=======") else {
+                push_text_block(&mut blocks, after);
+                break;
+            };
+            let search = &body_rest[..sep];
+            let after_sep = &body_rest[sep + "=======".len()..];
+            let Some(eend) = after_sep.find(">>>>>>> END FILE") else {
+                push_text_block(&mut blocks, after);
+                break;
+            };
+            let replace = &after_sep[..eend];
+            let kind = if search.trim().is_empty() {
+                FileOpKind::Create
+            } else if replace.trim().is_empty() {
+                FileOpKind::Delete
+            } else {
+                FileOpKind::Modify
+            };
+            blocks.push(AgentDisplayBlock::File {
+                kind,
+                path: path.trim().to_string(),
+            });
+            let after_end = &after_sep[eend..];
+            let skip = after_end
+                .find('\n')
+                .map(|i| i + 1)
+                .unwrap_or(after_end.len());
+            rest = &after_end[skip..];
+        } else {
+            let Some(hend) = after.find(">>>>>>>") else {
+                push_text_block(&mut blocks, after);
+                break;
+            };
+            let after_header = &after[hend + ">>>>>>>".len()..];
+            let Some(eend) = after_header.find(">>>>>>> END RUN") else {
+                push_text_block(&mut blocks, after);
+                break;
+            };
+            let body = &after_header[..eend];
+            for line in body.lines() {
+                let t = line.trim();
+                if !t.is_empty() {
+                    blocks.push(AgentDisplayBlock::Run { cmd: t.to_string() });
+                }
+            }
+            let after_end = &after_header[eend..];
+            let skip = after_end
+                .find('\n')
+                .map(|i| i + 1)
+                .unwrap_or(after_end.len());
+            rest = &after_end[skip..];
+        }
+    }
+    blocks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

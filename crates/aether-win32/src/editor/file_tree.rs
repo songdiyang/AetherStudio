@@ -150,6 +150,103 @@ impl EditorState {
             self.open_folder(path);
         }
     }
+
+    /// 轻量刷新文件树：同步重建（根 + 已展开子目录），并**保留展开状态**。
+    /// 不重启 LSP、不保存设置、不显示加载 spinner、不自动打开 README。
+    /// 用于 AI 新建/删除文件后即时同步资源管理器，避免用户手动刷新。
+    pub fn refresh_file_tree_light(&mut self) {
+        let Some(folder) = self.current_folder.clone() else {
+            return;
+        };
+        let expanded = self.capture_expanded_dir_paths();
+        let mut tree = FileTree::new();
+        Self::rebuild_tree_level(&mut tree, &folder, u32::MAX, 0, &folder, &expanded);
+        self.file_tree = Some(tree);
+        // 文件可能变化，刷新 Git 状态
+        self.git.detect(&folder);
+        self.dirty_tracker.mark_full_window();
+    }
+
+    /// 收集当前已展开目录的相对路径集合（刷新后据此恢复展开状态）
+    fn capture_expanded_dir_paths(&self) -> std::collections::HashSet<PathBuf> {
+        let mut set = std::collections::HashSet::new();
+        let (Some(tree), Some(root)) = (self.file_tree.as_ref(), self.current_folder.as_ref())
+        else {
+            return set;
+        };
+        let n = tree.len() as u32;
+        for i in 0..n {
+            let Some(node) = tree.get_node(i) else {
+                continue;
+            };
+            if node.kind == FileKind::Directory && node.is_expanded {
+                if let Some(abs) = self.get_node_path(i) {
+                    if let Ok(rel) = abs.strip_prefix(root) {
+                        set.insert(rel.to_path_buf());
+                    }
+                }
+            }
+        }
+        set
+    }
+
+    /// 同步重建某一层目录；仅对"之前已展开"的子目录递归展开并加载（有界，避免全盘扫描）。
+    fn rebuild_tree_level(
+        tree: &mut FileTree,
+        abs_dir: &std::path::Path,
+        parent_idx: u32,
+        depth: u8,
+        root: &std::path::Path,
+        expanded: &std::collections::HashSet<PathBuf>,
+    ) {
+        for entry in scan_file_tree_entries(&abs_dir.to_path_buf()) {
+            let idx = tree.add_node(&entry.name, entry.kind, parent_idx, depth);
+            if entry.kind == FileKind::Directory {
+                let is_exp = entry
+                    .path
+                    .strip_prefix(root)
+                    .ok()
+                    .map(|rel| expanded.contains(rel))
+                    .unwrap_or(false);
+                if let Some(node) = tree.get_node_mut(idx) {
+                    node.is_expanded = is_exp;
+                    node.is_loaded = is_exp;
+                }
+                if is_exp {
+                    Self::rebuild_tree_level(tree, &entry.path, idx, depth + 1, root, expanded);
+                }
+            }
+        }
+    }
+
+    /// 工作区根目录的轻量签名（子项名称+类型+修改时间哈希）。
+    /// 用于 AI 终端命令后检测文件变化，仅在变化时才刷新，避免无谓重建/闪烁。
+    pub fn workspace_root_signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        if let Some(folder) = self.current_folder.as_ref() {
+            if let Ok(rd) = std::fs::read_dir(folder) {
+                let mut items: Vec<(String, bool, u64)> = Vec::new();
+                for e in rd.flatten() {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                    let mtime = e
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    items.push((name, is_dir, mtime));
+                }
+                items.sort();
+                for it in items {
+                    it.hash(&mut hasher);
+                }
+            }
+        }
+        hasher.finish()
+    }
     /// 在 Windows 文件资源管理器中打开当前工作区文件夹。
     /// 通过 ShellExecuteW 调用系统 explorer.exe，无纯 Rust 依赖。
     pub fn open_in_file_explorer(&mut self) {
