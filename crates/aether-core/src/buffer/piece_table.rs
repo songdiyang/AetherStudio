@@ -1505,12 +1505,4 @@ impl PieceTable {
         // 合并后重建前缀和缓存
         self.rebuild_piece_offset_cache();
     }
-
-    /// 延迟重建行索引 - 批量编辑时减少重建次数
-    /// 返回 true 表示需要重建
-    #[allow(dead_code)]
-    fn needs_rebuild(&self, _edit_count: usize) -> bool {
-        // 简单策略：总是重建（可以改为计数器策略）
-        true
-    }
 }

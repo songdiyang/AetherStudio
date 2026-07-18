@@ -352,7 +352,7 @@ pub(crate) fn build_shape_geometry(
     unsafe {
         let sink = geo.Open()?;
         let mut has_open_figure = false;
-        let result = parse_svg_path(&d, |cmd, args| {
+        let result = parse_svg_path(d, |cmd, args| {
             match cmd {
                 'M' => {
                     if has_open_figure {
@@ -372,11 +372,9 @@ pub(crate) fn build_shape_geometry(
                     };
                     sink.AddBezier(&seg);
                 }
-                'Z' => {
-                    if has_open_figure {
-                        sink.EndFigure(D2D1_FIGURE_END_CLOSED);
-                        has_open_figure = false;
-                    }
+                'Z' if has_open_figure => {
+                    sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                    has_open_figure = false;
                 }
                 _ => {}
             }
@@ -546,6 +544,7 @@ fn build_circle_geometry(
 
 /// 把 SvgDef 解析为多个 (geometry, fill_color) 列表
 /// 同一 shape 的多个 figure 共享一个 fill 颜色
+#[allow(clippy::type_complexity)]
 pub(crate) fn build_def(
     factory: &ID2D1Factory,
     def: &SvgDef,
@@ -556,9 +555,9 @@ pub(crate) fn build_def(
     let mut out = Vec::new();
     for shape in def.shapes {
         let fill = match shape {
-            SvgShape::Path(_, f) => f.map(|s| parse_hex_color(s)),
-            SvgShape::Circle(_, _, _, f) => f.map(|s| parse_hex_color(s)),
-            SvgShape::Rect(_, _, _, _, f, _) => f.map(|s| parse_hex_color(s)),
+            SvgShape::Path(_, f) => f.map(parse_hex_color),
+            SvgShape::Circle(_, _, _, f) => f.map(parse_hex_color),
+            SvgShape::Rect(_, _, _, _, f, _) => f.map(parse_hex_color),
             SvgShape::Line(_, _, _, _) => None,
         };
         if let Ok(geo) = build_shape_geometry(factory, shape) {

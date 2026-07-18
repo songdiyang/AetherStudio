@@ -142,6 +142,8 @@ pub struct AiPanel {
     pub input_focused: bool,
     /// 当前 AI 模式（Ask / Edit / Agent）
     pub mode: AiMode,
+    /// 底部工具栏"当前模型"下拉是否展开（在对话框内切换当前使用的模型）
+    pub model_menu_open: bool,
     /// 已附加的上下文项
     pub attachments: Vec<AiContextAttachment>,
     /// 模式切换按钮命中区域 (mode, x, y, w, h)
@@ -191,6 +193,7 @@ impl AiPanel {
             stream_state: Arc::new(Mutex::new(AiStreamState::default())),
             input_focused: false,
             mode: AiMode::Agent,
+            model_menu_open: false,
             attachments: Vec::new(),
             mode_button_regions: Vec::new(),
             attachment_chip_regions: Vec::new(),
@@ -803,6 +806,7 @@ impl AiPanel {
 ///
 /// 返回 `(清洗后的 UTF-16 文本, 粗体范围, 标题范围[start,len,字号])`，
 /// 范围以 UTF-16 code unit 为单位，直接供 `IDWriteTextLayout` 的 range 样式使用。
+#[allow(clippy::type_complexity)]
 pub fn parse_markdown_segment(text: &str) -> (Vec<u16>, Vec<(u32, u32)>, Vec<(u32, u32, f32)>) {
     let mut clean: Vec<u16> = Vec::new();
     let mut bolds: Vec<(u32, u32)> = Vec::new();

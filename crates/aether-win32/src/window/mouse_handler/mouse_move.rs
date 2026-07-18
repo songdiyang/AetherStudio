@@ -45,7 +45,7 @@ pub(crate) unsafe fn on_mouse_move(
     let titlebar_changed = omm_titlebar_menu_hover(&state, mouse_x, mouse_y, &layout);
     let (tab_changed, editor_content) = omm_activity_tab_hover(&state, mouse_x, mouse_y, &layout);
     let tree_changed = omm_file_tree_hover(&state, mouse_x, mouse_y, &layout);
-    let settings_changed = omm_settings_hover(&state, mouse_x, mouse_y, &layout);
+    let settings_changed = omm_settings_hover(&state, mouse_x, mouse_y, is_dragging, &layout);
     let ai_changed = omm_ai_hover(&state, mouse_x, mouse_y, &layout);
     let welcome_changed = omm_welcome_hover(&state, mouse_x, mouse_y, &layout);
     let status_bar_changed = omm_status_bar_hover(&state, mouse_x, mouse_y, &layout);
@@ -349,6 +349,7 @@ unsafe fn omm_settings_hover(
     state: &Rc<RefCell<EditorState>>,
     mouse_x: f32,
     mouse_y: f32,
+    is_dragging: bool,
     layout: &crate::layout::LayoutManager,
 ) -> bool {
     let mut st = state.borrow_mut();
@@ -364,20 +365,21 @@ unsafe fn omm_settings_hover(
             st.settings_panel.hover_tab = None;
             changed = true;
         }
-        // 模型管理页悬停检测
-        if st.settings_panel.active_tab == crate::settings::SettingsTab::Models {
+        // 模型管理页悬停检测（仅列表视图）
+        if st.settings_panel.active_tab == crate::settings::SettingsTab::Models
+            && !st.settings_panel.model_editing
+        {
             let editor_region = layout.editor_region();
             if editor_region.contains(mouse_x, mouse_y) {
-                let rel_x = mouse_x - editor_region.x;
-                let rel_y = mouse_y - editor_region.y;
+                // 命中区以绝对坐标注册（原点为 editor_content_region），用绝对 mouse_x/mouse_y 命中测试
                 // 检测模型项悬停
-                let new_hover_id = st.settings_panel.hit_test_model_item(rel_x, rel_y);
+                let new_hover_id = st.settings_panel.hit_test_model_item(mouse_x, mouse_y);
                 if st.settings_panel.hover_model_id != new_hover_id {
                     st.settings_panel.hover_model_id = new_hover_id.clone();
                     changed = true;
                 }
                 // 检测模型按钮悬停
-                let new_hover_btn = st.settings_panel.hit_test_model_button(rel_x, rel_y);
+                let new_hover_btn = st.settings_panel.hit_test_model_button(mouse_x, mouse_y);
                 let (new_btn, new_btn_id) = match new_hover_btn {
                     Some((btn, id)) => (Some(btn), Some(id)),
                     None => (None, None),
@@ -403,6 +405,27 @@ unsafe fn omm_settings_hover(
                     st.settings_panel.hover_model_button_id = None;
                     changed = true;
                 }
+            }
+        }
+        // 模型编辑表单（AI 配置）：API 密钥显隐按钮悬停
+        if st.settings_panel.active_tab == crate::settings::SettingsTab::Ai
+            || (st.settings_panel.active_tab == crate::settings::SettingsTab::Models
+                && st.settings_panel.model_editing)
+        {
+            let new_eye_hover = st.settings_panel.hit_test_api_key_toggle(mouse_x, mouse_y);
+            if st.settings_panel.hover_api_key_toggle != new_eye_hover {
+                st.settings_panel.hover_api_key_toggle = new_eye_hover;
+                changed = true;
+            }
+        }
+        // 温度滑块拖拽：拖拽中根据鼠标 x 实时更新温度
+        if st.settings_panel.temp_slider_dragging {
+            if is_dragging {
+                if st.settings_panel.set_temperature_from_slider_x(mouse_x) {
+                    changed = true;
+                }
+            } else {
+                st.settings_panel.temp_slider_dragging = false;
             }
         }
         changed
@@ -543,10 +566,11 @@ unsafe fn omm_resize_drag(
     // 更新 hover 状态
     st.hover_sidebar_resize = sidebar_resize_zone;
     // 设置拖拽光标
-    if right_panel_resize_zone || st.layout.right_panel_resizing {
-        let hcursor = LoadCursorW(None, IDC_SIZEWE).unwrap_or_default();
-        let _ = SetCursor(hcursor);
-    } else if sidebar_resize_zone || st.layout.sidebar_resizing {
+    if right_panel_resize_zone
+        || st.layout.right_panel_resizing
+        || sidebar_resize_zone
+        || st.layout.sidebar_resizing
+    {
         let hcursor = LoadCursorW(None, IDC_SIZEWE).unwrap_or_default();
         let _ = SetCursor(hcursor);
     } else if bottom_panel_resize_zone || st.layout.bottom_panel_resizing {
