@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -83,7 +84,32 @@ jobs:
             const date = process.env.DATE;
             const sha = process.env.SHA;
 
-            const body = `## Aether Editor ${version}\n\n**构建日期**: ${date}\n**提交**: ${sha}\n\n### 下载\n- [aether-app.exe](https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${version}/aether-app.exe)\n\n---\n*此版本由 main 分支自动构建发布。*`;
+            // 读取合入 main 的 PR 正文，按标准格式提取「更新了哪些特性 / 修复了哪些问题」
+            let featuresText = '';
+            let fixesText = '';
+            try {
+              const assoc = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: context.sha
+              });
+              const list = assoc.data || [];
+              const pr = list.find(p => p.base && p.base.ref === 'main') || list[0];
+              if (pr && pr.body) {
+                const featMatch = pr.body.match(/###\s*更新了哪些特性([\s\S]*?)(?=\n\s*###\s|\n\s*##\s|$)/);
+                const fixMatch = pr.body.match(/###\s*修复了哪些问题([\s\S]*?)(?=\n\s*###\s|\n\s*##\s|$)/);
+                featuresText = featMatch ? featMatch[1].trim() : '';
+                fixesText = fixMatch ? fixMatch[1].trim() : '';
+              }
+            } catch (e) {
+              console.log('未能读取 PR 发布说明: ' + e.message);
+            }
+
+            let body = `## Aether Editor ${version}\n\n**构建日期**: ${date}\n**提交**: ${sha}\n`;
+            if (featuresText) { body += `\n### ✨ 新增功能\n${featuresText}\n`; }
+            if (fixesText) { body += `\n### 🐛 修复的问题\n${fixesText}\n`; }
+            if (!featuresText && !fixesText) { body += `\n本次为常规维护与改进。\n`; }
+            body += `\n### 下载\n- [aether-app.exe](https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${version}/aether-app.exe)\n\n---\n*此版本由 main 分支自动构建发布，发布说明取自本次合入 PR。*`;
 
             // 创建 release
             const { data: release } = await github.rest.repos.createRelease({
