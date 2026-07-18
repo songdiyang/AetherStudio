@@ -244,7 +244,6 @@ impl EditorState {
 
             // 标题栏
             let page_title = match self.settings_panel.active_tab {
-                crate::settings::SettingsTab::Account => "账号",
                 crate::settings::SettingsTab::General => "通用",
                 crate::settings::SettingsTab::Models => {
                     if self.settings_panel.model_editing {
@@ -288,18 +287,6 @@ impl EditorState {
             let page_w = content_w - 48.0;
 
             match self.settings_panel.active_tab {
-                crate::settings::SettingsTab::Account => {
-                    self.render_account_page(
-                        target,
-                        page_x,
-                        page_w,
-                        page_y,
-                        content_h - 80.0,
-                        title_format,
-                        label_format,
-                        text_brush,
-                    );
-                }
                 crate::settings::SettingsTab::General => {
                     self.render_general_settings(
                         target,
