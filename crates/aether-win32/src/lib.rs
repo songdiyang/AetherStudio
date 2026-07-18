@@ -13,6 +13,7 @@ pub mod activity_bar;
 pub mod activity_bar_context_menu;
 pub mod ai_agent;
 pub mod ai_context;
+pub mod ai_history;
 pub mod ai_panel;
 pub mod ai_prompt;
 pub mod auto_save;

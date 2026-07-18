@@ -373,6 +373,11 @@ pub struct EditorState {
     pub icons: crate::icons::IconCache,
     /// 文件夹异步加载中（控制 sidebar spinner 显示）
     pub is_loading_folder: bool,
+    /// AI 终端命令后监视工作区变化的截止时间（None=未监视）。
+    /// 在此窗口内每帧检测根目录签名，变化则轻量刷新资源管理器（同步 AI 的删除/新建）。
+    pub fs_watch_until: Option<std::time::Instant>,
+    /// 上一次记录的工作区根目录签名（用于变化检测，避免无谓刷新）
+    pub fs_last_root_sig: u64,
     /// C-09: SSH 后台连接中（防止重复触发，控制状态栏提示）
     pub ssh_connecting: bool,
     /// C-09: Git 后台克隆中（防止重复触发，控制状态栏提示）
@@ -697,6 +702,8 @@ impl EditorState {
             welcome_focus_action: None,
             icons: crate::icons::IconCache::new(),
             is_loading_folder: false,
+            fs_watch_until: None,
+            fs_last_root_sig: 0,
             ssh_connecting: false,
             git_cloning: false,
             sidebar_scroll_y: 0.0,
@@ -778,6 +785,9 @@ impl EditorState {
 
         // 自动保存：启动周期兜底定时器（防抖定时器由编辑事件按需调度）
         state.start_autosave_periodic();
+
+        // Phase 2: 启动时从磁盘加载历史索引
+        state.refresh_ai_history();
 
         Ok(state)
     }

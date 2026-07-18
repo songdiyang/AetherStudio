@@ -70,13 +70,14 @@ impl EditorState {
 
         // AI-H01: 轮询后台 AI 请求结果，不阻塞 UI 线程
         // 传入工作区目录，供 Edit/Agent 模式解析编辑相对路径生成正确 diff
-        // 生成完成时（just_completed）处理 Agent 动作：创建/修改文件、执行终端命令
+        // 多会话并发：轮询所有会话（活动 + 后台），对本帧刚完成的每个会话处理 Agent 动作
         let ai_current_folder = self.current_folder.clone();
-        let ai_just_completed = self
+        let ai_completed = self
             .ai_panel
-            .check_background_result(ai_current_folder.as_deref());
-        if ai_just_completed {
-            self.process_ai_agent_actions();
+            .poll_all_background(ai_current_folder.as_deref());
+        self.ai_panel.sync_active_title();
+        for conv_idx in ai_completed {
+            self.process_ai_agent_actions_for(conv_idx);
         }
 
         // 设置面板：轮询测试连接结果
@@ -110,6 +111,20 @@ impl EditorState {
         // 懒加载预扫描：确保所有 is_expanded 但未加载的目录节点子项已就绪
         // 这样渲染文件树时不会因目录未加载而显示空
         self.preload_expanded_dirs();
+
+        // AI 终端命令后：在监视窗口内检测工作区根目录变化，变化则轻量刷新资源管理器，
+        // 使 AI 通过命令（如 Remove-Item / New-Item）删除或新建的文件即时同步显示。
+        if let Some(until) = self.fs_watch_until {
+            if std::time::Instant::now() >= until {
+                self.fs_watch_until = None;
+            } else {
+                let sig = self.workspace_root_signature();
+                if sig != self.fs_last_root_sig {
+                    self.fs_last_root_sig = sig;
+                    self.refresh_file_tree_light();
+                }
+            }
+        }
 
         // UI-L07: 降级为 trace，避免生产环境每帧日志噪声
         tracing::trace!(

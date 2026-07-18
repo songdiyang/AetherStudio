@@ -18,6 +18,13 @@
 - [aether-render_lib.rs](file://crates/aether-render/src/lib.rs)
 </cite>
 
+## 更新摘要
+**所做更改**   
+- 移除了账户管理页面相关的所有UI组件和渲染逻辑
+- 简化了用户界面架构，删除了account相关的渲染模块
+- 更新了渲染流程以反映简化的UI结构
+- 清理了与账户管理相关的依赖关系
+
 ## 目录
 1. [简介](#简介)
 2. [项目结构](#项目结构)
@@ -37,6 +44,8 @@
 - 输入事件处理：键盘映射、鼠标交互与输入法（IME）支持
 - 主题系统：颜色管理、样式继承与动态切换
 - UI 组件开发最佳实践与性能优化技巧
+
+**已更新** 移除了账户管理页面功能，简化了UI架构
 
 ## 项目结构
 UI 子系统主要位于 aether-win32 crate 中，围绕 window 模块组织；渲染相关能力由 aether-render crate 提供。关键入口与职责如下：
@@ -101,6 +110,8 @@ F --> L["theme.rs / aether-render/src/theme.rs<br/>主题/语法色"]
 - 主题系统
   - Theme 提供玻璃/深色两套配色，SyntaxColors 集中管理语法着色
   - 通过 BrushCache/TextFormatCache 预初始化常用资源
+
+**已更新** 移除了账户管理相关的渲染组件，简化了渲染管线
 
 **章节来源**
 - [window.rs:175-297](file://crates/aether-win32/src/window.rs#L175-L297)
@@ -217,6 +228,8 @@ Persist --> Exit["关闭窗口计数归零则 PostQuitMessage"]
   - 根据状态变化推断 RenderCommand，仅标记必要脏区域
   - 按层级绘制：标题栏→菜单栏→活动栏→侧边栏→标签栏→编辑器/欢迎页/设置→右侧面板→底部面板→状态栏→弹出菜单/对话框
   - 最后清除脏标记并输出命中区域（调试）
+
+**已更新** 移除了账户管理页面的渲染逻辑，简化了绘制层级
 
 ```mermaid
 classDiagram
@@ -425,6 +438,8 @@ Theme --> SyntaxColors : "包含"
   - aether-core：字符宽度、词法分析器语言枚举
   - aether-shared：AppSettings 持久化
 
+**已更新** 移除了账户管理相关的依赖关系，简化了模块耦合
+
 ```mermaid
 graph LR
 Win["window.rs"] --> Setup["window_setup.rs"]
@@ -465,6 +480,8 @@ RCtx --> D2D["aether-render d2d"]
 - 命中区域记录
   - debug 构建下记录可点击区域，release 构建零开销
 
+**已更新** 移除账户管理页面减少了渲染复杂度，提升了整体性能
+
 [本节为通用指导，不直接分析具体文件]
 
 ## 故障排查指南
@@ -488,7 +505,9 @@ RCtx --> D2D["aether-render d2d"]
 - [dirty_rect.rs:387-426](file://crates/aether-win32/src/dirty_rect.rs#L387-L426)
 
 ## 结论
-牧羊人编辑器的 UI 系统采用清晰的 Win32 窗口管理与 Direct2D/DirectWrite 渲染分层设计，结合脏矩形与多矩形裁剪显著降低重绘成本。输入系统通过模块化键盘/鼠标/IME 处理提升可维护性，主题系统提供灵活的配色与语法着色方案。遵循本文的最佳实践与性能建议，可进一步提升 UI 响应性与稳定性。
+牧羊人编辑器的 UI 系统采用清晰的 Win32 窗口管理与 Direct2D/DirectWrite 渲染分层设计，结合脏矩形与多矩形裁剪显著降低重绘成本。随着账户管理页面功能的移除，UI 架构得到进一步简化，提高了系统的可维护性和性能。输入系统通过模块化键盘/鼠标/IME 处理提升可维护性，主题系统提供灵活的配色与语法着色方案。遵循本文的最佳实践与性能建议，可进一步提升 UI 响应性与稳定性。
+
+**已更新** 反映了账户管理页面移除后的简化架构
 
 [本节为总结，不直接分析具体文件]
 
@@ -505,5 +524,7 @@ RCtx --> D2D["aether-render d2d"]
   - 脏矩形系统：[dirty_rect.rs](file://crates/aether-win32/src/dirty_rect.rs)
   - 输入与 IME：[input.rs](file://crates/aether-win32/src/input.rs)、[ime.rs](file://crates/aether-win32/src/ime.rs)
   - 主题系统：[theme.rs](file://crates/aether-win32/src/theme.rs)、[aether-render/src/theme.rs](file://crates/aether-render/src/theme.rs)
+
+**已更新** 移除了账户管理相关的参考路径
 
 [本节为附录，不直接分析具体文件]

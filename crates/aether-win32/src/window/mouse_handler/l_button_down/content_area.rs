@@ -261,6 +261,32 @@ pub(super) unsafe fn lbd_right_panel(
     if !(layout.right_panel_visible && right_panel_region.contains(mouse_x, mouse_y)) {
         return None;
     }
+    // 对话标签条：切换 / 关闭 / 新建 / 历史（命中区为渲染时注册的绝对坐标）
+    if let Some(result) = lbd_right_panel_tabs(hwnd, state, mouse_x, mouse_y) {
+        return Some(result);
+    }
+    // 思考过程块：点击标题折叠/展开（命中区为渲染时注册的绝对坐标）
+    {
+        let hit = {
+            let st = state.borrow();
+            st.ai_panel
+                .reasoning_toggle_regions
+                .iter()
+                .find(|(_, rx, ry, rw, rh)| {
+                    mouse_x >= *rx && mouse_x < *rx + *rw && mouse_y >= *ry && mouse_y < *ry + *rh
+                })
+                .map(|(i, ..)| *i)
+        };
+        if let Some(i) = hit {
+            let mut st = state.borrow_mut();
+            if let Some(msg) = st.ai_panel.messages.get_mut(i) {
+                msg.reasoning_collapsed = !msg.reasoning_collapsed;
+            }
+            drop(st);
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        }
+    }
     // 先检测输入框和按钮点击，如果命中则直接返回（不取消聚焦）
     if let Some(result) =
         lbd_right_panel_apply_input(hwnd, state, mouse_x, mouse_y, &right_panel_region)
@@ -373,6 +399,95 @@ pub(super) unsafe fn lbd_right_panel(
     {
         let mut st = state.borrow_mut();
         st.ai_panel.input_focused = false;
+    }
+    None
+}
+
+/// AI 面板：对话标签条点击（历史按钮 / 关闭标签 / 切换标签 / 新建对话 / 历史条目）。
+/// 命中区为渲染时注册的绝对窗口坐标，直接用 mouse_x/mouse_y 测试。
+unsafe fn lbd_right_panel_tabs(
+    hwnd: HWND,
+    state: &Rc<RefCell<EditorState>>,
+    mouse_x: f32,
+    mouse_y: f32,
+) -> Option<LRESULT> {
+    let hit = |regions: &[(usize, f32, f32, f32, f32)]| -> Option<usize> {
+        regions
+            .iter()
+            .find(|(_, rx, ry, rw, rh)| {
+                mouse_x >= *rx && mouse_x < *rx + *rw && mouse_y >= *ry && mouse_y < *ry + *rh
+            })
+            .map(|(i, ..)| *i)
+    };
+    // 1. 历史记录按钮：切换历史列表展开
+    {
+        let mut st = state.borrow_mut();
+        if let Some((hx, hy, hw, hh)) = st.ai_panel.history_button_region {
+            if mouse_x >= hx && mouse_x < hx + hw && mouse_y >= hy && mouse_y < hy + hh {
+                st.ai_panel.history_open = !st.ai_panel.history_open;
+                if st.ai_panel.history_open {
+                    st.refresh_ai_history();
+                }
+                drop(st);
+                invalidate_window(hwnd);
+                return Some(LRESULT(0));
+            }
+        }
+    }
+    // 2. 历史条目：懒加载并打开对应会话
+    {
+        let hist_hit = {
+            let st = state.borrow();
+            if st.ai_panel.history_open {
+                hit(&st.ai_panel.history_item_regions)
+            } else {
+                None
+            }
+        };
+        if let Some(i) = hist_hit {
+            state.borrow_mut().open_ai_history_item(i);
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        }
+    }
+    // 3. 关闭标签（优先于切换，避免点 × 时误切换）
+    {
+        let close_hit = {
+            let st = state.borrow();
+            hit(&st.ai_panel.tab_close_regions)
+        };
+        if let Some(i) = close_hit {
+            let mut st = state.borrow_mut();
+            st.ai_panel.snapshot_active_into_slot();
+            st.ai_panel.close_conversation(i);
+            drop(st);
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        }
+    }
+    // 4. 切换标签
+    {
+        let tab_hit = {
+            let st = state.borrow();
+            hit(&st.ai_panel.tab_regions)
+        };
+        if let Some(i) = tab_hit {
+            state.borrow_mut().ai_panel.switch_to(i);
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        }
+    }
+    // 5. 新建对话
+    {
+        let mut st = state.borrow_mut();
+        if let Some((px, py, pw, ph)) = st.ai_panel.new_tab_region {
+            if mouse_x >= px && mouse_x < px + pw && mouse_y >= py && mouse_y < py + ph {
+                st.ai_panel.new_conversation();
+                drop(st);
+                invalidate_window(hwnd);
+                return Some(LRESULT(0));
+            }
+        }
     }
     None
 }
@@ -718,10 +833,8 @@ pub(super) unsafe fn lbd_settings_page(
         if let Some(btn) = st.settings_panel.hit_test_button(mouse_x, mouse_y) {
             match btn {
                 crate::settings::SettingsButton::BackToModels => {
-                    // 返回模型列表：先写回当前编辑到激活模型并持久化
-                    st.settings_panel.store_fields_to_active_model();
+                    // 返回模型列表：不保存（草稿/未保存编辑将被丢弃，只有「保存」才写入）
                     st.settings_panel.model_editing = false;
-                    st.persist_models();
                 }
                 crate::settings::SettingsButton::Save => {
                     st.save_ai_settings_with_test();
@@ -751,17 +864,17 @@ pub(super) unsafe fn lbd_settings_page(
         if let Some((btn, model_id)) = st.settings_panel.hit_test_model_button(mouse_x, mouse_y) {
             match btn {
                 crate::settings::ModelButton::Add => {
-                    // 新建模型并进入内嵌编辑表单
-                    st.settings_panel.create_new_model();
+                    // 新建：进入空白草稿编辑表单，但不加入列表、不持久化；
+                    // 只有点击「保存」（连接验证通过）后才会真正创建并保存该模型。
+                    st.settings_panel.begin_new_model_draft();
                     st.settings_panel.model_editing = true;
-                    st.persist_models();
                 }
                 crate::settings::ModelButton::Edit => {
-                    // 设为激活并进入内嵌编辑表单
+                    // 编辑：加载该模型字段进表单，不持久化；改动只有点击「保存」后才写入。
                     let fallback = st.app_settings.ai.clone();
-                    st.settings_panel.set_active_model(&model_id, &fallback);
+                    st.settings_panel.active_model_id = Some(model_id.clone());
+                    st.settings_panel.load_active_model_fields(&fallback);
                     st.settings_panel.model_editing = true;
-                    st.persist_models();
                 }
                 crate::settings::ModelButton::Delete => {
                     st.settings_panel.delete_model(&model_id);

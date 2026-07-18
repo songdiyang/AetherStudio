@@ -128,11 +128,18 @@ impl TerminalPanel {
         }
 
         let (shell, args) = detect_default_shell();
-        // 构建完整命令行
-        let commandline = if args.is_empty() {
-            shell.clone()
+        // 构建完整命令行。可执行文件路径含空格（如 "C:\Program Files\PowerShell\7\pwsh.exe"）
+        // 时必须给路径加引号，否则 CreateProcessW（lpApplicationName=NULL）会把首个空格前的
+        // "C:\Program" 当成程序名，报 0x80070002（系统找不到指定的文件）。
+        let quoted_shell = if shell.contains(' ') && !shell.starts_with('"') {
+            format!("\"{}\"", shell)
         } else {
-            format!("{} {}", shell, args.join(" "))
+            shell.clone()
+        };
+        let commandline = if args.is_empty() {
+            quoted_shell
+        } else {
+            format!("{} {}", quoted_shell, args.join(" "))
         };
         let cwd = self.cwd.clone();
         let cols = self.cols;
@@ -271,9 +278,10 @@ impl TerminalPanel {
         if self.pending_commands.is_empty() || self.conpty.is_none() {
             return;
         }
-        // 等待 shell 提示符就绪（启动后短暂延迟），避免命令被 shell 初始化吞掉
+        // 等待 shell 提示符就绪（启动后短暂延迟），避免命令被 shell 初始化吞掉。
+        // PowerShell（PSReadLine）启动比 cmd 慢，留足时间，避免命令在提示符就绪前被吃掉。
         if let Some(start) = self.conpty_start_time {
-            if start.elapsed() < std::time::Duration::from_millis(600) {
+            if start.elapsed() < std::time::Duration::from_millis(900) {
                 return;
             }
         } else {
@@ -857,15 +865,19 @@ impl AnsiParser {
 
 /// 检测默认 shell 及其启动参数，返回绝对路径
 fn detect_default_shell() -> (String, Vec<String>) {
-    // 优先使用 cmd.exe（ConPTY 模式下无需 /K，ConPTY 本身保持交互）
-    if let Some(path) = find_executable("cmd.exe") {
-        return (path, vec![]);
-    }
+    // 优先使用 PowerShell：现代 Windows 默认 shell，且 AI 提示词已明确告知
+    // "集成终端执行命令（Windows PowerShell）"，AI 生成的命令多为 PowerShell 语法
+    // （Get-ChildItem / Remove-Item 等）。若用 cmd.exe，这些命令无法识别，导致
+    // "运行了却没反应"。PowerShell 同时兼容 dir/del/copy 等 cmd 常用别名，兼容性更好。
     if let Some(path) = find_executable("pwsh.exe") {
-        return (path, vec!["-NoExit".to_string()]);
+        return (path, vec!["-NoLogo".to_string()]);
     }
     if let Some(path) = find_executable("powershell.exe") {
-        return (path, vec!["-NoExit".to_string()]);
+        return (path, vec!["-NoLogo".to_string()]);
+    }
+    // 回退：cmd.exe（ConPTY 模式下无需 /K，ConPTY 本身保持交互）
+    if let Some(path) = find_executable("cmd.exe") {
+        return (path, vec![]);
     }
     // 最终回退：System32 下的 cmd.exe
     (r"C:\Windows\System32\cmd.exe".to_string(), vec![])
