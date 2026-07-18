@@ -83,16 +83,7 @@ jobs:
             const date = process.env.DATE;
             const sha = process.env.SHA;
 
-            const body = `## Aether Editor ${version}
-
-**构建日期**: ${date}
-**提交**: ${sha}
-
-### 下载
-- [aether-app.exe](https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${version}/aether-app.exe)
-
----
-*此版本由 main 分支自动构建发布。*`;
+            const body = `## Aether Editor ${version}\n\n**构建日期**: ${date}\n**提交**: ${sha}\n\n### 下载\n- [aether-app.exe](https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${version}/aether-app.exe)\n\n---\n*此版本由 main 分支自动构建发布。*`;
 
             // 创建 release
             const { data: release } = await github.rest.repos.createRelease({
