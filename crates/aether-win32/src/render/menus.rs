@@ -141,6 +141,145 @@ impl EditorState {
         }
     }
 
+    /// 渲染文件节点右键上下文菜单。
+    ///
+    /// 视觉风格与 `render_explorer_context_menu` 一致。
+    pub(super) fn render_file_node_context_menu(
+        &mut self,
+        target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
+    ) {
+        use crate::context_menu::FileNodeContextMenu;
+
+        unsafe {
+            let menu_width = self.file_node_context_menu.menu_width();
+            let menu_height = self.file_node_context_menu.menu_height();
+            let menu_x = self.file_node_context_menu.origin_x;
+            let menu_y = self.file_node_context_menu.origin_y;
+
+            // 背景
+            let bg_color = if self.theme.glass_enabled {
+                self.theme.submenu_bg
+            } else {
+                color_f(0.18, 0.18, 0.18, 1.0)
+            };
+            let bg_brush = match self.render_ctx.brush_cache.get_brush(target, &bg_color) {
+                Ok(b) => b,
+                Err(_) => return,
+            };
+            let menu_rect = D2D_RECT_F {
+                left: menu_x,
+                top: menu_y,
+                right: menu_x + menu_width,
+                bottom: menu_y + menu_height,
+            };
+
+            // 阴影（右侧 + 底部，与 user_menu 一致）
+            let shadow_color = color_f(0.0, 0.0, 0.0, 0.35);
+            if let Ok(shadow_brush) = self.render_ctx.brush_cache.get_brush(target, &shadow_color) {
+                let shadow_right = D2D_RECT_F {
+                    left: menu_rect.right,
+                    top: menu_rect.top + 4.0,
+                    right: menu_rect.right + 6.0,
+                    bottom: menu_rect.bottom + 6.0,
+                };
+                target.FillRectangle(&shadow_right, &shadow_brush);
+                let shadow_bottom = D2D_RECT_F {
+                    left: menu_rect.left + 4.0,
+                    top: menu_rect.bottom,
+                    right: menu_rect.right + 6.0,
+                    bottom: menu_rect.bottom + 6.0,
+                };
+                target.FillRectangle(&shadow_bottom, &shadow_brush);
+            }
+
+            target.FillRectangle(&menu_rect, &bg_brush);
+
+            // 边框
+            let border_color = color_f(0.3, 0.3, 0.3, 1.0);
+            if let Ok(border_brush) = self.render_ctx.brush_cache.get_brush(target, &border_color) {
+                target.DrawRectangle(&menu_rect, &border_brush, 1.0, None);
+            }
+
+            // 保存菜单区域供 hit_test 使用
+            self.file_node_context_menu.menu_rect = Some(crate::layout::Region::new(
+                menu_x,
+                menu_y,
+                menu_width,
+                menu_height,
+            ));
+
+            let text_color = color_f(0.85, 0.85, 0.85, 1.0);
+            let text_brush = match self.render_ctx.brush_cache.get_brush(target, &text_color) {
+                Ok(b) => b,
+                Err(_) => return,
+            };
+            let hover_bg = color_f(0.0, 0.47, 0.83, 1.0);
+            let hover_brush = match self.render_ctx.brush_cache.get_brush(target, &hover_bg) {
+                Ok(b) => b,
+                Err(_) => return,
+            };
+            let sep_color = color_f(0.3, 0.3, 0.3, 1.0);
+            let sep_brush = match self.render_ctx.brush_cache.get_brush(target, &sep_color) {
+                Ok(b) => b,
+                Err(_) => return,
+            };
+
+            let text_format = self
+                .render_ctx
+                .text_format_cache
+                .get_format(
+                    13.0,
+                    DWRITE_FONT_WEIGHT_NORMAL.0 as u32,
+                    DWRITE_TEXT_ALIGNMENT_LEADING.0 as u32,
+                    DWRITE_PARAGRAPH_ALIGNMENT_CENTER.0 as u32,
+                )
+                .unwrap();
+
+            // 从顶部 padding 开始绘制菜单项
+            let mut current_y = menu_y + FileNodeContextMenu::TOP_PADDING;
+            for (i, item) in self.file_node_context_menu.items.iter().enumerate() {
+                if item.is_separator() {
+                    let sep_rect = D2D_RECT_F {
+                        left: menu_x + 8.0,
+                        top: current_y + 4.0,
+                        right: menu_x + menu_width - 8.0,
+                        bottom: current_y + 5.0,
+                    };
+                    target.FillRectangle(&sep_rect, &sep_brush);
+                    current_y += FileNodeContextMenu::SEPARATOR_HEIGHT;
+                } else {
+                    let is_hover = self.file_node_context_menu.hover_index == Some(i);
+                    if is_hover {
+                        let item_rect = D2D_RECT_F {
+                            left: menu_x + 4.0,
+                            top: current_y,
+                            right: menu_x + menu_width - 4.0,
+                            bottom: current_y + FileNodeContextMenu::ITEM_HEIGHT,
+                        };
+                        target.FillRectangle(&item_rect, &hover_brush);
+                    }
+
+                    let label_wide: Vec<u16> = item.label().encode_utf16().chain(Some(0)).collect();
+                    let label_rect = D2D_RECT_F {
+                        left: menu_x + 16.0,
+                        top: current_y,
+                        right: menu_x + menu_width - 16.0,
+                        bottom: current_y + FileNodeContextMenu::ITEM_HEIGHT,
+                    };
+                    target.DrawText(
+                        &label_wide,
+                        &text_format,
+                        &label_rect,
+                        &text_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                    current_y += FileNodeContextMenu::ITEM_HEIGHT;
+                }
+            }
+        }
+    }
+
     /// 标签右键上下文菜单渲染。
     ///
     /// - 背景：圆角半透明矩形 RGBA(40,44,52,240)

@@ -331,7 +331,7 @@ pub struct ConversationMeta {
 }
 
 /// AI 助手面板状态
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct AiPanel {
     /// 是否可见
     pub visible: bool,
@@ -410,6 +410,10 @@ pub struct AiPanel {
     pub reasoning_toggle_regions: Vec<(usize, f32, f32, f32, f32)>,
     /// 历史持久化存储（Phase 2：磁盘读写）
     pub history_store: Option<crate::ai_history::AiHistoryStore>,
+    /// 热数据持久化存储（三阶段架构：热/温/冷）
+    pub hot_data_store: Option<crate::ai_hot_data::HotDataStore>,
+    /// 温数据持久化存储（AetherDB 向量数据库）
+    pub warm_data_store: Option<crate::ai_warm_data::WarmDataStore>,
 }
 
 impl AiPanel {
@@ -456,6 +460,127 @@ impl AiPanel {
             history: Vec::new(),
             reasoning_toggle_regions: Vec::new(),
             history_store: Some(crate::ai_history::AiHistoryStore::default()),
+            hot_data_store: Self::init_hot_data_store(),
+            warm_data_store: Self::init_warm_data_store(),
+        }
+    }
+
+    /// 初始化热数据存储
+    fn init_hot_data_store() -> Option<crate::ai_hot_data::HotDataStore> {
+        let base_dir = dirs::config_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Aether")
+            .join("conversations");
+        match crate::ai_hot_data::HotDataStore::new(base_dir) {
+            Ok(store) => Some(store),
+            Err(e) => {
+                eprintln!("[AiPanel] 热数据存储初始化失败: {}", e);
+                None
+            }
+        }
+    }
+
+    /// 初始化温数据存储
+    fn init_warm_data_store() -> Option<crate::ai_warm_data::WarmDataStore> {
+        let base_dir = dirs::config_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Aether")
+            .join("conversations");
+        match crate::ai_warm_data::WarmDataStore::new(base_dir) {
+            Ok(store) => Some(store),
+            Err(e) => {
+                eprintln!("[AiPanel] 温数据存储初始化失败: {}", e);
+                None
+            }
+        }
+    }
+
+    /// 同步当前状态到热数据存储
+    fn sync_hot_data(&mut self) {
+        // 先 snapshot 到槽位，确保热数据看到的是完整状态
+        self.snapshot_active_into_slot();
+        if let Some(store) = self.hot_data_store.take() {
+            let panel_clone = self.clone_for_sync();
+            let mut new_store = store;
+            new_store.sync_from_panel(panel_clone);
+            self.hot_data_store = Some(new_store);
+        }
+    }
+
+    /// 为热数据同步克隆必要字段（避免 Clone 整个 AiPanel）
+    fn clone_for_sync(&self) -> crate::ai_panel::AiPanel {
+        crate::ai_panel::AiPanel {
+            visible: self.visible,
+            messages: self.messages.clone(),
+            input: self.input.clone(),
+            is_generating: self.is_generating,
+            scroll_y: self.scroll_y,
+            hover_apply_button: self.hover_apply_button,
+            stream_state: Arc::clone(&self.stream_state),
+            input_focused: self.input_focused,
+            mode: self.mode,
+            model_menu_open: self.model_menu_open,
+            attachments: self.attachments.clone(),
+            mode_button_regions: self.mode_button_regions.clone(),
+            attachment_chip_regions: self.attachment_chip_regions.clone(),
+            change_action_regions: self.change_action_regions.clone(),
+            hover_attachment: self.hover_attachment,
+            pending_edits: self.pending_edits.clone(),
+            diff_view: self.diff_view.clone(),
+            show_diff_view: self.show_diff_view,
+            selected_change_index: self.selected_change_index,
+            content_height: self.content_height,
+            code_save_regions: self.code_save_regions.clone(),
+            stick_to_bottom: self.stick_to_bottom,
+            caret_pos: self.caret_pos,
+            caret_visible: self.caret_visible,
+            composition: self.composition.clone(),
+            should_stop: Arc::clone(&self.should_stop),
+            conversations: self.conversations.clone(),
+            active: self.active,
+            tab_regions: self.tab_regions.clone(),
+            tab_close_regions: self.tab_close_regions.clone(),
+            new_tab_region: self.new_tab_region,
+            history_button_region: self.history_button_region,
+            hover_tab: self.hover_tab,
+            history_open: self.history_open,
+            history_item_regions: self.history_item_regions.clone(),
+            history: self.history.clone(),
+            reasoning_toggle_regions: self.reasoning_toggle_regions.clone(),
+            history_store: None,
+            hot_data_store: None,
+            warm_data_store: None,
+        }
+    }
+
+    /// 触发温数据归档（空闲时调用）
+    pub fn trigger_warm_archive(&mut self) {
+        if let Some(hot_store) = self.hot_data_store.as_mut() {
+            if hot_store.should_warm_archive() {
+                let dirty_sessions: Vec<crate::ai_panel::AiConversation> = hot_store
+                    .dirty_sessions()
+                    .iter()
+                    .map(|c| (*c).clone())
+                    .collect();
+                if let Some(warm_store) = self.warm_data_store.as_ref() {
+                    warm_store.request_archive_all(dirty_sessions);
+                    // 清除已归档的脏标记
+                    if let Some(results) = self.warm_data_store.as_ref() {
+                        for result in results.poll_results() {
+                            match result {
+                                crate::ai_warm_data::ArchiveResult::Success { conv_id } => {
+                                    hot_store.clear_dirty(&conv_id);
+                                    // 删除热数据临时日志
+                                    warm_store.request_remove_hot_log(conv_id);
+                                }
+                                crate::ai_warm_data::ArchiveResult::Failed { conv_id, error } => {
+                                    eprintln!("[AiPanel] 归档失败 {}: {}", conv_id, error);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -754,6 +879,7 @@ impl AiPanel {
     pub fn add_user_message(&mut self, content: String) {
         self.messages.push(AiMessage::new(AiRole::User, content));
         self.stick_to_bottom = true;
+        self.sync_hot_data();
     }
 
     /// 添加助手消息
@@ -761,6 +887,7 @@ impl AiPanel {
         self.messages
             .push(AiMessage::new(AiRole::Assistant, content));
         self.stick_to_bottom = true;
+        self.sync_hot_data();
     }
 
     /// 发送消息（AI-H01: 非阻塞 — HTTP 调用在后台线程执行，结果通过 stream_state 流式返回）
@@ -1151,6 +1278,8 @@ impl AiPanel {
                     self.parse_pending_edits(None, current_folder);
                 }
                 just_completed = true;
+                // 同步热数据（生成完成，消息已最终确定）
+                self.sync_hot_data();
             }
         }
         just_completed

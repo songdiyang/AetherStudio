@@ -577,6 +577,15 @@ impl EditorState {
             let mut msg_y = content_start_y;
             let mut reasoning_regions_local: Vec<(usize, f32, f32, f32, f32)> = Vec::new();
 
+            // 设置消息区域裁剪，防止滚动内容覆盖到上方标签栏和下方输入框
+            let chat_clip_rect = D2D_RECT_F {
+                left: x,
+                top: chat_top,
+                right: x + width,
+                bottom: chat_bottom,
+            };
+            target.PushAxisAlignedClip(&chat_clip_rect, D2D1_ANTIALIAS_MODE_ALIASED);
+
             for (msg_index, msg) in self.ai_panel.messages.iter().enumerate() {
                 if msg.role == crate::ai_panel::AiRole::System {
                     continue;
@@ -1046,6 +1055,9 @@ impl EditorState {
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
             }
+
+            // 弹出消息区域裁剪
+            target.PopAxisAlignedClip();
 
             // ===== Apply 按钮区域 =====
             let has_code = self.ai_panel.extract_last_code_block().is_some();

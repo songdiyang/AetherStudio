@@ -32,17 +32,27 @@ impl EditorState {
         };
         base + input_offset_y - self.sidebar_scroll_y
     }
-    /// 开始文件树内联输入（新建文件/文件夹）
+    /// 开始文件树内联输入（新建文件/文件夹/重命名）
     pub fn start_file_tree_input(&mut self, kind: FileTreeInputKind) {
-        let default_name = match kind {
-            FileTreeInputKind::NewFile => "新建文件.txt",
-            FileTreeInputKind::NewFolder => "新建文件夹",
+        let (default_name, target_node) = match kind {
+            FileTreeInputKind::NewFile => ("新建文件.txt".to_string(), None),
+            FileTreeInputKind::NewFolder => ("新建文件夹".to_string(), None),
+            FileTreeInputKind::Rename => {
+                let node_idx = self.selected_file_node;
+                let name = node_idx.and_then(|idx| {
+                    self.file_tree.as_ref().and_then(|tree| {
+                        tree.get_node(idx).map(|node| tree.get_name(node).to_string())
+                    })
+                });
+                (name.unwrap_or_default(), node_idx)
+            }
         };
         self.file_tree_input = Some(FileTreeInput {
             kind,
-            value: default_name.to_string(),
+            value: default_name,
             caret_visible: true,
             composition: None,
+            target_node,
         });
         self.dirty_tracker.mark_region(
             self.layout.sidebar_region().x,
@@ -128,6 +138,49 @@ impl EditorState {
                 } else {
                     self.status_message = format!("已创建文件夹: {}", name);
                     self.refresh_file_tree();
+                }
+            }
+            FileTreeInputKind::Rename => {
+                if let Some(node_idx) = input.target_node {
+                    if let Some(old_path) = self.get_node_path(node_idx) {
+                        let parent = old_path.parent();
+                        let new_path = parent.map(|p| p.join(name)).unwrap_or_else(|| base_path.join(name));
+                        if old_path == new_path {
+                            // 名称未改变，无需操作
+                        } else if new_path.exists() {
+                            self.status_message = format!("{} 已存在", name);
+                            self.file_tree_input = Some(input);
+                            self.dirty_tracker.mark_region(
+                                self.layout.sidebar_region().x,
+                                self.layout.sidebar_region().y,
+                                self.layout.sidebar_region().width,
+                                self.layout.sidebar_region().height,
+                                crate::dirty_rect::DirtyRegionType::Sidebar,
+                            );
+                            return;
+                        } else if let Err(e) = std::fs::rename(&old_path, &new_path) {
+                            self.status_message = format!("重命名失败: {}", e);
+                        } else {
+                            self.status_message = format!("已重命名为: {}", name);
+                            // 如果重命名的文件当前已打开，更新标签页路径
+                            let old_path_str = old_path.to_string_lossy().to_string();
+                            for tab in &mut self.tabs {
+                                if let Some(file_content) = tab.as_file_mut() {
+                                    if let Some(ref fp) = file_content.file_path {
+                                        if fp.to_string_lossy() == old_path_str {
+                                            file_content.file_path = Some(new_path.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(ref active_path) = self.content.file_path {
+                                if active_path.to_string_lossy() == old_path_str {
+                                    self.content.file_path = Some(new_path.clone());
+                                }
+                            }
+                            self.refresh_file_tree();
+                        }
+                    }
                 }
             }
         }
@@ -281,6 +334,124 @@ impl EditorState {
             self.status_message = format!("已复制路径: {}", path_str);
         } else {
             self.status_message = "复制路径失败".to_string();
+        }
+    }
+    /// 复制文件节点的绝对路径到剪贴板。
+    pub fn copy_node_path(&mut self, node_idx: u32) {
+        let Some(path) = self.get_node_path(node_idx) else {
+            self.status_message = "无法获取文件路径".to_string();
+            return;
+        };
+        let path_str = path.to_string_lossy().to_string();
+        if Self::set_clipboard_text(&path_str) {
+            self.status_message = format!("已复制路径: {}", path_str);
+        } else {
+            self.status_message = "复制路径失败".to_string();
+        }
+    }
+    /// 在文件资源管理器中打开指定节点路径。
+    pub fn open_node_in_explorer(&mut self, node_idx: u32) {
+        let Some(path) = self.get_node_path(node_idx) else {
+            self.status_message = "无法获取文件路径".to_string();
+            return;
+        };
+        let path_str = path.to_string_lossy().to_string();
+        let wide: Vec<u16> = path_str.encode_utf16().chain(Some(0)).collect();
+        unsafe {
+            use windows::Win32::UI::Shell::ShellExecuteW;
+            let operation: Vec<u16> = "open\0".encode_utf16().collect();
+            let _ = ShellExecuteW(
+                None,
+                windows::core::PCWSTR(operation.as_ptr()),
+                windows::core::PCWSTR(wide.as_ptr()),
+                windows::core::PCWSTR::null(),
+                None,
+                windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+            );
+        }
+        self.status_message = format!("已在文件资源管理器中打开: {}", path_str);
+    }
+    /// 删除文件节点（文件或文件夹）。
+    pub fn delete_file_node(&mut self, node_idx: u32) {
+        let Some(path) = self.get_node_path(node_idx) else {
+            self.status_message = "无法获取文件路径".to_string();
+            return;
+        };
+        let Some(tree) = self.file_tree.as_ref() else {
+            return;
+        };
+        let Some(node) = tree.get_node(node_idx) else {
+            return;
+        };
+        let is_dir = node.kind == aether_core::workspace::file_tree::FileKind::Directory;
+        let name = tree.get_name(node).to_string();
+
+        let result = if is_dir {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+
+        match result {
+            Ok(()) => {
+                self.status_message = format!("已删除: {}", name);
+                // 如果删除的文件当前已打开，关闭对应的标签页
+                let path_str = path.to_string_lossy().to_string();
+                let mut tabs_to_close: Vec<usize> = Vec::new();
+                for (i, tab) in self.tabs.iter().enumerate() {
+                    if let Some(ref fp) = tab.file_path() {
+                        if fp.to_string_lossy() == path_str {
+                            tabs_to_close.push(i);
+                        }
+                    }
+                }
+                // 从后往前关闭，避免索引偏移
+                for idx in tabs_to_close.into_iter().rev() {
+                    self.close_tab(idx);
+                }
+                // 如果当前活动文件被删除，清空编辑器
+                if let Some(ref active_path) = self.content.file_path {
+                    if active_path.to_string_lossy() == path_str {
+                        self.content.buffer = aether_core::buffer::piece_table::PieceTable::from_string(String::new());
+                        self.content.file_path = None;
+                        self.content.is_dirty = false;
+                    }
+                }
+                self.selected_file_node = None;
+                self.refresh_file_tree();
+            }
+            Err(e) => {
+                self.status_message = format!("删除失败: {}", e);
+            }
+        }
+    }
+    /// 执行文件节点上下文菜单项对应的动作。
+    /// 返回 true 表示动作已处理（调用方负责重绘）。
+    pub fn execute_file_node_context_action(
+        &mut self,
+        item: crate::context_menu::FileNodeContextMenuItem,
+        node_idx: u32,
+    ) -> bool {
+        use crate::context_menu::FileNodeContextMenuItem as Item;
+        match item {
+            Item::Rename => {
+                self.selected_file_node = Some(node_idx);
+                self.start_file_tree_input(FileTreeInputKind::Rename);
+                true
+            }
+            Item::Delete => {
+                self.delete_file_node(node_idx);
+                true
+            }
+            Item::RevealInExplorer => {
+                self.open_node_in_explorer(node_idx);
+                true
+            }
+            Item::CopyPath => {
+                self.copy_node_path(node_idx);
+                true
+            }
+            _ => false,
         }
     }
     /// 执行资源管理器空白区域上下文菜单项对应的动作。

@@ -41,6 +41,9 @@ pub(crate) unsafe fn on_key_down(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
     if let Some(r) = okd_explorer_context_menu(hwnd, vk) {
         return r;
     }
+    if let Some(r) = okd_file_node_context_menu(hwnd, vk) {
+        return r;
+    }
     if let Some(r) = okd_tab_context_menu(hwnd, vk) {
         return r;
     }
@@ -97,6 +100,30 @@ pub(crate) unsafe fn on_key_down(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
     if GetKeyState(VK_MENU.0 as i32) < 0 {
         if let Some(r) = okd_alt_nav(hwnd, vk) {
             return r;
+        }
+    }
+
+    // F2: 文件树有选中节点时触发重命名
+    if vk == VK_F2 {
+        let has_selection = EDITOR_STATE.with(|s| {
+            s.borrow()
+                .as_ref()
+                .map(|state| state.borrow().selected_file_node.is_some())
+                .unwrap_or(false)
+        });
+        if has_selection {
+            EDITOR_STATE.with(|s| {
+                if let Some(state) = s.borrow().as_ref() {
+                    let mut st = state.borrow_mut();
+                    if let Some(node_idx) = st.selected_file_node {
+                        st.start_file_tree_input(crate::editor::FileTreeInputKind::Rename);
+                        st.file_tree_input.as_mut().unwrap().target_node = Some(node_idx);
+                    }
+                    drop(st);
+                    invalidate_window(hwnd);
+                }
+            });
+            return LRESULT(0);
         }
     }
 
@@ -212,6 +239,30 @@ unsafe fn okd_file_tree_input(hwnd: HWND, vk: VIRTUAL_KEY) -> Option<LRESULT> {
 
     // 其他键不在此处消费，由 on_key_down 统一拦截防止编辑器响应
     None
+}
+
+/// 文件节点上下文菜单打开时，按 Escape 关闭；按 F2 触发重命名
+unsafe fn okd_file_node_context_menu(hwnd: HWND, vk: VIRTUAL_KEY) -> Option<LRESULT> {
+    let open = EDITOR_STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|state| state.borrow().file_node_context_menu.is_open)
+            .unwrap_or(false)
+    });
+    if !open {
+        return None;
+    }
+    if vk == VK_ESCAPE {
+        EDITOR_STATE.with(|s| {
+            if let Some(state) = s.borrow().as_ref() {
+                state.borrow_mut().file_node_context_menu.close();
+                invalidate_window(hwnd);
+            }
+        });
+        return Some(LRESULT(0));
+    }
+    // 菜单打开时其他键不处理（避免误触编辑器）
+    Some(LRESULT(0))
 }
 
 /// 资源管理器空白区域上下文菜单打开时，按 Escape 关闭

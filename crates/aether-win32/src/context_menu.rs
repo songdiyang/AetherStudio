@@ -1,12 +1,17 @@
-//! 资源管理器（Explorer）空白区域上下文菜单。
+//! 资源管理器（Explorer）空白区域上下文菜单与文件节点上下文菜单。
 //!
-//! 当用户在侧边栏文件树的空白区域右键点击时显示。
+//! 当用户在侧边栏文件树的空白区域右键点击时显示空白区域菜单。
+//! 当用户在文件/文件夹节点上右键点击时显示文件节点菜单。
 //! 菜单由 Direct2D 自绘（与 user_menu 保持一致），
 //! 命中测试通过 `hit_test_menu` 完成。
 //!
-//! 菜单项（VS Code 风格的空白区域标准操作）：
+//! 空白区域菜单项（VS Code 风格的空白区域标准操作）：
 //!   新建文件 / 新建文件夹 / 分隔符 / 刷新 / 分隔符 /
 //!   在文件资源管理器中打开 / 分隔符 / 复制路径
+//!
+//! 文件节点菜单项：
+//!   重命名 / 删除 / 分隔符 /
+//!   在文件资源管理器中打开 / 复制路径
 
 /// 资源管理器空白区域上下文菜单项
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,7 +50,33 @@ impl ExplorerContextMenuItem {
     }
 }
 
-/// 资源管理器上下文菜单状态
+/// 文件节点上下文菜单项（文件/文件夹右键）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileNodeContextMenuItem {
+    Rename,
+    Delete,
+    Separator1,
+    RevealInExplorer,
+    CopyPath,
+}
+
+impl FileNodeContextMenuItem {
+    pub fn label(&self) -> &'static str {
+        match self {
+            FileNodeContextMenuItem::Rename => "重命名",
+            FileNodeContextMenuItem::Delete => "删除",
+            FileNodeContextMenuItem::Separator1 => "",
+            FileNodeContextMenuItem::RevealInExplorer => "在文件资源管理器中打开",
+            FileNodeContextMenuItem::CopyPath => "复制路径",
+        }
+    }
+
+    pub fn is_separator(&self) -> bool {
+        matches!(self, FileNodeContextMenuItem::Separator1)
+    }
+}
+
+/// 资源管理器上下文菜单状态（空白区域）
 #[derive(Clone, Debug)]
 pub struct ExplorerContextMenu {
     /// 菜单是否展开
@@ -172,6 +203,127 @@ impl ExplorerContextMenu {
 }
 
 impl Default for ExplorerContextMenu {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// 文件节点上下文菜单状态（文件/文件夹右键）
+#[derive(Clone, Debug)]
+pub struct FileNodeContextMenu {
+    /// 菜单是否展开
+    pub is_open: bool,
+    /// 鼠标悬停的菜单项索引
+    pub hover_index: Option<usize>,
+    /// 菜单项列表
+    pub items: Vec<FileNodeContextMenuItem>,
+    /// 菜单区域（用于点击检测和渲染，逻辑像素）
+    pub menu_rect: Option<crate::layout::Region>,
+    /// 菜单弹出位置 x
+    pub origin_x: f32,
+    /// 菜单弹出位置 y
+    pub origin_y: f32,
+    /// 右键点击时命中的节点索引
+    pub target_node: Option<u32>,
+}
+
+impl FileNodeContextMenu {
+    pub const ITEM_HEIGHT: f32 = 32.0;
+    pub const SEPARATOR_HEIGHT: f32 = 9.0;
+    pub const MENU_WIDTH: f32 = 220.0;
+    pub const TOP_PADDING: f32 = 4.0;
+    pub const BOTTOM_PADDING: f32 = 6.0;
+
+    pub fn new() -> Self {
+        Self {
+            is_open: false,
+            hover_index: None,
+            items: vec![
+                FileNodeContextMenuItem::Rename,
+                FileNodeContextMenuItem::Delete,
+                FileNodeContextMenuItem::Separator1,
+                FileNodeContextMenuItem::RevealInExplorer,
+                FileNodeContextMenuItem::CopyPath,
+            ],
+            menu_rect: None,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            target_node: None,
+        }
+    }
+
+    pub fn open(&mut self, x: f32, y: f32, window_width: f32, window_height: f32, node_idx: u32) {
+        self.is_open = true;
+        self.hover_index = None;
+        self.target_node = Some(node_idx);
+        let max_x = (window_width - Self::MENU_WIDTH).max(4.0);
+        let menu_h = self.menu_height();
+        let max_y = (window_height - menu_h).max(4.0);
+        self.origin_x = x.min(max_x).max(4.0);
+        self.origin_y = y.min(max_y).max(4.0);
+    }
+
+    pub fn close(&mut self) {
+        self.is_open = false;
+        self.hover_index = None;
+        self.menu_rect = None;
+        self.target_node = None;
+    }
+
+    pub fn menu_height(&self) -> f32 {
+        let content: f32 = self
+            .items
+            .iter()
+            .map(|item| {
+                if item.is_separator() {
+                    Self::SEPARATOR_HEIGHT
+                } else {
+                    Self::ITEM_HEIGHT
+                }
+            })
+            .sum();
+        Self::TOP_PADDING + content + Self::BOTTOM_PADDING
+    }
+
+    pub fn menu_width(&self) -> f32 {
+        Self::MENU_WIDTH
+    }
+
+    pub fn hit_test_menu(&self, mouse_x: f32, mouse_y: f32) -> Option<usize> {
+        let rect = self.menu_rect.clone()?;
+        if !rect.contains(mouse_x, mouse_y) {
+            return None;
+        }
+        let mut current_y = rect.y + Self::TOP_PADDING;
+        for (i, item) in self.items.iter().enumerate() {
+            let h = if item.is_separator() {
+                Self::SEPARATOR_HEIGHT
+            } else {
+                Self::ITEM_HEIGHT
+            };
+            let in_row = mouse_y >= current_y && mouse_y < current_y + h;
+            if in_row && !item.is_separator() {
+                return Some(i);
+            }
+            current_y += h;
+        }
+        None
+    }
+
+    pub fn update_hover(&mut self, mouse_x: f32, mouse_y: f32) -> bool {
+        if !self.is_open {
+            return false;
+        }
+        let new = self.hit_test_menu(mouse_x, mouse_y);
+        if new != self.hover_index {
+            self.hover_index = new;
+            return true;
+        }
+        false
+    }
+}
+
+impl Default for FileNodeContextMenu {
     fn default() -> Self {
         Self::new()
     }
@@ -335,5 +487,29 @@ mod tests {
             ExplorerContextMenuItem::RevealInExplorer.label(),
             "在文件资源管理器中打开"
         );
+    }
+
+    // FileNodeContextMenu 测试
+    #[test]
+    fn test_file_node_menu_new() {
+        let m = FileNodeContextMenu::new();
+        assert!(!m.is_open);
+        assert_eq!(m.hover_index, None);
+        assert!(m.menu_rect.is_none());
+        assert!(m.items.contains(&FileNodeContextMenuItem::Rename));
+        assert!(m.items.contains(&FileNodeContextMenuItem::Delete));
+        assert!(m.items.contains(&FileNodeContextMenuItem::RevealInExplorer));
+        assert!(m.items.contains(&FileNodeContextMenuItem::CopyPath));
+    }
+
+    #[test]
+    fn test_file_node_menu_open_close() {
+        let mut m = FileNodeContextMenu::new();
+        m.open(100.0, 200.0, 1280.0, 800.0, 5);
+        assert!(m.is_open);
+        assert_eq!(m.target_node, Some(5));
+        m.close();
+        assert!(!m.is_open);
+        assert_eq!(m.target_node, None);
     }
 }

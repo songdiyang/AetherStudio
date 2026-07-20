@@ -78,9 +78,10 @@ impl BottomPanelTab {
 pub enum FileTreeInputKind {
     NewFile,
     NewFolder,
+    Rename,
 }
 
-/// 文件树内联输入状态（用于新建文件/文件夹时重命名）
+/// 文件树内联输入状态（用于新建文件/文件夹或重命名时）
 #[derive(Clone, Debug)]
 pub struct FileTreeInput {
     pub kind: FileTreeInputKind,
@@ -88,6 +89,8 @@ pub struct FileTreeInput {
     pub caret_visible: bool,
     /// IME 合成串（中文输入法预编辑文本），渲染时显示在 value 之后
     pub composition: Option<String>,
+    /// 重命名时记录目标节点索引
+    pub target_node: Option<u32>,
 }
 
 /// 文件树点击命中的具体部位
@@ -433,6 +436,8 @@ pub struct EditorState {
     pub user_menu: crate::user_menu::UserMenu,
     /// 资源管理器空白区域上下文菜单
     pub explorer_context_menu: crate::context_menu::ExplorerContextMenu,
+    /// 文件节点右键上下文菜单
+    pub file_node_context_menu: crate::context_menu::FileNodeContextMenu,
     /// 标签右键上下文菜单
     pub tab_context_menu: crate::tab_context_menu::TabContextMenuState,
     /// 活动栏右键上下文菜单
@@ -724,6 +729,7 @@ impl EditorState {
             last_active_tab: 0,
             user_menu: crate::user_menu::UserMenu::new(),
             explorer_context_menu: crate::context_menu::ExplorerContextMenu::new(),
+            file_node_context_menu: crate::context_menu::FileNodeContextMenu::new(),
             tab_context_menu: crate::tab_context_menu::TabContextMenuState::default(),
             activity_bar_context_menu:
                 crate::activity_bar_context_menu::ActivityBarContextMenuState::default(),

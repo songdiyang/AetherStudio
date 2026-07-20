@@ -423,6 +423,49 @@ pub(super) unsafe fn lbd_explorer_context_menu(
     Some(LRESULT(0))
 }
 
+/// 文件节点右键上下文菜单点击处理。
+///
+/// - 菜单可见时，点击菜单项执行对应动作并关闭菜单；
+/// - 点击菜单外部则关闭菜单。
+pub(super) unsafe fn lbd_file_node_context_menu(
+    hwnd: HWND,
+    state: &Rc<RefCell<EditorState>>,
+    mouse_x: f32,
+    mouse_y: f32,
+) -> Option<LRESULT> {
+    let mut st = state.borrow_mut();
+    if !st.file_node_context_menu.is_open {
+        return None;
+    }
+    // 命中菜单项 → 执行动作
+    if let Some(idx) = st.file_node_context_menu.hit_test_menu(mouse_x, mouse_y) {
+        let item = st.file_node_context_menu.items[idx];
+        let node_idx = st.file_node_context_menu.target_node;
+        st.file_node_context_menu.close();
+        // 标记侧边栏脏区域
+        let region = st.layout.sidebar_region().clone();
+        st.dirty_tracker.mark_region(
+            region.x,
+            region.y,
+            region.width,
+            region.height,
+            crate::dirty_rect::DirtyRegionType::Sidebar,
+        );
+        drop(st);
+        // 执行动作（需要单独借用）
+        if let Some(node_idx) = node_idx {
+            state.borrow_mut().execute_file_node_context_action(item, node_idx);
+        }
+        invalidate_window(hwnd);
+        return Some(LRESULT(0));
+    }
+    // 点击菜单外部 → 关闭菜单
+    st.file_node_context_menu.close();
+    drop(st);
+    invalidate_window(hwnd);
+    Some(LRESULT(0))
+}
+
 /// 标签右键上下文菜单点击处理。
 ///
 /// - 菜单可见时，点击菜单项执行对应动作并关闭菜单；
