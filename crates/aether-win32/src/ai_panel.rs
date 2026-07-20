@@ -190,6 +190,8 @@ pub struct AiConversation {
     pub selected_change_index: usize,
     pub stream_state: Arc<Mutex<AiStreamState>>,
     pub should_stop: Arc<AtomicBool>,
+    /// 本轮注入过的 playbook 条目 ID（用于接受/拒绝编辑时的反馈归因）
+    pub used_bullet_ids: Vec<String>,
 }
 
 impl AiConversation {
@@ -216,6 +218,7 @@ impl AiConversation {
             selected_change_index: 0,
             stream_state: Arc::new(Mutex::new(AiStreamState::default())),
             should_stop: Arc::new(AtomicBool::new(false)),
+            used_bullet_ids: Vec::new(),
         }
     }
 
@@ -408,12 +411,22 @@ pub struct AiPanel {
     pub history: Vec<ConversationMeta>,
     /// 思考块折叠切换命中区 (msg_index, x, y, w, h)（作用于活动会话 messages 索引）
     pub reasoning_toggle_regions: Vec<(usize, f32, f32, f32, f32)>,
-    /// 历史持久化存储（Phase 2：磁盘读写）
-    pub history_store: Option<crate::ai_history::AiHistoryStore>,
-    /// 热数据持久化存储（三阶段架构：热/温/冷）
+    /// 热数据持久化存储（三阶段架构：热/温）
     pub hot_data_store: Option<crate::ai_hot_data::HotDataStore>,
-    /// 温数据持久化存储（AetherDB 向量数据库）
+    /// 温数据持久化存储（MemoryStore：SQLite + sqlite-vec）
     pub warm_data_store: Option<crate::ai_warm_data::WarmDataStore>,
+    /// 历史列表：仅显示当前工作区的会话
+    pub history_workspace_only: bool,
+    /// Playbook 管理面板是否展开
+    pub playbook_open: bool,
+    /// Playbook 面板条目缓存（展开时从 SQLite 加载）
+    pub playbook_items: Vec<crate::memory_store::PlaybookBullet>,
+    /// Playbook 标题栏按钮命中区 (x, y, w, h)
+    pub playbook_button_region: Option<(f32, f32, f32, f32)>,
+    /// Playbook 条目删除按钮命中区 (item_index, x, y, w, h)
+    pub playbook_delete_regions: Vec<(usize, f32, f32, f32, f32)>,
+    /// 历史面板「仅当前工作区」开关命中区 (x, y, w, h)
+    pub history_ws_toggle_region: Option<(f32, f32, f32, f32)>,
 }
 
 impl AiPanel {
@@ -459,9 +472,14 @@ impl AiPanel {
             history_item_regions: Vec::new(),
             history: Vec::new(),
             reasoning_toggle_regions: Vec::new(),
-            history_store: Some(crate::ai_history::AiHistoryStore::default()),
             hot_data_store: Self::init_hot_data_store(),
             warm_data_store: Self::init_warm_data_store(),
+            history_workspace_only: false,
+            playbook_open: false,
+            playbook_items: Vec::new(),
+            playbook_button_region: None,
+            playbook_delete_regions: Vec::new(),
+            history_ws_toggle_region: None,
         }
     }
 
@@ -547,14 +565,42 @@ impl AiPanel {
             history_item_regions: self.history_item_regions.clone(),
             history: self.history.clone(),
             reasoning_toggle_regions: self.reasoning_toggle_regions.clone(),
-            history_store: None,
             hot_data_store: None,
             warm_data_store: None,
+            history_workspace_only: self.history_workspace_only,
+            playbook_open: self.playbook_open,
+            playbook_items: Vec::new(),
+            playbook_button_region: None,
+            playbook_delete_regions: Vec::new(),
+            history_ws_toggle_region: None,
         }
     }
 
     /// 触发温数据归档（空闲时调用）
     pub fn trigger_warm_archive(&mut self) {
+        // 1. 先收割归档结果：后台线程异步完成，结果在后续调用中才就绪
+        let results = self
+            .warm_data_store
+            .as_ref()
+            .map(|s| s.poll_results())
+            .unwrap_or_default();
+        for result in results {
+            match result {
+                crate::ai_warm_data::ArchiveResult::Success { conv_id } => {
+                    if let Some(hot_store) = self.hot_data_store.as_mut() {
+                        hot_store.clear_dirty(&conv_id);
+                    }
+                    if let Some(warm_store) = self.warm_data_store.as_ref() {
+                        warm_store.request_remove_hot_log(conv_id);
+                    }
+                }
+                crate::ai_warm_data::ArchiveResult::Failed { conv_id, error } => {
+                    eprintln!("[AiPanel] 归档失败 {}: {}", conv_id, error);
+                }
+            }
+        }
+
+        // 2. 空闲且有脏会话时发起新一轮归档
         if let Some(hot_store) = self.hot_data_store.as_mut() {
             if hot_store.should_warm_archive() {
                 let dirty_sessions: Vec<crate::ai_panel::AiConversation> = hot_store
@@ -564,21 +610,6 @@ impl AiPanel {
                     .collect();
                 if let Some(warm_store) = self.warm_data_store.as_ref() {
                     warm_store.request_archive_all(dirty_sessions);
-                    // 清除已归档的脏标记
-                    if let Some(results) = self.warm_data_store.as_ref() {
-                        for result in results.poll_results() {
-                            match result {
-                                crate::ai_warm_data::ArchiveResult::Success { conv_id } => {
-                                    hot_store.clear_dirty(&conv_id);
-                                    // 删除热数据临时日志
-                                    warm_store.request_remove_hot_log(conv_id);
-                                }
-                                crate::ai_warm_data::ArchiveResult::Failed { conv_id, error } => {
-                                    eprintln!("[AiPanel] 归档失败 {}: {}", conv_id, error);
-                                }
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -730,10 +761,9 @@ impl AiPanel {
             if self.history.len() > MAX_HISTORY {
                 self.history.truncate(MAX_HISTORY);
             }
-            // 持久化到磁盘
-            if let Some(store) = self.history_store.as_ref() {
-                let _ = store.save_conversation(conv);
-                let _ = store.save_all(&self.history);
+            // 持久化：异步归档进 SQLite（温数据层，含向量索引）
+            if let Some(warm_store) = self.warm_data_store.as_ref() {
+                warm_store.request_archive(conv.id.clone(), conv.clone());
             }
         }
         if idx == self.active {
@@ -773,19 +803,17 @@ impl AiPanel {
             self.history_open = false;
             return;
         }
-        // 否则尝试从磁盘加载完整会话，失败则创建占位会话
+        // 否则尝试从 SQLite 加载完整会话，失败则创建占位会话
         self.snapshot_active_into_slot();
-        let conv = if let Some(store) = self.history_store.as_ref() {
-            store.load_conversation(&id).unwrap_or_else(|| {
+        let conv = self
+            .warm_data_store
+            .as_ref()
+            .and_then(|store| store.load_conversation(&id).ok())
+            .unwrap_or_else(|| {
                 let mut c = AiConversation::new(id, title);
                 c.updated_at = updated_at;
                 c
-            })
-        } else {
-            let mut c = AiConversation::new(id, title);
-            c.updated_at = updated_at;
-            c
-        };
+            });
         self.conversations.push(conv);
         let new_idx = self.conversations.len() - 1;
         self.load_slot_into_active(new_idx);
@@ -980,6 +1008,25 @@ impl AiPanel {
         // 系统前缀（system/Agent 能力/模式/上下文）+ 经窗口切片的会话历史（含本轮输入），
         // 保证同一轮对话上下文连续；历史来自本会话的 self.messages，天然与其它标签页隔离。
         let mut messages = build_chat_prompt(&settings, &context, mode);
+        // ACE playbook：注入已沉淀的经验策略，并记录条目 ID 供反馈归因
+        let mut used_bullet_ids: Vec<String> = Vec::new();
+        if let Some(warm) = self.warm_data_store.as_ref() {
+            if let Ok(hits) = warm.search_playbook(&user_input, 5) {
+                if !hits.is_empty() {
+                    used_bullet_ids = hits.iter().map(|(b, _)| b.id.clone()).collect();
+                    messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: crate::reflector::format_bullets(&hits),
+                    });
+                }
+            }
+        }
+        // 记录到活动会话槽位（接受/拒绝编辑时回填 helpful/harmful）
+        if !used_bullet_ids.is_empty() {
+            if let Some(slot) = self.conversations.get_mut(self.active) {
+                slot.used_bullet_ids = used_bullet_ids;
+            }
+        }
         messages.extend(Self::history_to_chat_messages(&self.messages));
         let stream_state = Arc::clone(&self.stream_state);
         let should_stop = Arc::clone(&self.should_stop);
@@ -1335,12 +1382,32 @@ impl AiPanel {
         }
         let applied = editor.apply_ai_workspace_edits(&edits)?;
         self.clear_pending_changes();
+        // ACE 反馈：编辑被采纳 → 本轮注入的策略条目记为有效
+        self.feedback_bullets(true);
         Ok(applied)
     }
 
     /// 拒绝所有待确认编辑
     pub fn reject_all_changes(&mut self) {
         self.clear_pending_changes();
+        // ACE 反馈：编辑被拒绝 → 本轮注入的策略条目记为无效
+        self.feedback_bullets(false);
+    }
+
+    /// 将活动会话本轮使用的 playbook 条目反馈给权重计数器
+    fn feedback_bullets(&mut self, helpful: bool) {
+        let Some(slot) = self.conversations.get_mut(self.active) else {
+            return;
+        };
+        if slot.used_bullet_ids.is_empty() {
+            return;
+        }
+        let ids = std::mem::take(&mut slot.used_bullet_ids);
+        if let Some(warm) = self.warm_data_store.as_ref() {
+            for id in ids {
+                let _ = warm.bullet_feedback(&id, helpful);
+            }
+        }
     }
 
     /// 从最后一条助手消息中提取代码块
@@ -1534,6 +1601,45 @@ impl AiPanel {
         self.history_button_region = None;
         self.history_item_regions.clear();
         self.reasoning_toggle_regions.clear();
+        self.playbook_button_region = None;
+        self.playbook_delete_regions.clear();
+        self.history_ws_toggle_region = None;
+    }
+
+    // ===== Playbook 管理面板 =====
+
+    /// 切换 Playbook 管理面板展开/收起（展开时从 SQLite 加载条目）
+    pub fn toggle_playbook_panel(&mut self) {
+        self.playbook_open = !self.playbook_open;
+        if self.playbook_open {
+            self.reload_playbook();
+        }
+    }
+
+    /// 重新加载 Playbook 条目缓存
+    pub fn reload_playbook(&mut self) {
+        if let Some(warm) = self.warm_data_store.as_ref() {
+            self.playbook_items = warm.list_playbook(None).unwrap_or_default();
+        }
+    }
+
+    /// 删除指定下标的 Playbook 条目（调用方需先弹确认）
+    pub fn delete_playbook_item(&mut self, idx: usize) -> Result<(), String> {
+        let id = self
+            .playbook_items
+            .get(idx)
+            .map(|b| b.id.clone())
+            .ok_or_else(|| "条目不存在".to_string())?;
+        if let Some(warm) = self.warm_data_store.as_ref() {
+            warm.delete_bullet(&id)?;
+        }
+        self.reload_playbook();
+        Ok(())
+    }
+
+    /// 切换历史列表的工作区过滤
+    pub fn toggle_history_workspace_only(&mut self) {
+        self.history_workspace_only = !self.history_workspace_only;
     }
 }
 

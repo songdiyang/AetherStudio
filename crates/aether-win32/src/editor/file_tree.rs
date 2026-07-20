@@ -41,7 +41,8 @@ impl EditorState {
                 let node_idx = self.selected_file_node;
                 let name = node_idx.and_then(|idx| {
                     self.file_tree.as_ref().and_then(|tree| {
-                        tree.get_node(idx).map(|node| tree.get_name(node).to_string())
+                        tree.get_node(idx)
+                            .map(|node| tree.get_name(node).to_string())
                     })
                 });
                 (name.unwrap_or_default(), node_idx)
@@ -144,7 +145,9 @@ impl EditorState {
                 if let Some(node_idx) = input.target_node {
                     if let Some(old_path) = self.get_node_path(node_idx) {
                         let parent = old_path.parent();
-                        let new_path = parent.map(|p| p.join(name)).unwrap_or_else(|| base_path.join(name));
+                        let new_path = parent
+                            .map(|p| p.join(name))
+                            .unwrap_or_else(|| base_path.join(name));
                         if old_path == new_path {
                             // 名称未改变，无需操作
                         } else if new_path.exists() {
@@ -274,32 +277,50 @@ impl EditorState {
 
     /// 工作区根目录的轻量签名（子项名称+类型+修改时间哈希）。
     /// 用于 AI 终端命令后检测文件变化，仅在变化时才刷新，避免无谓重建/闪烁。
+    /// 除根目录外，当前已展开的子目录也纳入签名——否则 `mkdir src\utils` 这类
+    /// 嵌套变化不会反映到根目录签名上，文件树无法自动刷新。
     pub fn workspace_root_signature(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         if let Some(folder) = self.current_folder.as_ref() {
-            if let Ok(rd) = std::fs::read_dir(folder) {
-                let mut items: Vec<(String, bool, u64)> = Vec::new();
-                for e in rd.flatten() {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                    let mtime = e
-                        .metadata()
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    items.push((name, is_dir, mtime));
-                }
-                items.sort();
-                for it in items {
-                    it.hash(&mut hasher);
-                }
+            Self::hash_dir_level(&mut hasher, folder);
+            // 已展开目录的子项也参与签名（排序保证签名稳定）
+            let mut expanded: Vec<PathBuf> =
+                self.capture_expanded_dir_paths().into_iter().collect();
+            expanded.sort();
+            for rel in expanded {
+                let abs = folder.join(&rel);
+                rel.hash(&mut hasher); // 分隔不同目录的子项序列
+                Self::hash_dir_level(&mut hasher, &abs);
             }
         }
         hasher.finish()
     }
+
+    /// 把某目录一层的子项（名称+类型+mtime）写入哈希（排序保证确定性）
+    fn hash_dir_level(hasher: &mut impl std::hash::Hasher, dir: &std::path::Path) {
+        use std::hash::Hash;
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            let mut items: Vec<(String, bool, u64)> = Vec::new();
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                let mtime = e
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                items.push((name, is_dir, mtime));
+            }
+            items.sort();
+            for it in items {
+                it.hash(hasher);
+            }
+        }
+    }
+
     /// 在 Windows 文件资源管理器中打开当前工作区文件夹。
     /// 通过 ShellExecuteW 调用系统 explorer.exe，无纯 Rust 依赖。
     pub fn open_in_file_explorer(&mut self) {
@@ -412,7 +433,8 @@ impl EditorState {
                 // 如果当前活动文件被删除，清空编辑器
                 if let Some(ref active_path) = self.content.file_path {
                     if active_path.to_string_lossy() == path_str {
-                        self.content.buffer = aether_core::buffer::piece_table::PieceTable::from_string(String::new());
+                        self.content.buffer =
+                            aether_core::buffer::piece_table::PieceTable::from_string(String::new());
                         self.content.file_path = None;
                         self.content.is_dirty = false;
                     }
@@ -883,5 +905,34 @@ impl EditorState {
         } else {
             lines.join("\n")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EditorState;
+    use std::hash::Hasher;
+
+    fn dir_sig(dir: &std::path::Path) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        EditorState::hash_dir_level(&mut hasher, dir);
+        hasher.finish()
+    }
+
+    #[test]
+    fn test_hash_dir_level_detects_new_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "aether_sig_test_{}",
+            crate::memory_store::new_id("d")
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sig1 = dir_sig(&dir);
+        // 新文件产生 → 签名必须变化
+        std::fs::write(dir.join("new_file.txt"), "hello").unwrap();
+        let sig2 = dir_sig(&dir);
+        assert_ne!(sig1, sig2);
+        // 无变化 → 签名稳定
+        assert_eq!(sig2, dir_sig(&dir));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

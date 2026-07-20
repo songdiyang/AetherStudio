@@ -454,7 +454,9 @@ pub(super) unsafe fn lbd_file_node_context_menu(
         drop(st);
         // 执行动作（需要单独借用）
         if let Some(node_idx) = node_idx {
-            state.borrow_mut().execute_file_node_context_action(item, node_idx);
+            state
+                .borrow_mut()
+                .execute_file_node_context_action(item, node_idx);
         }
         invalidate_window(hwnd);
         return Some(LRESULT(0));

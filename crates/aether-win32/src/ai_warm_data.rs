@@ -1,20 +1,30 @@
-//! AI 对话温数据阶段 — 异步归档到 AetherDB 向量数据库
+//! AI 对话温数据阶段 — 异步归档到 MemoryStore（SQLite + sqlite-vec）
 //!
 //! 触发时机：用户关闭当前聊天窗口、切换到其他会话、软件进入空闲状态（30秒无操作）
-//! 后台线程把整段完整对话一次性批量写入 AetherDB，建立向量索引 + 标量索引。
-//! 写入成功后删除对应的临时日志文件，完成「热→温」的状态切换。
+//! 后台线程把整段完整对话一次性批量写入 [`MemoryStore`]，建立向量索引。
+//! 写入成功后删除对应的热数据日志文件，完成「热→温」的状态切换。
+//!
+//! 底层存储通过 [`MemoryStore`] trait 抽象（见 memory_store.rs），
+//! 当前实现为 SqliteMemoryStore，后续可整体替换为 Qdrant Edge / LanceDB 等。
 
-use std::path::PathBuf;
-use std::sync::mpsc::{channel, Sender, Receiver};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex, RwLock};
 
-use crate::ai_panel::{AiConversation, AiMessage, ConversationMeta};
-use crate::aether_db::{AetherDB, ConversationAdapter, Filter, ScalarValue};
+use crate::ai_panel::{AiConversation, AiRole, ConversationMeta};
+use crate::memory_store::{ChatMessage, Conversation, MemoryStore, SqliteMemoryStore};
+
+/// 向量维度（与当前 ONNX 嵌入模型一致；换 bge-small-zh 时改为 512）
+const EMBEDDING_DIM: usize = crate::embedding::EmbeddingModel::DIM;
 
 /// 温数据归档请求
 #[derive(Clone, Debug)]
 pub enum ArchiveRequest {
     /// 归档指定会话
-    ArchiveConversation { conv_id: String, conv: AiConversation },
+    ArchiveConversation {
+        conv_id: String,
+        conv: AiConversation,
+    },
     /// 归档所有脏会话
     ArchiveAllDirty { sessions: Vec<AiConversation> },
     /// 删除指定会话的临时日志
@@ -30,77 +40,203 @@ pub enum ArchiveResult {
     Failed { conv_id: String, error: String },
 }
 
-/// 温数据存储（AetherDB 向量数据库）
+/// 温数据存储（MemoryStore 适配器 + 后台归档线程）
 ///
 /// 所有写操作通过后台线程异步执行，不阻塞 UI 线程。
-#[derive(Debug)]
 pub struct WarmDataStore {
-    /// AetherDB 数据库路径
-    db_path: PathBuf,
+    /// 数据根目录（热日志目录、SQLite 库均在其下）
+    base_dir: PathBuf,
+    /// 存储适配器（Arc 共享给后台线程；类型擦除便于替换实现）
+    store: Arc<dyn MemoryStore>,
     /// 归档请求发送端
     request_tx: Option<Sender<ArchiveRequest>>,
     /// 归档结果接收端
     result_rx: Option<Receiver<ArchiveResult>>,
     /// 后台线程句柄
     worker_handle: Option<std::thread::JoinHandle<()>>,
+    /// 当前工作区哈希（VS Code workspaceStorage 同款绑定；归档时写入会话元数据）
+    workspace_hash: Arc<RwLock<String>>,
+    /// ACE Reflector 的 LLM 客户端（None = 未启用反思）
+    reflector_client: Arc<Mutex<Option<aether_ai::AiClient>>>,
 }
 
 impl WarmDataStore {
-    /// 创建温数据存储（自动初始化 AetherDB 数据库）
+    /// 创建温数据存储（自动初始化 SQLite 数据库）
     pub fn new(base_dir: PathBuf) -> Result<Self, String> {
-        let db_path = base_dir.join("conversations.aedb");
-        let warm_dir = base_dir.join("warm");
-        if let Err(e) = std::fs::create_dir_all(&warm_dir) {
-            return Err(format!("无法创建温数据目录: {}", e));
-        }
+        std::fs::create_dir_all(&base_dir).map_err(|e| format!("无法创建温数据目录: {}", e))?;
 
-        // 初始化 AetherDB 数据库（同步执行一次）
-        let db = AetherDB::open(db_path.clone())?;
-        db.close()?;
+        let store: Arc<dyn MemoryStore> =
+            Arc::new(SqliteMemoryStore::open(&base_dir, EMBEDDING_DIM)?);
 
         let (request_tx, request_rx) = channel::<ArchiveRequest>();
         let (result_tx, result_rx) = channel::<ArchiveResult>();
 
-        let db_path_clone = db_path.clone();
+        let workspace_hash = Arc::new(RwLock::new(String::new()));
+        let reflector_client: Arc<Mutex<Option<aether_ai::AiClient>>> = Arc::new(Mutex::new(None));
+
+        let worker_store = Arc::clone(&store);
+        let worker_base = base_dir.clone();
+        let worker_hash = Arc::clone(&workspace_hash);
+        let worker_reflector = Arc::clone(&reflector_client);
         let handle = std::thread::spawn(move || {
-            Self::archive_worker(db_path_clone, request_rx, result_tx);
+            Self::archive_worker(
+                worker_store,
+                worker_base,
+                worker_hash,
+                worker_reflector,
+                request_rx,
+                result_tx,
+            );
         });
 
         Ok(Self {
-            db_path,
+            base_dir,
+            store,
             request_tx: Some(request_tx),
             result_rx: Some(result_rx),
             worker_handle: Some(handle),
+            workspace_hash,
+            reflector_client,
         })
+    }
+
+    /// 设置当前工作区（归档时会话元数据将绑定其哈希）
+    pub fn set_workspace(&self, path: &Path) {
+        let hash = fnv1a_hex(&path.to_string_lossy());
+        if let Ok(mut guard) = self.workspace_hash.write() {
+            *guard = hash;
+        }
+    }
+
+    /// 启用 ACE Reflector（用当前 AI 配置在归档后自动反思沉淀策略条目）
+    pub fn enable_reflector(&self, settings: &aether_shared::settings::AiSettings) {
+        if settings.api_key.is_empty() {
+            return; // 无 API Key 时静默禁用
+        }
+        if let Ok(mut guard) = self.reflector_client.lock() {
+            *guard = Some(aether_ai::AiClient::new(settings));
+        }
+    }
+
+    /// 检索 playbook 条目并格式化为系统提示注入文本
+    pub fn playbook_context(&self, query: &str, k: usize) -> Result<String, String> {
+        crate::reflector::playbook_context(self.store.as_ref(), query, k)
+    }
+
+    /// 按语义检索 playbook 条目（返回完整条目，供注入时记录使用明细以做反馈归因）
+    pub fn search_playbook(
+        &self,
+        query: &str,
+        k: usize,
+    ) -> Result<Vec<(crate::memory_store::PlaybookBullet, f32)>, String> {
+        let embedding = crate::embedding::embed_text(query);
+        self.store.search_bullets(&embedding, k)
+    }
+
+    /// 条目反馈（helpful=true 记有效，false 记无效）
+    pub fn bullet_feedback(&self, bullet_id: &str, helpful: bool) -> Result<(), String> {
+        self.store.bullet_feedback(bullet_id, helpful)
+    }
+
+    /// 当前工作区哈希（未设置时为空串）
+    pub fn current_workspace_hash(&self) -> String {
+        self.workspace_hash
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    /// 检索会话（关键词 + 可选工作区过滤）
+    pub fn search_conversations(
+        &self,
+        keyword: &str,
+        workspace_only: bool,
+        limit: usize,
+    ) -> Result<Vec<Conversation>, String> {
+        let ws = if workspace_only {
+            let h = self.current_workspace_hash();
+            if h.is_empty() {
+                None
+            } else {
+                Some(h)
+            }
+        } else {
+            None
+        };
+        self.store
+            .search_conversations(keyword, ws.as_deref(), limit)
+    }
+
+    /// 列出 playbook 条目（管理面板数据源）
+    pub fn list_playbook(
+        &self,
+        section: Option<&str>,
+    ) -> Result<Vec<crate::memory_store::PlaybookBullet>, String> {
+        self.store.list_bullets(section)
+    }
+
+    /// 删除 playbook 条目（管理面板手动干预接口）
+    pub fn delete_bullet(&self, bullet_id: &str) -> Result<(), String> {
+        self.store.delete_bullet(bullet_id)
+    }
+
+    /// 执行 grow-and-refine 剪枝（传 dry_run=true 可先预览候选）
+    pub fn prune_bullets(
+        &self,
+        config: &crate::memory_store::PruneConfig,
+    ) -> Result<crate::memory_store::PruneReport, String> {
+        self.store.prune_bullets(config)
+    }
+
+    /// 剪枝审计日志
+    pub fn list_prune_log(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::memory_store::PruneLogEntry>, String> {
+        self.store.list_prune_log(limit)
     }
 
     /// 后台归档线程主循环
     fn archive_worker(
-        db_path: PathBuf,
+        store: Arc<dyn MemoryStore>,
+        base_dir: PathBuf,
+        workspace_hash: Arc<RwLock<String>>,
+        reflector_client: Arc<Mutex<Option<aether_ai::AiClient>>>,
         request_rx: Receiver<ArchiveRequest>,
         result_tx: Sender<ArchiveResult>,
     ) {
-        let db = match AetherDB::open(db_path.clone()) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[WarmData] 归档线程无法打开数据库: {}", e);
-                return;
+        // grow-and-refine：每次启动执行一次保守剪枝（高 harmful 条目清理 + 审计日志）
+        match store.prune_bullets(&crate::memory_store::PruneConfig::default()) {
+            Ok(report) if report.pruned > 0 => {
+                eprintln!(
+                    "[WarmData] 启动剪枝：清理 {} 条高 harmful 条目",
+                    report.pruned
+                );
             }
-        };
+            _ => {}
+        }
 
         while let Ok(req) = request_rx.recv() {
             match req {
                 ArchiveRequest::ArchiveConversation { conv_id, conv } => {
-                    let result = Self::archive_single(&db, &conv_id, &conv);
+                    let hash = workspace_hash.read().map(|g| g.clone()).unwrap_or_default();
+                    let result = Self::archive_single(store.as_ref(), &conv_id, &conv, &hash);
+                    if result.is_ok() {
+                        Self::maybe_reflect(&store, &reflector_client, &conv);
+                    }
                     let _ = result_tx.send(match result {
                         Ok(()) => ArchiveResult::Success { conv_id },
                         Err(e) => ArchiveResult::Failed { conv_id, error: e },
                     });
                 }
                 ArchiveRequest::ArchiveAllDirty { sessions } => {
+                    let hash = workspace_hash.read().map(|g| g.clone()).unwrap_or_default();
                     for conv in sessions {
                         let conv_id = conv.id.clone();
-                        let result = Self::archive_single(&db, &conv_id, &conv);
+                        let result = Self::archive_single(store.as_ref(), &conv_id, &conv, &hash);
+                        if result.is_ok() {
+                            Self::maybe_reflect(&store, &reflector_client, &conv);
+                        }
                         let _ = result_tx.send(match result {
                             Ok(()) => ArchiveResult::Success { conv_id },
                             Err(e) => ArchiveResult::Failed { conv_id, error: e },
@@ -109,8 +245,7 @@ impl WarmDataStore {
                 }
                 ArchiveRequest::RemoveHotLog { conv_id } => {
                     // 删除热数据临时日志
-                    let hot_dir = db_path.parent().unwrap_or(PathBuf::new().as_path()).join("hot");
-                    let log_path = hot_dir.join(format!("{}.log", conv_id));
+                    let log_path = base_dir.join("hot").join(format!("{}.log", conv_id));
                     if log_path.exists() {
                         let _ = std::fs::remove_file(&log_path);
                     }
@@ -119,28 +254,71 @@ impl WarmDataStore {
             }
         }
 
-        // 关闭前 flush
-        let _ = db.flush();
+        let _ = store.flush();
     }
 
-    /// 归档单一会话到 AetherDB
+    /// 归档成功后视情况执行 ACE 反思（仅对含用户消息的真实对话）
+    fn maybe_reflect(
+        store: &Arc<dyn MemoryStore>,
+        reflector_client: &Arc<Mutex<Option<aether_ai::AiClient>>>,
+        conv: &AiConversation,
+    ) {
+        let has_user_msg = conv.messages.iter().any(|m| m.role == AiRole::User);
+        if !has_user_msg || conv.messages.len() < 2 {
+            return;
+        }
+        let guard = match reflector_client.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let client = match guard.as_ref() {
+            Some(c) => c,
+            None => return,
+        };
+        match crate::reflector::reflect_and_curate(store.as_ref(), client, conv) {
+            Ok(n) if n > 0 => {
+                eprintln!("[Reflector] 会话 {} 沉淀了 {} 条策略", conv.id, n);
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("[Reflector] 反思失败 {}: {}", conv.id, e),
+        }
+    }
+
+    /// 归档单一会话（幂等：消息 ID 由 conv_id + msg_index 派生，重复归档不产生重复数据）
     fn archive_single(
-        db: &AetherDB,
+        store: &dyn MemoryStore,
         conv_id: &str,
         conv: &AiConversation,
+        workspace_hash: &str,
     ) -> Result<(), String> {
         // 1. 归档会话元数据
-        let meta_doc = ConversationAdapter::meta_to_document(conv);
-        db.insert(meta_doc)?;
+        store.upsert_conversation(&Conversation {
+            id: conv_id.to_string(),
+            title: conv.title.clone(),
+            workspace_hash: workspace_hash.to_string(),
+            mode: format!("{:?}", conv.mode),
+            created_at: conv.created_at,
+            updated_at: conv.updated_at,
+            message_count: conv.messages.len() as u32,
+        })?;
 
-        // 2. 归档所有消息（每条消息作为独立文档，支持语义检索）
+        // 2. 归档所有消息（稳定 ID + 语义向量）
         for (idx, msg) in conv.messages.iter().enumerate() {
-            let msg_doc = ConversationAdapter::message_to_document(conv_id, msg, idx);
-            db.insert(msg_doc)?;
+            let embedding = embed_text(&msg.content);
+            store.append_message(&ChatMessage {
+                id: format!("{}:{}", conv_id, idx),
+                conv_id: conv_id.to_string(),
+                msg_index: idx as u32,
+                role: role_to_str(&msg.role).to_string(),
+                content: msg.content.clone(),
+                embedding: Some(embedding),
+                schema_ver: 1,
+                created_at: conv.updated_at,
+            })?;
         }
 
-        // 3. 刷写到磁盘
-        db.flush()?;
+        // 3. 刷写（WAL checkpoint）
+        store.flush()?;
 
         Ok(())
     }
@@ -177,194 +355,84 @@ impl WarmDataStore {
         results
     }
 
-    /// 从 AetherDB 加载历史元数据（用于历史列表展示）
+    /// 加载历史会话元数据列表（用于历史列表展示）
     pub fn load_history_meta(&self) -> Result<Vec<ConversationMeta>, String> {
-        let db = AetherDB::open(self.db_path.clone())?;
-
-        // 使用标量过滤查询所有会话元数据
-        let _filter = Filter::Eq(
-            "message_count".to_string(),
-            ScalarValue::Int(0), // 占位：实际应查询所有 conv_id 去重
-        );
-
-        // 简化：直接查询所有文档，按 conv_id 去重取最新
-        let mut seen_convs = std::collections::HashSet::new();
-        let mut results = Vec::new();
-
-        // 使用标量索引查询所有会话（简化实现）
-        // 实际应使用 conv_id 索引进行高效查询
-        let all_docs = db.filter(&Filter::Eq(
-            "conv_id".to_string(),
-            ScalarValue::String("".to_string()), // 占位
-        ));
-
-        for doc in all_docs {
-            if let Some(ScalarValue::String(conv_id)) = doc.scalars.get("conv_id") {
-                if seen_convs.insert(conv_id.clone()) {
-                    let title = doc
-                        .scalars
-                        .get("title")
-                        .and_then(|v| match v {
-                            ScalarValue::String(s) => Some(s.clone()),
-                            _ => None,
-                        })
-                        .unwrap_or_default();
-                    let updated_at = doc
-                        .scalars
-                        .get("updated_at")
-                        .and_then(|v| match v {
-                            ScalarValue::Timestamp(t) => Some(*t),
-                            _ => None,
-                        })
-                        .unwrap_or(doc.created_at);
-                    let message_count = doc
-                        .scalars
-                        .get("message_count")
-                        .and_then(|v| match v {
-                            ScalarValue::Int(n) => Some(*n as usize),
-                            _ => None,
-                        })
-                        .unwrap_or(0);
-
-                    results.push(ConversationMeta {
-                        id: conv_id.clone(),
-                        title,
-                        updated_at,
-                        message_count,
-                        preview: doc.text.chars().take(50).collect::<String>(),
-                    });
-                }
-            }
+        let convs = self.store.list_conversations(500)?;
+        let mut results = Vec::with_capacity(convs.len());
+        for c in convs {
+            // 取最后一条消息作为预览
+            let preview = self
+                .store
+                .get_messages(&c.id)
+                .ok()
+                .and_then(|msgs| msgs.last().map(|m| m.content.clone()))
+                .unwrap_or_default();
+            results.push(ConversationMeta {
+                id: c.id,
+                title: c.title,
+                updated_at: c.updated_at,
+                message_count: c.message_count as usize,
+                preview: preview.chars().take(50).collect(),
+            });
         }
-
-        // 按更新时间降序排序
-        results.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(results)
     }
 
-    /// 从 AetherDB 加载完整会话
+    /// 加载完整会话
     pub fn load_conversation(&self, conv_id: &str) -> Result<AiConversation, String> {
-        let db = AetherDB::open(self.db_path.clone())?;
+        let msgs = self.store.get_messages(conv_id)?;
+        if msgs.is_empty() {
+            return Err("会话不存在或无消息".to_string());
+        }
 
-        // 1. 查询会话元数据
-        let meta_filter = Filter::And(vec![
-            Filter::Eq("conv_id".to_string(), ScalarValue::String(conv_id.to_string())),
-            Filter::Eq("title".to_string(), ScalarValue::String("".to_string())), // 占位
-        ]);
-
-        let meta_docs = db.filter(&meta_filter);
-        let meta_doc = meta_docs.first().ok_or("会话元数据不存在")?;
-
-        let title = meta_doc
-            .scalars
-            .get("title")
-            .and_then(|v| match v {
-                ScalarValue::String(s) => Some(s.clone()),
-                _ => None,
-            })
+        let title = self
+            .store
+            .list_conversations(1000)?
+            .into_iter()
+            .find(|c| c.id == conv_id)
+            .map(|c| c.title)
             .unwrap_or_default();
 
         let mut conv = AiConversation::new(conv_id.to_string(), title);
-        conv.created_at = meta_doc.created_at;
-        conv.updated_at = meta_doc
-            .scalars
-            .get("updated_at")
-            .and_then(|v| match v {
-                ScalarValue::Timestamp(t) => Some(*t),
-                _ => None,
-            })
-            .unwrap_or(meta_doc.created_at);
-
-        // 2. 查询所有消息
-        let msg_filter = Filter::And(vec![
-            Filter::Eq("conv_id".to_string(), ScalarValue::String(conv_id.to_string())),
-            Filter::Eq("role".to_string(), ScalarValue::String("".to_string())), // 占位
-        ]);
-
-        let msg_docs = db.filter(&msg_filter);
-        let mut messages: Vec<(usize, AiMessage)> = Vec::new();
-
-        for doc in msg_docs {
-            if let Some(ScalarValue::Int(idx)) = doc.scalars.get("msg_index") {
-                let role = doc
-                    .scalars
-                    .get("role")
-                    .and_then(|v| match v {
-                        ScalarValue::String(s) => Some(s.as_str()),
-                        _ => None,
-                    })
-                    .unwrap_or("System");
-                let role = match role {
-                    "User" => crate::ai_panel::AiRole::User,
-                    "Assistant" => crate::ai_panel::AiRole::Assistant,
-                    _ => crate::ai_panel::AiRole::System,
-                };
-                let mut msg = AiMessage::new(role, doc.text);
-                msg.reasoning = doc
-                    .scalars
-                    .get("reasoning")
-                    .and_then(|v| match v {
-                        ScalarValue::String(s) => Some(s.clone()),
-                        _ => None,
-                    });
-                messages.push((*idx as usize, msg));
-            }
-        }
-
-        // 按消息索引排序
-        messages.sort_by_key(|(idx, _)| *idx);
-        conv.messages = messages.into_iter().map(|(_, msg)| msg).collect();
-
+        conv.messages = msgs
+            .into_iter()
+            .map(|m| crate::ai_panel::AiMessage::new(str_to_role(&m.role), m.content))
+            .collect();
         Ok(conv)
     }
 
-    /// 语义搜索历史对话
+    /// 语义搜索历史对话（sqlite-vec 向量检索，按会话去重）
     pub fn semantic_search(
         &self,
         query_text: &str,
         k: usize,
     ) -> Result<Vec<(ConversationMeta, f32)>, String> {
-        let db = AetherDB::open(self.db_path.clone())?;
+        let query_embedding = embed_text(query_text);
+        // 候选放大，按会话去重后取前 k
+        let results = self.store.search_messages(&query_embedding, None, k * 4)?;
 
-        // 将查询文本转换为向量
-        let query_vector = ConversationAdapter::text_to_vector(query_text);
-
-        // 执行向量搜索
-        let results = db.search(&query_vector, k, None);
-
-        let mut seen_convs = std::collections::HashSet::new();
-        let mut meta_results = Vec::new();
-
-        for (doc, score) in results {
-            if let Some(ScalarValue::String(conv_id)) = doc.scalars.get("conv_id") {
-                if seen_convs.insert(conv_id.clone()) {
-                    let meta = ConversationMeta {
-                        id: conv_id.clone(),
-                        title: doc
-                            .scalars
-                            .get("title")
-                            .and_then(|v| match v {
-                                ScalarValue::String(s) => Some(s.clone()),
-                                _ => None,
-                            })
-                            .unwrap_or_default(),
-                        updated_at: doc.created_at,
-                        message_count: doc
-                            .scalars
-                            .get("message_count")
-                            .and_then(|v| match v {
-                                ScalarValue::Int(n) => Some(*n as usize),
-                                _ => None,
-                            })
-                            .unwrap_or(0),
-                        preview: doc.text.chars().take(50).collect::<String>(),
-                    };
-                    meta_results.push((meta, score));
-                }
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for (msg, distance) in results {
+            if !seen.insert(msg.conv_id.clone()) {
+                continue;
+            }
+            out.push((
+                ConversationMeta {
+                    id: msg.conv_id.clone(),
+                    title: String::new(), // 标题在列表层另行加载
+                    updated_at: msg.created_at,
+                    message_count: 0,
+                    preview: msg.content.chars().take(50).collect(),
+                },
+                // L2 距离 → 相似度得分（越大越相似）
+                1.0 / (1.0 + distance),
+            ));
+            if out.len() >= k {
+                break;
             }
         }
-
-        Ok(meta_results)
+        Ok(out)
     }
 
     /// 关闭归档线程
@@ -383,5 +451,94 @@ impl WarmDataStore {
 impl Drop for WarmDataStore {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+impl std::fmt::Debug for WarmDataStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WarmDataStore")
+            .field("base_dir", &self.base_dir)
+            .finish()
+    }
+}
+
+// ============================================================================
+// 工具函数
+// ============================================================================
+
+/// 文本 → 向量（经 embedding 模块的全局 ONNX 模型；未初始化时回退 n-gram 哈希）
+fn embed_text(text: &str) -> Vec<f32> {
+    crate::embedding::embed_text(text)
+}
+
+fn role_to_str(role: &AiRole) -> &'static str {
+    match role {
+        AiRole::User => "user",
+        AiRole::Assistant => "assistant",
+        AiRole::System => "system",
+    }
+}
+
+fn str_to_role(s: &str) -> AiRole {
+    match s {
+        "user" => AiRole::User,
+        "assistant" => AiRole::Assistant,
+        _ => AiRole::System,
+    }
+}
+
+/// 工作区路径 → 短哈希（FNV-1a，VS Code workspaceStorage 同款思路）
+fn fnv1a_hex(s: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in s.as_bytes() {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{:016x}", hash)
+}
+
+// ============================================================================
+// 测试
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai_panel::AiMessage;
+
+    #[test]
+    fn test_archive_and_load_roundtrip() {
+        let dir = std::env::temp_dir().join(format!(
+            "aether_warm_test_{}",
+            crate::memory_store::new_id("d")
+        ));
+        let store = SqliteMemoryStore::open(&dir, EMBEDDING_DIM).unwrap();
+
+        let mut conv = AiConversation::new("c1".to_string(), "测试会话".to_string());
+        conv.messages
+            .push(AiMessage::new(AiRole::User, "你好".to_string()));
+        conv.messages.push(AiMessage::new(
+            AiRole::Assistant,
+            "你好！有什么可以帮你？".to_string(),
+        ));
+
+        WarmDataStore::archive_single(&store, "c1", &conv, "ws-hash-1").unwrap();
+        // 重复归档应幂等（消息数不变）
+        WarmDataStore::archive_single(&store, "c1", &conv, "ws-hash-1").unwrap();
+
+        let msgs = store.get_messages("c1").unwrap();
+        assert_eq!(msgs.len(), 3); // system 欢迎语 + user + assistant
+        assert_eq!(msgs[1].content, "你好");
+
+        // 语义检索能找到归档内容
+        let hits = store.search_messages(&embed_text("你好"), None, 5).unwrap();
+        assert!(!hits.is_empty());
+
+        let convs = store.list_conversations(10).unwrap();
+        assert_eq!(convs.len(), 1);
+        assert_eq!(convs[0].title, "测试会话");
+        assert_eq!(convs[0].workspace_hash, "ws-hash-1");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

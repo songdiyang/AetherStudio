@@ -450,6 +450,68 @@ unsafe fn lbd_right_panel_tabs(
             return Some(LRESULT(0));
         }
     }
+    // 2.1 历史面板「仅当前工作区」开关
+    {
+        let toggle_hit = {
+            let st = state.borrow();
+            st.ai_panel
+                .history_ws_toggle_region
+                .filter(|_| st.ai_panel.history_open)
+                .map(|(rx, ry, rw, rh)| {
+                    mouse_x >= rx && mouse_x < rx + rw && mouse_y >= ry && mouse_y < ry + rh
+                })
+                .unwrap_or(false)
+        };
+        if toggle_hit {
+            let mut st = state.borrow_mut();
+            st.ai_panel.toggle_history_workspace_only();
+            st.refresh_ai_history();
+            drop(st);
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        }
+    }
+    // 2.2 Playbook 策略库按钮：切换管理面板
+    {
+        let mut st = state.borrow_mut();
+        if let Some((px, py, pw, ph)) = st.ai_panel.playbook_button_region {
+            if mouse_x >= px && mouse_x < px + pw && mouse_y >= py && mouse_y < py + ph {
+                st.ai_panel.toggle_playbook_panel();
+                drop(st);
+                invalidate_window(hwnd);
+                return Some(LRESULT(0));
+            }
+        }
+    }
+    // 2.3 Playbook 条目删除按钮（需二次确认）
+    {
+        let del_hit = {
+            let st = state.borrow();
+            if st.ai_panel.playbook_open {
+                hit(&st.ai_panel.playbook_delete_regions)
+            } else {
+                None
+            }
+        };
+        if let Some(i) = del_hit {
+            let mut st = state.borrow_mut();
+            let content = st
+                .ai_panel
+                .playbook_items
+                .get(i)
+                .map(|b| b.content.clone())
+                .unwrap_or_default();
+            let msg = format!("确定删除这条策略吗？\n\n{}", content);
+            if crate::dialogs::Dialogs::confirm_yes_no(hwnd, "删除策略条目", &msg) {
+                if let Err(e) = st.ai_panel.delete_playbook_item(i) {
+                    st.status_message = format!("删除策略失败: {}", e);
+                }
+            }
+            drop(st);
+            invalidate_window(hwnd);
+            return Some(LRESULT(0));
+        }
+    }
     // 3. 关闭标签（优先于切换，避免点 × 时误切换）
     {
         let close_hit = {

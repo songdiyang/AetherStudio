@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use crate::ai_panel::{AiConversation, AiMessage, now_secs};
+use crate::ai_panel::{now_secs, AiConversation, AiMessage};
 
 /// 热数据阶段：活跃会话的内存状态 + mmap 增量日志
 ///
@@ -69,10 +69,7 @@ pub enum LogEntry {
         mode: crate::ai_prompt::AiMode,
     },
     /// 会话关闭（标记归档点）
-    ConversationClosed {
-        conv_id: String,
-        closed_at: u64,
-    },
+    ConversationClosed { conv_id: String, closed_at: u64 },
 }
 
 impl HotDataStore {
@@ -102,7 +99,7 @@ impl HotDataStore {
     }
 
     /// 同步 AiPanel 的当前状态到热数据（每次消息变更后调用）
-    /// 
+    ///
     /// 注意：panel 参数以值传递（克隆）传入，避免借用冲突
     pub fn sync_from_panel(&mut self, panel: crate::ai_panel::AiPanel) {
         self.last_activity_at.store(now_secs(), Ordering::Relaxed);
@@ -232,8 +229,7 @@ impl MmapLogWriter {
         };
 
         let mmap = unsafe {
-            memmap2::MmapMut::map_mut(&file)
-                .map_err(|e| format!("mmap 日志文件失败: {}", e))?
+            memmap2::MmapMut::map_mut(&file).map_err(|e| format!("mmap 日志文件失败: {}", e))?
         };
 
         Ok(Self {
@@ -245,8 +241,7 @@ impl MmapLogWriter {
 
     /// 追加单条日志条目（序列化为 JSON Lines 格式）
     pub fn append(&mut self, entry: LogEntry) -> Result<(), String> {
-        let line = serde_json::to_string(&entry)
-            .map_err(|e| format!("日志序列化失败: {}", e))?;
+        let line = serde_json::to_string(&entry).map_err(|e| format!("日志序列化失败: {}", e))?;
         let bytes = line.as_bytes();
         let len = bytes.len();
         let newline_len = 1; // '\n'
@@ -340,7 +335,12 @@ mod tests {
         let temp_dir = std::env::temp_dir().join("aether_test_hot");
         let _ = std::fs::remove_dir_all(&temp_dir);
         let mut store = HotDataStore::new(temp_dir.clone()).unwrap();
-        store.last_activity_at.store(now_secs() - 31, Ordering::Relaxed);
+        store
+            .last_activity_at
+            .store(now_secs() - 31, Ordering::Relaxed);
+        // 空闲超时 + 存在脏会话时才应触发归档
+        assert!(!store.should_warm_archive());
+        store.dirty_conversations.insert("conv-1".to_string());
         assert!(store.should_warm_archive());
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
