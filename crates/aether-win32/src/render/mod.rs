@@ -721,6 +721,11 @@ impl EditorState {
             self.render_explorer_context_menu(&target);
         }
 
+        // 13b. 文件节点右键上下文菜单（最上层渲染）
+        if self.file_node_context_menu.is_open {
+            self.render_file_node_context_menu(&target);
+        }
+
         // 14. 标签右键上下文菜单（最顶层渲染，覆盖所有内容）
         if self.tab_context_menu.visible {
             self.render_tab_context_menu(&target);

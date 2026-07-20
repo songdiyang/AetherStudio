@@ -328,6 +328,10 @@ impl EditorState {
         self.folder_generation = self.folder_generation.wrapping_add(1);
         let generation = self.folder_generation;
         self.current_folder = Some(path.clone());
+        // 工作区哈希绑定：后续对话归档将关联该工作区（VS Code workspaceStorage 同款）
+        if let Some(warm) = self.ai_panel.warm_data_store.as_ref() {
+            warm.set_workspace(&path);
+        }
         // 同步终端工作目录到新工作区
         self.terminal_panel.cwd = path.to_string_lossy().to_string();
         // 立即持久化 last_workspace，避免仅在窗口关闭时保存导致下次启动恢复的是旧工作区

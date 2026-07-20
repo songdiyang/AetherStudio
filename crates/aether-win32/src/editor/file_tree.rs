@@ -32,17 +32,28 @@ impl EditorState {
         };
         base + input_offset_y - self.sidebar_scroll_y
     }
-    /// 开始文件树内联输入（新建文件/文件夹）
+    /// 开始文件树内联输入（新建文件/文件夹/重命名）
     pub fn start_file_tree_input(&mut self, kind: FileTreeInputKind) {
-        let default_name = match kind {
-            FileTreeInputKind::NewFile => "新建文件.txt",
-            FileTreeInputKind::NewFolder => "新建文件夹",
+        let (default_name, target_node) = match kind {
+            FileTreeInputKind::NewFile => ("新建文件.txt".to_string(), None),
+            FileTreeInputKind::NewFolder => ("新建文件夹".to_string(), None),
+            FileTreeInputKind::Rename => {
+                let node_idx = self.selected_file_node;
+                let name = node_idx.and_then(|idx| {
+                    self.file_tree.as_ref().and_then(|tree| {
+                        tree.get_node(idx)
+                            .map(|node| tree.get_name(node).to_string())
+                    })
+                });
+                (name.unwrap_or_default(), node_idx)
+            }
         };
         self.file_tree_input = Some(FileTreeInput {
             kind,
-            value: default_name.to_string(),
+            value: default_name,
             caret_visible: true,
             composition: None,
+            target_node,
         });
         self.dirty_tracker.mark_region(
             self.layout.sidebar_region().x,
@@ -128,6 +139,51 @@ impl EditorState {
                 } else {
                     self.status_message = format!("已创建文件夹: {}", name);
                     self.refresh_file_tree();
+                }
+            }
+            FileTreeInputKind::Rename => {
+                if let Some(node_idx) = input.target_node {
+                    if let Some(old_path) = self.get_node_path(node_idx) {
+                        let parent = old_path.parent();
+                        let new_path = parent
+                            .map(|p| p.join(name))
+                            .unwrap_or_else(|| base_path.join(name));
+                        if old_path == new_path {
+                            // 名称未改变，无需操作
+                        } else if new_path.exists() {
+                            self.status_message = format!("{} 已存在", name);
+                            self.file_tree_input = Some(input);
+                            self.dirty_tracker.mark_region(
+                                self.layout.sidebar_region().x,
+                                self.layout.sidebar_region().y,
+                                self.layout.sidebar_region().width,
+                                self.layout.sidebar_region().height,
+                                crate::dirty_rect::DirtyRegionType::Sidebar,
+                            );
+                            return;
+                        } else if let Err(e) = std::fs::rename(&old_path, &new_path) {
+                            self.status_message = format!("重命名失败: {}", e);
+                        } else {
+                            self.status_message = format!("已重命名为: {}", name);
+                            // 如果重命名的文件当前已打开，更新标签页路径
+                            let old_path_str = old_path.to_string_lossy().to_string();
+                            for tab in &mut self.tabs {
+                                if let Some(file_content) = tab.as_file_mut() {
+                                    if let Some(ref fp) = file_content.file_path {
+                                        if fp.to_string_lossy() == old_path_str {
+                                            file_content.file_path = Some(new_path.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(ref active_path) = self.content.file_path {
+                                if active_path.to_string_lossy() == old_path_str {
+                                    self.content.file_path = Some(new_path.clone());
+                                }
+                            }
+                            self.refresh_file_tree();
+                        }
+                    }
                 }
             }
         }
@@ -221,32 +277,50 @@ impl EditorState {
 
     /// 工作区根目录的轻量签名（子项名称+类型+修改时间哈希）。
     /// 用于 AI 终端命令后检测文件变化，仅在变化时才刷新，避免无谓重建/闪烁。
+    /// 除根目录外，当前已展开的子目录也纳入签名——否则 `mkdir src\utils` 这类
+    /// 嵌套变化不会反映到根目录签名上，文件树无法自动刷新。
     pub fn workspace_root_signature(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         if let Some(folder) = self.current_folder.as_ref() {
-            if let Ok(rd) = std::fs::read_dir(folder) {
-                let mut items: Vec<(String, bool, u64)> = Vec::new();
-                for e in rd.flatten() {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                    let mtime = e
-                        .metadata()
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    items.push((name, is_dir, mtime));
-                }
-                items.sort();
-                for it in items {
-                    it.hash(&mut hasher);
-                }
+            Self::hash_dir_level(&mut hasher, folder);
+            // 已展开目录的子项也参与签名（排序保证签名稳定）
+            let mut expanded: Vec<PathBuf> =
+                self.capture_expanded_dir_paths().into_iter().collect();
+            expanded.sort();
+            for rel in expanded {
+                let abs = folder.join(&rel);
+                rel.hash(&mut hasher); // 分隔不同目录的子项序列
+                Self::hash_dir_level(&mut hasher, &abs);
             }
         }
         hasher.finish()
     }
+
+    /// 把某目录一层的子项（名称+类型+mtime）写入哈希（排序保证确定性）
+    fn hash_dir_level(hasher: &mut impl std::hash::Hasher, dir: &std::path::Path) {
+        use std::hash::Hash;
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            let mut items: Vec<(String, bool, u64)> = Vec::new();
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                let mtime = e
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                items.push((name, is_dir, mtime));
+            }
+            items.sort();
+            for it in items {
+                it.hash(hasher);
+            }
+        }
+    }
+
     /// 在 Windows 文件资源管理器中打开当前工作区文件夹。
     /// 通过 ShellExecuteW 调用系统 explorer.exe，无纯 Rust 依赖。
     pub fn open_in_file_explorer(&mut self) {
@@ -281,6 +355,125 @@ impl EditorState {
             self.status_message = format!("已复制路径: {}", path_str);
         } else {
             self.status_message = "复制路径失败".to_string();
+        }
+    }
+    /// 复制文件节点的绝对路径到剪贴板。
+    pub fn copy_node_path(&mut self, node_idx: u32) {
+        let Some(path) = self.get_node_path(node_idx) else {
+            self.status_message = "无法获取文件路径".to_string();
+            return;
+        };
+        let path_str = path.to_string_lossy().to_string();
+        if Self::set_clipboard_text(&path_str) {
+            self.status_message = format!("已复制路径: {}", path_str);
+        } else {
+            self.status_message = "复制路径失败".to_string();
+        }
+    }
+    /// 在文件资源管理器中打开指定节点路径。
+    pub fn open_node_in_explorer(&mut self, node_idx: u32) {
+        let Some(path) = self.get_node_path(node_idx) else {
+            self.status_message = "无法获取文件路径".to_string();
+            return;
+        };
+        let path_str = path.to_string_lossy().to_string();
+        let wide: Vec<u16> = path_str.encode_utf16().chain(Some(0)).collect();
+        unsafe {
+            use windows::Win32::UI::Shell::ShellExecuteW;
+            let operation: Vec<u16> = "open\0".encode_utf16().collect();
+            let _ = ShellExecuteW(
+                None,
+                windows::core::PCWSTR(operation.as_ptr()),
+                windows::core::PCWSTR(wide.as_ptr()),
+                windows::core::PCWSTR::null(),
+                None,
+                windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+            );
+        }
+        self.status_message = format!("已在文件资源管理器中打开: {}", path_str);
+    }
+    /// 删除文件节点（文件或文件夹）。
+    pub fn delete_file_node(&mut self, node_idx: u32) {
+        let Some(path) = self.get_node_path(node_idx) else {
+            self.status_message = "无法获取文件路径".to_string();
+            return;
+        };
+        let Some(tree) = self.file_tree.as_ref() else {
+            return;
+        };
+        let Some(node) = tree.get_node(node_idx) else {
+            return;
+        };
+        let is_dir = node.kind == aether_core::workspace::file_tree::FileKind::Directory;
+        let name = tree.get_name(node).to_string();
+
+        let result = if is_dir {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+
+        match result {
+            Ok(()) => {
+                self.status_message = format!("已删除: {}", name);
+                // 如果删除的文件当前已打开，关闭对应的标签页
+                let path_str = path.to_string_lossy().to_string();
+                let mut tabs_to_close: Vec<usize> = Vec::new();
+                for (i, tab) in self.tabs.iter().enumerate() {
+                    if let Some(ref fp) = tab.file_path() {
+                        if fp.to_string_lossy() == path_str {
+                            tabs_to_close.push(i);
+                        }
+                    }
+                }
+                // 从后往前关闭，避免索引偏移
+                for idx in tabs_to_close.into_iter().rev() {
+                    self.close_tab(idx);
+                }
+                // 如果当前活动文件被删除，清空编辑器
+                if let Some(ref active_path) = self.content.file_path {
+                    if active_path.to_string_lossy() == path_str {
+                        self.content.buffer =
+                            aether_core::buffer::piece_table::PieceTable::from_string(String::new());
+                        self.content.file_path = None;
+                        self.content.is_dirty = false;
+                    }
+                }
+                self.selected_file_node = None;
+                self.refresh_file_tree();
+            }
+            Err(e) => {
+                self.status_message = format!("删除失败: {}", e);
+            }
+        }
+    }
+    /// 执行文件节点上下文菜单项对应的动作。
+    /// 返回 true 表示动作已处理（调用方负责重绘）。
+    pub fn execute_file_node_context_action(
+        &mut self,
+        item: crate::context_menu::FileNodeContextMenuItem,
+        node_idx: u32,
+    ) -> bool {
+        use crate::context_menu::FileNodeContextMenuItem as Item;
+        match item {
+            Item::Rename => {
+                self.selected_file_node = Some(node_idx);
+                self.start_file_tree_input(FileTreeInputKind::Rename);
+                true
+            }
+            Item::Delete => {
+                self.delete_file_node(node_idx);
+                true
+            }
+            Item::RevealInExplorer => {
+                self.open_node_in_explorer(node_idx);
+                true
+            }
+            Item::CopyPath => {
+                self.copy_node_path(node_idx);
+                true
+            }
+            _ => false,
         }
     }
     /// 执行资源管理器空白区域上下文菜单项对应的动作。
@@ -712,5 +905,34 @@ impl EditorState {
         } else {
             lines.join("\n")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EditorState;
+    use std::hash::Hasher;
+
+    fn dir_sig(dir: &std::path::Path) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        EditorState::hash_dir_level(&mut hasher, dir);
+        hasher.finish()
+    }
+
+    #[test]
+    fn test_hash_dir_level_detects_new_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "aether_sig_test_{}",
+            crate::memory_store::new_id("d")
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sig1 = dir_sig(&dir);
+        // 新文件产生 → 签名必须变化
+        std::fs::write(dir.join("new_file.txt"), "hello").unwrap();
+        let sig2 = dir_sig(&dir);
+        assert_ne!(sig1, sig2);
+        // 无变化 → 签名稳定
+        assert_eq!(sig2, dir_sig(&dir));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

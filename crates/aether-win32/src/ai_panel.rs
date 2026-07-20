@@ -190,6 +190,8 @@ pub struct AiConversation {
     pub selected_change_index: usize,
     pub stream_state: Arc<Mutex<AiStreamState>>,
     pub should_stop: Arc<AtomicBool>,
+    /// 本轮注入过的 playbook 条目 ID（用于接受/拒绝编辑时的反馈归因）
+    pub used_bullet_ids: Vec<String>,
 }
 
 impl AiConversation {
@@ -216,6 +218,7 @@ impl AiConversation {
             selected_change_index: 0,
             stream_state: Arc::new(Mutex::new(AiStreamState::default())),
             should_stop: Arc::new(AtomicBool::new(false)),
+            used_bullet_ids: Vec::new(),
         }
     }
 
@@ -331,7 +334,7 @@ pub struct ConversationMeta {
 }
 
 /// AI 助手面板状态
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct AiPanel {
     /// 是否可见
     pub visible: bool,
@@ -408,8 +411,22 @@ pub struct AiPanel {
     pub history: Vec<ConversationMeta>,
     /// 思考块折叠切换命中区 (msg_index, x, y, w, h)（作用于活动会话 messages 索引）
     pub reasoning_toggle_regions: Vec<(usize, f32, f32, f32, f32)>,
-    /// 历史持久化存储（Phase 2：磁盘读写）
-    pub history_store: Option<crate::ai_history::AiHistoryStore>,
+    /// 热数据持久化存储（三阶段架构：热/温）
+    pub hot_data_store: Option<crate::ai_hot_data::HotDataStore>,
+    /// 温数据持久化存储（MemoryStore：SQLite + sqlite-vec）
+    pub warm_data_store: Option<crate::ai_warm_data::WarmDataStore>,
+    /// 历史列表：仅显示当前工作区的会话
+    pub history_workspace_only: bool,
+    /// Playbook 管理面板是否展开
+    pub playbook_open: bool,
+    /// Playbook 面板条目缓存（展开时从 SQLite 加载）
+    pub playbook_items: Vec<crate::memory_store::PlaybookBullet>,
+    /// Playbook 标题栏按钮命中区 (x, y, w, h)
+    pub playbook_button_region: Option<(f32, f32, f32, f32)>,
+    /// Playbook 条目删除按钮命中区 (item_index, x, y, w, h)
+    pub playbook_delete_regions: Vec<(usize, f32, f32, f32, f32)>,
+    /// 历史面板「仅当前工作区」开关命中区 (x, y, w, h)
+    pub history_ws_toggle_region: Option<(f32, f32, f32, f32)>,
 }
 
 impl AiPanel {
@@ -455,7 +472,146 @@ impl AiPanel {
             history_item_regions: Vec::new(),
             history: Vec::new(),
             reasoning_toggle_regions: Vec::new(),
-            history_store: Some(crate::ai_history::AiHistoryStore::default()),
+            hot_data_store: Self::init_hot_data_store(),
+            warm_data_store: Self::init_warm_data_store(),
+            history_workspace_only: false,
+            playbook_open: false,
+            playbook_items: Vec::new(),
+            playbook_button_region: None,
+            playbook_delete_regions: Vec::new(),
+            history_ws_toggle_region: None,
+        }
+    }
+
+    /// 初始化热数据存储
+    fn init_hot_data_store() -> Option<crate::ai_hot_data::HotDataStore> {
+        let base_dir = dirs::config_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Aether")
+            .join("conversations");
+        match crate::ai_hot_data::HotDataStore::new(base_dir) {
+            Ok(store) => Some(store),
+            Err(e) => {
+                eprintln!("[AiPanel] 热数据存储初始化失败: {}", e);
+                None
+            }
+        }
+    }
+
+    /// 初始化温数据存储
+    fn init_warm_data_store() -> Option<crate::ai_warm_data::WarmDataStore> {
+        let base_dir = dirs::config_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Aether")
+            .join("conversations");
+        match crate::ai_warm_data::WarmDataStore::new(base_dir) {
+            Ok(store) => Some(store),
+            Err(e) => {
+                eprintln!("[AiPanel] 温数据存储初始化失败: {}", e);
+                None
+            }
+        }
+    }
+
+    /// 同步当前状态到热数据存储
+    fn sync_hot_data(&mut self) {
+        // 先 snapshot 到槽位，确保热数据看到的是完整状态
+        self.snapshot_active_into_slot();
+        if let Some(store) = self.hot_data_store.take() {
+            let panel_clone = self.clone_for_sync();
+            let mut new_store = store;
+            new_store.sync_from_panel(panel_clone);
+            self.hot_data_store = Some(new_store);
+        }
+    }
+
+    /// 为热数据同步克隆必要字段（避免 Clone 整个 AiPanel）
+    fn clone_for_sync(&self) -> crate::ai_panel::AiPanel {
+        crate::ai_panel::AiPanel {
+            visible: self.visible,
+            messages: self.messages.clone(),
+            input: self.input.clone(),
+            is_generating: self.is_generating,
+            scroll_y: self.scroll_y,
+            hover_apply_button: self.hover_apply_button,
+            stream_state: Arc::clone(&self.stream_state),
+            input_focused: self.input_focused,
+            mode: self.mode,
+            model_menu_open: self.model_menu_open,
+            attachments: self.attachments.clone(),
+            mode_button_regions: self.mode_button_regions.clone(),
+            attachment_chip_regions: self.attachment_chip_regions.clone(),
+            change_action_regions: self.change_action_regions.clone(),
+            hover_attachment: self.hover_attachment,
+            pending_edits: self.pending_edits.clone(),
+            diff_view: self.diff_view.clone(),
+            show_diff_view: self.show_diff_view,
+            selected_change_index: self.selected_change_index,
+            content_height: self.content_height,
+            code_save_regions: self.code_save_regions.clone(),
+            stick_to_bottom: self.stick_to_bottom,
+            caret_pos: self.caret_pos,
+            caret_visible: self.caret_visible,
+            composition: self.composition.clone(),
+            should_stop: Arc::clone(&self.should_stop),
+            conversations: self.conversations.clone(),
+            active: self.active,
+            tab_regions: self.tab_regions.clone(),
+            tab_close_regions: self.tab_close_regions.clone(),
+            new_tab_region: self.new_tab_region,
+            history_button_region: self.history_button_region,
+            hover_tab: self.hover_tab,
+            history_open: self.history_open,
+            history_item_regions: self.history_item_regions.clone(),
+            history: self.history.clone(),
+            reasoning_toggle_regions: self.reasoning_toggle_regions.clone(),
+            hot_data_store: None,
+            warm_data_store: None,
+            history_workspace_only: self.history_workspace_only,
+            playbook_open: self.playbook_open,
+            playbook_items: Vec::new(),
+            playbook_button_region: None,
+            playbook_delete_regions: Vec::new(),
+            history_ws_toggle_region: None,
+        }
+    }
+
+    /// 触发温数据归档（空闲时调用）
+    pub fn trigger_warm_archive(&mut self) {
+        // 1. 先收割归档结果：后台线程异步完成，结果在后续调用中才就绪
+        let results = self
+            .warm_data_store
+            .as_ref()
+            .map(|s| s.poll_results())
+            .unwrap_or_default();
+        for result in results {
+            match result {
+                crate::ai_warm_data::ArchiveResult::Success { conv_id } => {
+                    if let Some(hot_store) = self.hot_data_store.as_mut() {
+                        hot_store.clear_dirty(&conv_id);
+                    }
+                    if let Some(warm_store) = self.warm_data_store.as_ref() {
+                        warm_store.request_remove_hot_log(conv_id);
+                    }
+                }
+                crate::ai_warm_data::ArchiveResult::Failed { conv_id, error } => {
+                    eprintln!("[AiPanel] 归档失败 {}: {}", conv_id, error);
+                }
+            }
+        }
+
+        // 2. 空闲且有脏会话时发起新一轮归档
+        if let Some(hot_store) = self.hot_data_store.as_mut() {
+            if hot_store.should_warm_archive() {
+                let dirty_sessions: Vec<crate::ai_panel::AiConversation> = hot_store
+                    .dirty_sessions()
+                    .iter()
+                    .map(|c| (*c).clone())
+                    .collect();
+                if let Some(warm_store) = self.warm_data_store.as_ref() {
+                    warm_store.request_archive_all(dirty_sessions);
+                }
+            }
         }
     }
 
@@ -605,10 +761,9 @@ impl AiPanel {
             if self.history.len() > MAX_HISTORY {
                 self.history.truncate(MAX_HISTORY);
             }
-            // 持久化到磁盘
-            if let Some(store) = self.history_store.as_ref() {
-                let _ = store.save_conversation(conv);
-                let _ = store.save_all(&self.history);
+            // 持久化：异步归档进 SQLite（温数据层，含向量索引）
+            if let Some(warm_store) = self.warm_data_store.as_ref() {
+                warm_store.request_archive(conv.id.clone(), conv.clone());
             }
         }
         if idx == self.active {
@@ -648,19 +803,17 @@ impl AiPanel {
             self.history_open = false;
             return;
         }
-        // 否则尝试从磁盘加载完整会话，失败则创建占位会话
+        // 否则尝试从 SQLite 加载完整会话，失败则创建占位会话
         self.snapshot_active_into_slot();
-        let conv = if let Some(store) = self.history_store.as_ref() {
-            store.load_conversation(&id).unwrap_or_else(|| {
+        let conv = self
+            .warm_data_store
+            .as_ref()
+            .and_then(|store| store.load_conversation(&id).ok())
+            .unwrap_or_else(|| {
                 let mut c = AiConversation::new(id, title);
                 c.updated_at = updated_at;
                 c
-            })
-        } else {
-            let mut c = AiConversation::new(id, title);
-            c.updated_at = updated_at;
-            c
-        };
+            });
         self.conversations.push(conv);
         let new_idx = self.conversations.len() - 1;
         self.load_slot_into_active(new_idx);
@@ -754,6 +907,7 @@ impl AiPanel {
     pub fn add_user_message(&mut self, content: String) {
         self.messages.push(AiMessage::new(AiRole::User, content));
         self.stick_to_bottom = true;
+        self.sync_hot_data();
     }
 
     /// 添加助手消息
@@ -761,6 +915,7 @@ impl AiPanel {
         self.messages
             .push(AiMessage::new(AiRole::Assistant, content));
         self.stick_to_bottom = true;
+        self.sync_hot_data();
     }
 
     /// 发送消息（AI-H01: 非阻塞 — HTTP 调用在后台线程执行，结果通过 stream_state 流式返回）
@@ -853,6 +1008,25 @@ impl AiPanel {
         // 系统前缀（system/Agent 能力/模式/上下文）+ 经窗口切片的会话历史（含本轮输入），
         // 保证同一轮对话上下文连续；历史来自本会话的 self.messages，天然与其它标签页隔离。
         let mut messages = build_chat_prompt(&settings, &context, mode);
+        // ACE playbook：注入已沉淀的经验策略，并记录条目 ID 供反馈归因
+        let mut used_bullet_ids: Vec<String> = Vec::new();
+        if let Some(warm) = self.warm_data_store.as_ref() {
+            if let Ok(hits) = warm.search_playbook(&user_input, 5) {
+                if !hits.is_empty() {
+                    used_bullet_ids = hits.iter().map(|(b, _)| b.id.clone()).collect();
+                    messages.push(ChatMessage {
+                        role: "system".to_string(),
+                        content: crate::reflector::format_bullets(&hits),
+                    });
+                }
+            }
+        }
+        // 记录到活动会话槽位（接受/拒绝编辑时回填 helpful/harmful）
+        if !used_bullet_ids.is_empty() {
+            if let Some(slot) = self.conversations.get_mut(self.active) {
+                slot.used_bullet_ids = used_bullet_ids;
+            }
+        }
         messages.extend(Self::history_to_chat_messages(&self.messages));
         let stream_state = Arc::clone(&self.stream_state);
         let should_stop = Arc::clone(&self.should_stop);
@@ -1151,6 +1325,8 @@ impl AiPanel {
                     self.parse_pending_edits(None, current_folder);
                 }
                 just_completed = true;
+                // 同步热数据（生成完成，消息已最终确定）
+                self.sync_hot_data();
             }
         }
         just_completed
@@ -1206,12 +1382,32 @@ impl AiPanel {
         }
         let applied = editor.apply_ai_workspace_edits(&edits)?;
         self.clear_pending_changes();
+        // ACE 反馈：编辑被采纳 → 本轮注入的策略条目记为有效
+        self.feedback_bullets(true);
         Ok(applied)
     }
 
     /// 拒绝所有待确认编辑
     pub fn reject_all_changes(&mut self) {
         self.clear_pending_changes();
+        // ACE 反馈：编辑被拒绝 → 本轮注入的策略条目记为无效
+        self.feedback_bullets(false);
+    }
+
+    /// 将活动会话本轮使用的 playbook 条目反馈给权重计数器
+    fn feedback_bullets(&mut self, helpful: bool) {
+        let Some(slot) = self.conversations.get_mut(self.active) else {
+            return;
+        };
+        if slot.used_bullet_ids.is_empty() {
+            return;
+        }
+        let ids = std::mem::take(&mut slot.used_bullet_ids);
+        if let Some(warm) = self.warm_data_store.as_ref() {
+            for id in ids {
+                let _ = warm.bullet_feedback(&id, helpful);
+            }
+        }
     }
 
     /// 从最后一条助手消息中提取代码块
@@ -1405,6 +1601,45 @@ impl AiPanel {
         self.history_button_region = None;
         self.history_item_regions.clear();
         self.reasoning_toggle_regions.clear();
+        self.playbook_button_region = None;
+        self.playbook_delete_regions.clear();
+        self.history_ws_toggle_region = None;
+    }
+
+    // ===== Playbook 管理面板 =====
+
+    /// 切换 Playbook 管理面板展开/收起（展开时从 SQLite 加载条目）
+    pub fn toggle_playbook_panel(&mut self) {
+        self.playbook_open = !self.playbook_open;
+        if self.playbook_open {
+            self.reload_playbook();
+        }
+    }
+
+    /// 重新加载 Playbook 条目缓存
+    pub fn reload_playbook(&mut self) {
+        if let Some(warm) = self.warm_data_store.as_ref() {
+            self.playbook_items = warm.list_playbook(None).unwrap_or_default();
+        }
+    }
+
+    /// 删除指定下标的 Playbook 条目（调用方需先弹确认）
+    pub fn delete_playbook_item(&mut self, idx: usize) -> Result<(), String> {
+        let id = self
+            .playbook_items
+            .get(idx)
+            .map(|b| b.id.clone())
+            .ok_or_else(|| "条目不存在".to_string())?;
+        if let Some(warm) = self.warm_data_store.as_ref() {
+            warm.delete_bullet(&id)?;
+        }
+        self.reload_playbook();
+        Ok(())
+    }
+
+    /// 切换历史列表的工作区过滤
+    pub fn toggle_history_workspace_only(&mut self) {
+        self.history_workspace_only = !self.history_workspace_only;
     }
 }
 

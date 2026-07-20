@@ -12,8 +12,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::{
     compute_cursor_for_pos, create_editor_window, get_and_set_state, invalidate_window,
-    AI_TIMER_ID, CARET_TIMER_ID, EDITOR_STATE, HIGHLIGHT_TIMER_ID, HOVER_TIMER_ID, LP_THRESHOLD_MS,
-    LP_TIMER_ID, TERM_TIMER_ID,
+    AI_ARCHIVE_TIMER_ID, AI_TIMER_ID, CARET_TIMER_ID, EDITOR_STATE, HIGHLIGHT_TIMER_ID,
+    HOVER_TIMER_ID, LP_THRESHOLD_MS, LP_TIMER_ID, TERM_TIMER_ID,
 };
 use crate::auto_save::{AUTOSAVE_DEBOUNCE_TIMER_ID, AUTOSAVE_PERIODIC_TIMER_ID};
 
@@ -42,6 +42,17 @@ pub(crate) unsafe fn on_timer(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LP
     }
     if wparam.0 == AUTOSAVE_PERIODIC_TIMER_ID {
         return on_timer_autosave_periodic(hwnd);
+    }
+    if wparam.0 == AI_ARCHIVE_TIMER_ID {
+        return on_timer_ai_archive(hwnd);
+    }
+    LRESULT(0)
+}
+
+/// AI 温数据归档：周期检查空闲会话并异步归档进 MemoryStore（SQLite）
+unsafe fn on_timer_ai_archive(hwnd: HWND) -> LRESULT {
+    if let Some(state) = get_and_set_state(hwnd) {
+        state.borrow_mut().ai_panel.trigger_warm_archive();
     }
     LRESULT(0)
 }

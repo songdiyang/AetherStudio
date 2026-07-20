@@ -45,6 +45,10 @@ pub const CARET_TIMER_ID: usize = 0xA004;
 pub(crate) const AI_TIMER_ID: usize = 0xA005;
 /// 语法高亮刷新定时器 ID（打开文件后周期性重绘，直到后台高亮结果到达并着色，随后自动停止）
 pub(crate) const HIGHLIGHT_TIMER_ID: usize = 0xA006;
+/// AI 对话温数据归档定时器 ID（周期检查空闲会话，归档进 MemoryStore）
+pub(crate) const AI_ARCHIVE_TIMER_ID: usize = 0xA007;
+/// AI 归档检查间隔（毫秒）：每 5 秒检查一次是否满足「空闲 30 秒」归档条件
+pub(crate) const AI_ARCHIVE_MS: u32 = 5000;
 /// 长按阈值（毫秒）
 pub(crate) const LP_THRESHOLD_MS: u32 = 500;
 /// 终端刷新间隔（毫秒），约 20fps 足以实时显示 shell 输出
