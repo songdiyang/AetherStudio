@@ -12,8 +12,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::{
     compute_cursor_for_pos, create_editor_window, get_and_set_state, invalidate_window,
-    AI_TIMER_ID, CARET_TIMER_ID, EDITOR_STATE, HIGHLIGHT_TIMER_ID, HOVER_TIMER_ID, LP_THRESHOLD_MS,
-    LP_TIMER_ID, TERM_TIMER_ID,
+    AI_ARCHIVE_TIMER_ID, AI_TIMER_ID, CARET_TIMER_ID, EDITOR_STATE, HIGHLIGHT_TIMER_ID,
+    HOVER_TIMER_ID, LP_THRESHOLD_MS, LP_TIMER_ID, TERM_TIMER_ID,
 };
 use crate::auto_save::{AUTOSAVE_DEBOUNCE_TIMER_ID, AUTOSAVE_PERIODIC_TIMER_ID};
 
@@ -42,6 +42,17 @@ pub(crate) unsafe fn on_timer(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LP
     }
     if wparam.0 == AUTOSAVE_PERIODIC_TIMER_ID {
         return on_timer_autosave_periodic(hwnd);
+    }
+    if wparam.0 == AI_ARCHIVE_TIMER_ID {
+        return on_timer_ai_archive(hwnd);
+    }
+    LRESULT(0)
+}
+
+/// AI 温数据归档：周期检查空闲会话并异步归档进 MemoryStore（SQLite）
+unsafe fn on_timer_ai_archive(hwnd: HWND) -> LRESULT {
+    if let Some(state) = get_and_set_state(hwnd) {
+        state.borrow_mut().ai_panel.trigger_warm_archive();
     }
     LRESULT(0)
 }
@@ -341,6 +352,52 @@ pub(crate) unsafe fn on_wm_app_6(
             invalidate_window(hwnd);
         }
     });
+    LRESULT(0)
+}
+
+/// msg if msg == WM_APP + 8（updater::WM_UPDATE_CHECK_DONE）
+/// 更新检查完成：后台线程下载完安装包后投递，UI 线程弹窗询问是否更新
+pub(crate) unsafe fn on_wm_app_8(
+    hwnd: HWND,
+    _msg: u32,
+    _wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    use crate::dialogs::Dialogs;
+    use crate::updater::{UpdateCheckMessage, UpdateCheckResult};
+
+    // 立即重建 Box 保证 drop 语义，即使后续处理 panic 也不会泄漏
+    let msg = unsafe { Box::from_raw(lparam.0 as *mut UpdateCheckMessage) };
+    match &msg.result {
+        UpdateCheckResult::UpToDate => {
+            if msg.manual {
+                Dialogs::show_info(
+                    hwnd,
+                    "检查更新",
+                    &format!("当前已是最新版本（v{}）。", crate::updater::APP_VERSION),
+                );
+            }
+        }
+        UpdateCheckResult::Error(e) => {
+            if msg.manual {
+                Dialogs::show_error(hwnd, "检查更新失败", e);
+            }
+        }
+        UpdateCheckResult::Available {
+            version,
+            setup_path,
+        } => {
+            let text = format!(
+                "发现新版本 {version}（当前 v{}）。\n安装包已下载完成，是否立即更新？\n应用将退出并完成静默安装，随后自动重启。",
+                crate::updater::APP_VERSION
+            );
+            if Dialogs::confirm_yes_no(hwnd, "发现新版本", &text) {
+                if let Err(e) = crate::updater::run_setup_and_exit(setup_path) {
+                    Dialogs::show_error(hwnd, "更新失败", &e);
+                }
+            }
+        }
+    }
     LRESULT(0)
 }
 

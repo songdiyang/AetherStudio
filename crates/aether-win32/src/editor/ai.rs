@@ -148,7 +148,7 @@ impl EditorState {
             if self.current_folder.is_some() {
                 self.fs_last_root_sig = self.workspace_root_signature();
                 self.fs_watch_until =
-                    Some(std::time::Instant::now() + std::time::Duration::from_secs(20));
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
             }
             // 启动终端刷新定时器，保证轮询启动结果并刷新命令队列
             unsafe {
@@ -172,12 +172,25 @@ impl EditorState {
         }
     }
     /// 刷新 AI 历史索引。
-    /// 从磁盘 conversations/index.json 加载元数据到内存 history。
+    /// 从 SQLite（温数据层）加载元数据到内存 history；可按工作区过滤。
     pub fn refresh_ai_history(&mut self) {
-        if let Some(store) = self.ai_panel.history_store.as_ref() {
-            let meta = store.load_history_meta();
-            if !meta.is_empty() {
-                self.ai_panel.history = meta;
+        if let Some(store) = self.ai_panel.warm_data_store.as_ref() {
+            let ws_only = self.ai_panel.history_workspace_only;
+            if let Ok(convs) = store.search_conversations("", ws_only, 500) {
+                if !convs.is_empty() {
+                    self.ai_panel.history = convs
+                        .into_iter()
+                        .map(|c| crate::ai_panel::ConversationMeta {
+                            id: c.id,
+                            title: c.title,
+                            updated_at: c.updated_at,
+                            message_count: c.message_count as usize,
+                            preview: String::new(),
+                        })
+                        .collect();
+                } else {
+                    self.ai_panel.history.clear();
+                }
             }
         }
     }

@@ -145,9 +145,7 @@ pub(crate) unsafe fn on_r_button_down(
         mouse_y - sidebar_region.y + st.sidebar_scroll_y - (header_h + 6.0 * s + input_offset_y);
     let sidebar_width = st.layout.sidebar_width;
 
-    // 命中文件/文件夹节点 → 选中该节点但不弹出空白区域菜单
-    // （节点级上下文菜单不在本次需求范围内）
-    // 先以不可变借用查询命中节点，提取 node_idx 后再修改状态，避免借用冲突。
+    // 命中文件/文件夹节点 → 弹出文件节点上下文菜单
     let hit_node_idx: Option<u32> = st.file_tree.as_ref().and_then(|tree| {
         let mut current_y = 0.0;
         EditorState::find_tree_click_target(
@@ -163,33 +161,36 @@ pub(crate) unsafe fn on_r_button_down(
     });
 
     if let Some(node_idx) = hit_node_idx {
-        // 节点命中：选中节点，关闭旧菜单
-        let mut need_invalidate = false;
+        // 节点命中：选中节点，关闭旧菜单，弹出节点级上下文菜单
         if st.explorer_context_menu.is_open {
             st.explorer_context_menu.close();
-            need_invalidate = true;
+        }
+        if st.file_node_context_menu.is_open {
+            st.file_node_context_menu.close();
         }
         if st.tab_context_menu.visible {
             st.tab_context_menu.hide();
-            need_invalidate = true;
         }
         if st.activity_bar_context_menu.visible {
             st.activity_bar_context_menu.hide();
-            need_invalidate = true;
         }
         st.selected_file_node = Some(node_idx);
         st.emit_event(crate::events::EditorEvent::SidebarChanged);
+        // 弹出文件节点上下文菜单
+        st.file_node_context_menu
+            .open(mouse_x, mouse_y, window_w, window_h, node_idx);
         drop(st);
-        if need_invalidate {
-            invalidate_window(hwnd);
-        }
+        invalidate_window(hwnd);
         return LRESULT(0);
     }
 
     // 空白区域：弹出上下文菜单（菜单内部会做窗口边界校正）
     st.explorer_context_menu
         .open(mouse_x, mouse_y, window_w, window_h);
-    // 关闭可能打开的标签菜单，避免重叠
+    // 关闭可能打开的其他菜单，避免重叠
+    if st.file_node_context_menu.is_open {
+        st.file_node_context_menu.close();
+    }
     if st.tab_context_menu.visible {
         st.tab_context_menu.hide();
     }

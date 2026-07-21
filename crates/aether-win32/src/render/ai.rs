@@ -202,6 +202,42 @@ impl EditorState {
                 );
                 self.ai_panel.history_button_region = Some((hb_x, hb_y, hb_w, hb_h));
             }
+            // 标题栏右侧：Playbook 策略库按钮（历史按钮左侧）
+            {
+                let pb_w = 44.0f32;
+                let pb_h = 20.0f32;
+                let pb_x = x + width - margin - 44.0 - 6.0 - pb_w;
+                let pb_y = cy + 1.0;
+                let pb_rect = D2D_RECT_F {
+                    left: pb_x,
+                    top: pb_y,
+                    right: pb_x + pb_w,
+                    bottom: pb_y + pb_h,
+                };
+                let pb_bg = if self.ai_panel.playbook_open {
+                    color_f(0.0, 0.47, 0.83, 1.0)
+                } else {
+                    color_f(0.20, 0.21, 0.24, 1.0)
+                };
+                if let Ok(b) = self.render_ctx.brush_cache.get_brush(target, &pb_bg) {
+                    target.FillRectangle(&pb_rect, &b);
+                }
+                let pb_text: Vec<u16> = "策略".encode_utf16().chain(Some(0)).collect();
+                target.DrawText(
+                    &pb_text,
+                    &small_format,
+                    &D2D_RECT_F {
+                        left: pb_x,
+                        top: pb_y + 2.0,
+                        right: pb_x + pb_w,
+                        bottom: pb_y + pb_h - 1.0,
+                    },
+                    &white_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+                self.ai_panel.playbook_button_region = Some((pb_x, pb_y, pb_w, pb_h));
+            }
             cy += 26.0;
 
             // 分隔线
@@ -354,9 +390,10 @@ impl EditorState {
             if self.ai_panel.history_open {
                 let hist_y = cy;
                 let item_h = 28.0f32;
+                let toggle_h = 20.0f32;
                 let max_items = 6usize;
                 let n = self.ai_panel.history.len().min(max_items);
-                let list_h = n as f32 * item_h + 8.0;
+                let list_h = toggle_h + n as f32 * item_h + 8.0;
                 // 下拉背景
                 let hist_bg = color_f(0.12, 0.12, 0.14, 1.0);
                 if let Ok(hb) = self.render_ctx.brush_cache.get_brush(target, &hist_bg) {
@@ -379,6 +416,33 @@ impl EditorState {
                     target.DrawRectangle(&border_rect, &br, 1.0, None);
                 }
                 let mut iy = hist_y + 4.0;
+                // 「仅当前工作区」过滤开关
+                {
+                    let tgl_text: Vec<u16> = if self.ai_panel.history_workspace_only {
+                        "[√] 仅当前工作区"
+                    } else {
+                        "[  ] 仅当前工作区"
+                    }
+                    .encode_utf16()
+                    .chain(Some(0))
+                    .collect();
+                    target.DrawText(
+                        &tgl_text,
+                        &small_format,
+                        &D2D_RECT_F {
+                            left: x + margin + 6.0,
+                            top: iy + 2.0,
+                            right: x + width - margin - 6.0,
+                            bottom: iy + toggle_h,
+                        },
+                        &dim_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                    self.ai_panel.history_ws_toggle_region =
+                        Some((x + margin + 2.0, iy, width - 2.0 * margin - 4.0, toggle_h));
+                    iy += toggle_h;
+                }
                 for (hi, hmeta) in self.ai_panel.history.iter().enumerate().take(n) {
                     let item_rect = D2D_RECT_F {
                         left: x + margin + 2.0,
@@ -458,6 +522,129 @@ impl EditorState {
                             top: iy + 2.0,
                             right: x + width - margin - 6.0,
                             bottom: iy + 16.0,
+                        },
+                        &dim_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
+                cy += list_h + 4.0;
+            }
+
+            // ===== Playbook 策略库管理面板 =====
+            if self.ai_panel.playbook_open {
+                let pb_y = cy;
+                let item_h = 30.0f32;
+                let header_h = 24.0f32;
+                let max_items = 8usize;
+                let n = self.ai_panel.playbook_items.len().min(max_items);
+                let list_h = header_h + n as f32 * item_h + 8.0;
+                // 面板背景与边框
+                let pb_bg = color_f(0.12, 0.12, 0.14, 1.0);
+                let panel_rect = D2D_RECT_F {
+                    left: x + margin,
+                    top: pb_y,
+                    right: x + width - margin,
+                    bottom: pb_y + list_h,
+                };
+                if let Ok(b) = self.render_ctx.brush_cache.get_brush(target, &pb_bg) {
+                    target.FillRectangle(&panel_rect, &b);
+                }
+                let pb_border = color_f(0.28, 0.28, 0.32, 1.0);
+                if let Ok(b) = self.render_ctx.brush_cache.get_brush(target, &pb_border) {
+                    target.DrawRectangle(&panel_rect, &b, 1.0, None);
+                }
+                // 标题行
+                let header: Vec<u16> =
+                    format!("已沉淀策略（共 {} 条）", self.ai_panel.playbook_items.len())
+                        .encode_utf16()
+                        .chain(Some(0))
+                        .collect();
+                target.DrawText(
+                    &header,
+                    &small_format,
+                    &D2D_RECT_F {
+                        left: x + margin + 6.0,
+                        top: pb_y + 5.0,
+                        right: x + width - margin - 6.0,
+                        bottom: pb_y + header_h,
+                    },
+                    &white_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+                // 条目列表
+                let mut iy = pb_y + header_h;
+                for (bi, bullet) in self.ai_panel.playbook_items.iter().enumerate().take(n) {
+                    let del_w = 30.0f32;
+                    let line: Vec<u16> = format!(
+                        "[{}] {}  (+{}/-{})",
+                        bullet.section, bullet.content, bullet.helpful_count, bullet.harmful_count
+                    )
+                    .encode_utf16()
+                    .chain(Some(0))
+                    .collect();
+                    target.DrawText(
+                        &line,
+                        &small_format,
+                        &D2D_RECT_F {
+                            left: x + margin + 6.0,
+                            top: iy + 3.0,
+                            right: x + width - margin - del_w - 10.0,
+                            bottom: iy + item_h - 3.0,
+                        },
+                        &dim_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                    // 删除按钮（点击后需二次确认）
+                    let del_x = x + width - margin - del_w - 4.0;
+                    let del_rect = D2D_RECT_F {
+                        left: del_x,
+                        top: iy + 3.0,
+                        right: del_x + del_w,
+                        bottom: iy + item_h - 5.0,
+                    };
+                    let del_bg = color_f(0.45, 0.16, 0.16, 1.0);
+                    if let Ok(b) = self.render_ctx.brush_cache.get_brush(target, &del_bg) {
+                        target.FillRectangle(&del_rect, &b);
+                    }
+                    let del_text: Vec<u16> = "删".encode_utf16().chain(Some(0)).collect();
+                    target.DrawText(
+                        &del_text,
+                        &small_format,
+                        &D2D_RECT_F {
+                            left: del_x,
+                            top: iy + 4.0,
+                            right: del_x + del_w,
+                            bottom: iy + item_h - 4.0,
+                        },
+                        &white_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                    self.ai_panel.playbook_delete_regions.push((
+                        bi,
+                        del_x,
+                        iy + 3.0,
+                        del_w,
+                        item_h - 8.0,
+                    ));
+                    iy += item_h;
+                }
+                if self.ai_panel.playbook_items.is_empty() {
+                    let empty: Vec<u16> = "暂无沉淀策略，对话归档后会自动提炼"
+                        .encode_utf16()
+                        .chain(Some(0))
+                        .collect();
+                    target.DrawText(
+                        &empty,
+                        &small_format,
+                        &D2D_RECT_F {
+                            left: x + margin + 6.0,
+                            top: iy + 3.0,
+                            right: x + width - margin - 6.0,
+                            bottom: iy + item_h,
                         },
                         &dim_brush,
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
@@ -576,6 +763,15 @@ impl EditorState {
             let content_start_y = chat_top - self.ai_panel.scroll_y;
             let mut msg_y = content_start_y;
             let mut reasoning_regions_local: Vec<(usize, f32, f32, f32, f32)> = Vec::new();
+
+            // 设置消息区域裁剪，防止滚动内容覆盖到上方标签栏和下方输入框
+            let chat_clip_rect = D2D_RECT_F {
+                left: x,
+                top: chat_top,
+                right: x + width,
+                bottom: chat_bottom,
+            };
+            target.PushAxisAlignedClip(&chat_clip_rect, D2D1_ANTIALIAS_MODE_ALIASED);
 
             for (msg_index, msg) in self.ai_panel.messages.iter().enumerate() {
                 if msg.role == crate::ai_panel::AiRole::System {
@@ -1046,6 +1242,9 @@ impl EditorState {
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
             }
+
+            // 弹出消息区域裁剪
+            target.PopAxisAlignedClip();
 
             // ===== Apply 按钮区域 =====
             let has_code = self.ai_panel.extract_last_code_block().is_some();

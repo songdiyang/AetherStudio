@@ -74,6 +74,7 @@ pub enum CommandId {
     // AI
     AiFixDiagnostics,
     // 帮助
+    HelpCheckUpdate,
     HelpAbout,
 }
 
@@ -109,6 +110,7 @@ impl CommandId {
             CommandId::TerminalNew => "新建终端",
             CommandId::SearchGlobal => "全局搜索",
             CommandId::AiFixDiagnostics => "AI 修复当前诊断",
+            CommandId::HelpCheckUpdate => "检查更新",
             CommandId::HelpAbout => "关于",
         }
     }
@@ -239,7 +241,13 @@ impl MenuBar {
                     vec![MenuItem::new("新建终端", CommandId::TerminalNew)
                         .with_shortcut("Ctrl+Shift+`")],
                 ),
-                MenuBarItem::new("帮助(H)", vec![MenuItem::new("关于", CommandId::HelpAbout)]),
+                MenuBarItem::new(
+                    "帮助(H)",
+                    vec![
+                        MenuItem::new("检查更新", CommandId::HelpCheckUpdate),
+                        MenuItem::new("关于", CommandId::HelpAbout),
+                    ],
+                ),
             ],
             active_index: None,
             hover_index: None,
@@ -616,6 +624,7 @@ mod tests {
             TerminalNew,
             SearchGlobal,
             AiFixDiagnostics,
+            HelpCheckUpdate,
             HelpAbout,
         ];
         for id in &ids {

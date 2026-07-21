@@ -45,6 +45,10 @@ pub const CARET_TIMER_ID: usize = 0xA004;
 pub(crate) const AI_TIMER_ID: usize = 0xA005;
 /// 语法高亮刷新定时器 ID（打开文件后周期性重绘，直到后台高亮结果到达并着色，随后自动停止）
 pub(crate) const HIGHLIGHT_TIMER_ID: usize = 0xA006;
+/// AI 对话温数据归档定时器 ID（周期检查空闲会话，归档进 MemoryStore）
+pub(crate) const AI_ARCHIVE_TIMER_ID: usize = 0xA007;
+/// AI 归档检查间隔（毫秒）：每 5 秒检查一次是否满足「空闲 30 秒」归档条件
+pub(crate) const AI_ARCHIVE_MS: u32 = 5000;
 /// 长按阈值（毫秒）
 pub(crate) const LP_THRESHOLD_MS: u32 = 500;
 /// 终端刷新间隔（毫秒），约 20fps 足以实时显示 shell 输出
@@ -170,6 +174,11 @@ pub fn run(args: LaunchArgs) {
             apply_launch_args(&mut state.borrow_mut(), &args);
             // REQ-P1-07: 触发重绘（apply_launch_args 已标记脏区域）
             invalidate_window(hwnd);
+        }
+
+        // 发布构建启动时静默检查更新（仅发现新版时才弹窗；开发构建跳过）
+        if crate::updater::IS_RELEASE_BUILD {
+            crate::updater::start_check(hwnd, false);
         }
 
         let mut msg = MSG::default();
@@ -328,6 +337,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             msg if msg == WM_APP + 5 => on_wm_app_5(hwnd, msg, wparam, lparam),
             msg if msg == WM_APP + 6 => on_wm_app_6(hwnd, msg, wparam, lparam),
             msg if msg == WM_APP + 7 => on_wm_app_7(hwnd, msg, wparam, lparam),
+            msg if msg == crate::updater::WM_UPDATE_CHECK_DONE => {
+                on_wm_app_8(hwnd, msg, wparam, lparam)
+            }
             // P0-3: 低层键盘钩子投递给主窗口的自定义消息 - 终端直接接收编辑键
             msg if msg == crate::keyboard_hook::WM_TERMINAL_BACKSPACE => {
                 crate::keyboard_hook::handle_backspace_msg(hwnd)

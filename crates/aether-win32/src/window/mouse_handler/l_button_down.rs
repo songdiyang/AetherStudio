@@ -60,6 +60,9 @@ pub(crate) unsafe fn on_l_button_down(
     if let Some(r) = lbd_explorer_context_menu(hwnd, &state, mouse_x, mouse_y) {
         return r;
     }
+    if let Some(r) = lbd_file_node_context_menu(hwnd, &state, mouse_x, mouse_y) {
+        return r;
+    }
     if let Some(r) = lbd_activity_bar_context_menu(hwnd, &state, mouse_x, mouse_y) {
         return r;
     }

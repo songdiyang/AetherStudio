@@ -332,8 +332,12 @@ impl EditorState {
                 }
                 .to_string();
             }
+            crate::menu_bar::CommandId::HelpCheckUpdate => {
+                self.status_message = "正在检查更新...".to_string();
+                crate::updater::start_check(hwnd, true);
+            }
             crate::menu_bar::CommandId::HelpAbout => {
-                self.status_message = "牧羊人编辑器 v0.1.0".to_string();
+                self.status_message = format!("牧羊人编辑器 v{}", crate::updater::APP_VERSION);
             }
             crate::menu_bar::CommandId::None => {}
         }

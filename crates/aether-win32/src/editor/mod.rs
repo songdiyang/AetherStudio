@@ -78,9 +78,10 @@ impl BottomPanelTab {
 pub enum FileTreeInputKind {
     NewFile,
     NewFolder,
+    Rename,
 }
 
-/// 文件树内联输入状态（用于新建文件/文件夹时重命名）
+/// 文件树内联输入状态（用于新建文件/文件夹或重命名时）
 #[derive(Clone, Debug)]
 pub struct FileTreeInput {
     pub kind: FileTreeInputKind,
@@ -88,6 +89,8 @@ pub struct FileTreeInput {
     pub caret_visible: bool,
     /// IME 合成串（中文输入法预编辑文本），渲染时显示在 value 之后
     pub composition: Option<String>,
+    /// 重命名时记录目标节点索引
+    pub target_node: Option<u32>,
 }
 
 /// 文件树点击命中的具体部位
@@ -433,6 +436,8 @@ pub struct EditorState {
     pub user_menu: crate::user_menu::UserMenu,
     /// 资源管理器空白区域上下文菜单
     pub explorer_context_menu: crate::context_menu::ExplorerContextMenu,
+    /// 文件节点右键上下文菜单
+    pub file_node_context_menu: crate::context_menu::FileNodeContextMenu,
     /// 标签右键上下文菜单
     pub tab_context_menu: crate::tab_context_menu::TabContextMenuState,
     /// 活动栏右键上下文菜单
@@ -724,6 +729,7 @@ impl EditorState {
             last_active_tab: 0,
             user_menu: crate::user_menu::UserMenu::new(),
             explorer_context_menu: crate::context_menu::ExplorerContextMenu::new(),
+            file_node_context_menu: crate::context_menu::FileNodeContextMenu::new(),
             tab_context_menu: crate::tab_context_menu::TabContextMenuState::default(),
             activity_bar_context_menu:
                 crate::activity_bar_context_menu::ActivityBarContextMenuState::default(),
@@ -780,6 +786,24 @@ impl EditorState {
 
         // 自动保存：启动周期兜底定时器（防抖定时器由编辑事件按需调度）
         state.start_autosave_periodic();
+
+        // AI 对话持久化：启动温数据归档定时器（每 5s 检查空闲会话并归档进 SQLite）
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(
+                state.hwnd,
+                crate::window::AI_ARCHIVE_TIMER_ID,
+                crate::window::AI_ARCHIVE_MS,
+                None,
+            );
+        }
+
+        // 语义检索：初始化嵌入模型（模型文件缺失时回退 n-gram，不阻塞启动）
+        crate::embedding::try_init_default_model();
+
+        // ACE Reflector：用当前 AI 配置启用归档后自动反思（无 API Key 时静默禁用）
+        if let Some(warm) = state.ai_panel.warm_data_store.as_ref() {
+            warm.enable_reflector(&state.app_settings.active_ai_settings());
+        }
 
         // Phase 2: 启动时从磁盘加载历史索引
         state.refresh_ai_history();

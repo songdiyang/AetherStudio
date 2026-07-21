@@ -96,6 +96,15 @@ unsafe fn omm_early_returns(
         }
         return Some(LRESULT(0));
     }
+    // 文件节点右键上下文菜单：更新 hover 状态
+    if st.file_node_context_menu.is_open {
+        let changed = st.file_node_context_menu.update_hover(mouse_x, mouse_y);
+        drop(st);
+        if changed {
+            invalidate_window(hwnd);
+        }
+        return Some(LRESULT(0));
+    }
     // 标签右键上下文菜单：更新 hover 状态
     if st.tab_context_menu.visible {
         let changed = st.tab_context_menu.update_hover(mouse_x, mouse_y);

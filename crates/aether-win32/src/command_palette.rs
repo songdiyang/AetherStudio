@@ -201,6 +201,13 @@ impl CommandPalette {
                 icon: Some(IconKind::Info),
             },
             CommandPaletteItem {
+                label: "帮助: 检查更新".to_string(),
+                description: Some("检查并安装新版本".to_string()),
+                shortcut: None,
+                command_id: CommandId::HelpCheckUpdate,
+                icon: Some(IconKind::Info),
+            },
+            CommandPaletteItem {
                 label: "帮助: 关于".to_string(),
                 description: Some("关于 Aether 编辑器".to_string()),
                 shortcut: None,
