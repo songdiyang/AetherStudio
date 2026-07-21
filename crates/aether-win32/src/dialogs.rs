@@ -210,6 +210,23 @@ impl Dialogs {
         }
     }
 
+    /// 显示信息对话框（模态）
+    pub fn show_info(hwnd: HWND, title: &str, message: &str) {
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{
+                MessageBoxW, MB_ICONINFORMATION, MB_OK,
+            };
+            let title_wide: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
+            let msg_wide: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
+            let _ = MessageBoxW(
+                hwnd,
+                windows::core::PCWSTR(msg_wide.as_ptr()),
+                windows::core::PCWSTR(title_wide.as_ptr()),
+                MB_OK | MB_ICONINFORMATION,
+            );
+        }
+    }
+
     /// 显示"是/否"确认对话框（模态）。返回 true 表示用户选"是"。
     pub fn confirm_yes_no(hwnd: HWND, title: &str, message: &str) -> bool {
         unsafe {
