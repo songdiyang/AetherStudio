@@ -42,7 +42,10 @@ pub enum UpdateCheckResult {
     /// 已是最新
     UpToDate,
     /// 有新版，安装包已下载到本地
-    Available { version: String, setup_path: PathBuf },
+    Available {
+        version: String,
+        setup_path: PathBuf,
+    },
     /// 检查或下载失败
     Error(String),
 }
@@ -71,14 +74,7 @@ pub fn start_check(hwnd: HWND, manual: bool) {
         let hwnd = HWND(hwnd.0 as *mut _);
         unsafe {
             // 失败时回收 Box 防止泄漏
-            if PostMessageW(
-                hwnd,
-                WM_UPDATE_CHECK_DONE,
-                WPARAM(0),
-                LPARAM(raw as isize),
-            )
-            .is_err()
-            {
+            if PostMessageW(hwnd, WM_UPDATE_CHECK_DONE, WPARAM(0), LPARAM(raw as isize)).is_err() {
                 let _ = Box::from_raw(raw);
             }
         }
@@ -201,9 +197,9 @@ fn fetch_from_github() -> Result<LatestRelease, String> {
         .get("assets")
         .and_then(|v| v.as_array())
         .and_then(|assets| {
-            assets.iter().find(|a| {
-                a.get("name").and_then(|n| n.as_str()) == Some(SETUP_ASSET_NAME)
-            })
+            assets
+                .iter()
+                .find(|a| a.get("name").and_then(|n| n.as_str()) == Some(SETUP_ASSET_NAME))
         })
         .and_then(|a| a.get("browser_download_url"))
         .and_then(|u| u.as_str())
@@ -229,8 +225,7 @@ fn download_setup(release: &LatestRelease) -> Result<PathBuf, String> {
         .map_err(|e| format!("下载安装包失败: {e}"))?;
 
     let path = std::env::temp_dir().join(format!("aether-setup-{}.exe", release.tag));
-    let mut file = std::fs::File::create(&path)
-        .map_err(|e| format!("创建临时文件失败: {e}"))?;
+    let mut file = std::fs::File::create(&path).map_err(|e| format!("创建临时文件失败: {e}"))?;
     let mut reader = response.into_reader().take(MAX_SETUP_BYTES);
     std::io::copy(&mut reader, &mut file).map_err(|e| format!("写入安装包失败: {e}"))?;
     drop(file);
@@ -247,13 +242,14 @@ fn download_setup(release: &LatestRelease) -> Result<PathBuf, String> {
 /// 校验文件 SHA256（expected 为十六进制字符串，大小写不敏感）
 fn verify_sha256(path: &std::path::Path, expected: &str) -> Result<(), String> {
     use sha2::Digest;
-    let mut file =
-        std::fs::File::open(path).map_err(|e| format!("读取安装包失败: {e}"))?;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("读取安装包失败: {e}"))?;
     let mut hasher = sha2::Sha256::new();
     std::io::copy(&mut file, &mut hasher).map_err(|e| format!("计算校验和失败: {e}"))?;
     let actual = format!("{:x}", hasher.finalize());
     if actual != expected.to_lowercase() {
-        return Err(format!("安装包校验和不匹配（期望 {expected}，实际 {actual}）"));
+        return Err(format!(
+            "安装包校验和不匹配（期望 {expected}，实际 {actual}）"
+        ));
     }
     Ok(())
 }

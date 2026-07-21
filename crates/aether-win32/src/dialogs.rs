@@ -213,9 +213,7 @@ impl Dialogs {
     /// 显示信息对话框（模态）
     pub fn show_info(hwnd: HWND, title: &str, message: &str) {
         unsafe {
-            use windows::Win32::UI::WindowsAndMessaging::{
-                MessageBoxW, MB_ICONINFORMATION, MB_OK,
-            };
+            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
             let title_wide: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
             let msg_wide: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
             let _ = MessageBoxW(
