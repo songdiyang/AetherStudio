@@ -74,6 +74,9 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Build Release EXE
+        env:
+          # 注入编译期版本号（updater.rs 的 APP_VERSION），供应用内更新检查比对
+          AETHER_VERSION: ${{ steps.version.outputs.version }}
         run: |
           cargo build --release --bin aether-app
           

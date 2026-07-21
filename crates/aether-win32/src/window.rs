@@ -176,6 +176,11 @@ pub fn run(args: LaunchArgs) {
             invalidate_window(hwnd);
         }
 
+        // 发布构建启动时静默检查更新（仅发现新版时才弹窗；开发构建跳过）
+        if crate::updater::IS_RELEASE_BUILD {
+            crate::updater::start_check(hwnd, false);
+        }
+
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
             let _ = TranslateMessage(&msg);
@@ -332,6 +337,9 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             msg if msg == WM_APP + 5 => on_wm_app_5(hwnd, msg, wparam, lparam),
             msg if msg == WM_APP + 6 => on_wm_app_6(hwnd, msg, wparam, lparam),
             msg if msg == WM_APP + 7 => on_wm_app_7(hwnd, msg, wparam, lparam),
+            msg if msg == crate::updater::WM_UPDATE_CHECK_DONE => {
+                on_wm_app_8(hwnd, msg, wparam, lparam)
+            }
             // P0-3: 低层键盘钩子投递给主窗口的自定义消息 - 终端直接接收编辑键
             msg if msg == crate::keyboard_hook::WM_TERMINAL_BACKSPACE => {
                 crate::keyboard_hook::handle_backspace_msg(hwnd)

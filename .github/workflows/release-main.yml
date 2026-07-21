@@ -66,6 +66,9 @@ jobs:
             console.log(`Generated version: ${version}`);
 
       - name: Build Release EXE
+        env:
+          # 注入编译期版本号（updater.rs 的 APP_VERSION），供应用内更新检查比对
+          AETHER_VERSION: ${{ steps.version.outputs.version }}
         run: |
           cargo build --release --bin aether-app
 
@@ -73,6 +76,19 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path release
           Copy-Item target\x86_64-pc-windows-msvc\release\aether-app.exe release\aether-app.exe
+
+      - name: Build NSIS installer
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            choco install nsis -y --no-progress
+          }
+          makensis /DVERSION=$($env:VERSION.TrimStart('v')) `
+            /DSOURCE_EXE=..\release\aether-app.exe `
+            /DOUTPUT_EXE=..\release\aether-setup.exe `
+            installer\aether-setup.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Create GitHub Release and Upload EXE
         uses: actions/github-script@v7
@@ -111,7 +127,7 @@ jobs:
             if (featuresText) { body += `\n### ✨ 新增功能\n${featuresText}\n`; }
             if (fixesText) { body += `\n### 🐛 修复的问题\n${fixesText}\n`; }
             if (!featuresText && !fixesText) { body += `\n本次为常规维护与改进。\n`; }
-            body += `\n### 下载\n- [aether-app.exe](https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${version}/aether-app.exe)\n\n---\n*此版本由 main 分支自动构建发布，发布说明取自本次合入 PR。*`;
+            body += `\n### 下载\n- [aether-setup.exe](https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${version}/aether-setup.exe) （安装包，推荐）\n- [aether-app.exe](https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${version}/aether-app.exe) （绿色单文件）\n\n---\n*此版本由 main 分支自动构建发布，发布说明取自本次合入 PR。*`;
 
             // 创建 release
             const { data: release } = await github.rest.repos.createRelease({
@@ -145,3 +161,21 @@ jobs:
             });
 
             console.log('Uploaded aether-app.exe');
+
+            // 上传 NSIS 安装包
+            const setupPath = path.join(process.cwd(), 'release', 'aether-setup.exe');
+            const setupData = fs.readFileSync(setupPath);
+
+            await github.rest.repos.uploadReleaseAsset({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release.id,
+              name: 'aether-setup.exe',
+              data: setupData,
+              headers: {
+                'content-type': 'application/octet-stream',
+                'content-length': setupData.length
+              }
+            });
+
+            console.log('Uploaded aether-setup.exe');

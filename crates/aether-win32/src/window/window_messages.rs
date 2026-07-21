@@ -355,6 +355,52 @@ pub(crate) unsafe fn on_wm_app_6(
     LRESULT(0)
 }
 
+/// msg if msg == WM_APP + 8（updater::WM_UPDATE_CHECK_DONE）
+/// 更新检查完成：后台线程下载完安装包后投递，UI 线程弹窗询问是否更新
+pub(crate) unsafe fn on_wm_app_8(
+    hwnd: HWND,
+    _msg: u32,
+    _wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    use crate::dialogs::Dialogs;
+    use crate::updater::{UpdateCheckMessage, UpdateCheckResult};
+
+    // 立即重建 Box 保证 drop 语义，即使后续处理 panic 也不会泄漏
+    let msg = unsafe { Box::from_raw(lparam.0 as *mut UpdateCheckMessage) };
+    match &msg.result {
+        UpdateCheckResult::UpToDate => {
+            if msg.manual {
+                Dialogs::show_info(
+                    hwnd,
+                    "检查更新",
+                    &format!("当前已是最新版本（v{}）。", crate::updater::APP_VERSION),
+                );
+            }
+        }
+        UpdateCheckResult::Error(e) => {
+            if msg.manual {
+                Dialogs::show_error(hwnd, "检查更新失败", e);
+            }
+        }
+        UpdateCheckResult::Available {
+            version,
+            setup_path,
+        } => {
+            let text = format!(
+                "发现新版本 {version}（当前 v{}）。\n安装包已下载完成，是否立即更新？\n应用将退出并完成静默安装，随后自动重启。",
+                crate::updater::APP_VERSION
+            );
+            if Dialogs::confirm_yes_no(hwnd, "发现新版本", &text) {
+                if let Err(e) = crate::updater::run_setup_and_exit(setup_path) {
+                    Dialogs::show_error(hwnd, "更新失败", &e);
+                }
+            }
+        }
+    }
+    LRESULT(0)
+}
+
 /// WM_DROPFILES
 pub(crate) unsafe fn on_dropfiles(
     hwnd: HWND,

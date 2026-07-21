@@ -53,6 +53,7 @@ pub mod terminal;
 pub mod theme;
 pub mod tooltip;
 pub mod uia;
+pub mod updater;
 pub mod user_menu;
 pub mod welcome;
 pub mod window;
