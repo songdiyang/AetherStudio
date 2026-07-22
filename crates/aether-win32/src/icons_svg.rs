@@ -282,15 +282,96 @@ where
                 have_cubic = true;
             }
             'A' => {
-                let _rx = p.read_number().ok_or("A 缺 rx")?;
-                let _ry = p.read_number().ok_or("A 缺 ry")?;
-                let _rot = p.read_number().ok_or("A 缺 rot")?;
-                let _large = p.read_number().ok_or("A 缺 large")?;
-                let _sweep = p.read_number().ok_or("A 缺 sweep")?;
+                let mut rx = p.read_number().ok_or("A 缺 rx")?.abs();
+                let mut ry = p.read_number().ok_or("A 缺 ry")?.abs();
+                let rot = p.read_number().ok_or("A 缺 rot")?;
+                let large = p.read_number().ok_or("A 缺 large")? != 0.0;
+                let sweep = p.read_number().ok_or("A 缺 sweep")? != 0.0;
                 let x = p.read_number().ok_or("A 缺 x")?;
                 let y = p.read_number().ok_or("A 缺 y")?;
                 let pp = if rel { (cx + x, cy + y) } else { (x, y) };
-                cb('L', &[pp.0, pp.1])?;
+                let degenerate = rx < 1e-6
+                    || ry < 1e-6
+                    || ((pp.0 - cx).abs() < 1e-6 && (pp.1 - cy).abs() < 1e-6);
+                if degenerate {
+                    // 退化情况按规范处理为直线
+                    cb('L', &[pp.0, pp.1])?;
+                } else {
+                    // 端点参数化 → 中心参数化（SVG 规范 F.6.5），再转为三次贝塞尔
+                    fn vec_angle(ux: f32, uy: f32, vx: f32, vy: f32) -> f32 {
+                        let dot = ux * vx + uy * vy;
+                        let len = ((ux * ux + uy * uy) * (vx * vx + vy * vy)).sqrt();
+                        let mut a = (dot / len).clamp(-1.0, 1.0).acos();
+                        if ux * vy - uy * vx < 0.0 {
+                            a = -a;
+                        }
+                        a
+                    }
+                    let phi = rot.to_radians();
+                    let (sin_phi, cos_phi) = phi.sin_cos();
+                    let dx = (cx - pp.0) / 2.0;
+                    let dy = (cy - pp.1) / 2.0;
+                    let x1p = cos_phi * dx + sin_phi * dy;
+                    let y1p = -sin_phi * dx + cos_phi * dy;
+                    // 半径不足时按规范放大
+                    let lambda = x1p * x1p / (rx * rx) + y1p * y1p / (ry * ry);
+                    if lambda > 1.0 {
+                        let s = lambda.sqrt();
+                        rx *= s;
+                        ry *= s;
+                    }
+                    let rx2 = rx * rx;
+                    let ry2 = ry * ry;
+                    let x1p2 = x1p * x1p;
+                    let y1p2 = y1p * y1p;
+                    let num = (rx2 * ry2 - rx2 * y1p2 - ry2 * x1p2).max(0.0);
+                    let den = rx2 * y1p2 + ry2 * x1p2;
+                    let sign = if large != sweep { 1.0 } else { -1.0 };
+                    let coef = sign * (num / den).sqrt();
+                    let cxp = coef * rx * y1p / ry;
+                    let cyp = -coef * ry * x1p / rx;
+                    let ccx = cos_phi * cxp - sin_phi * cyp + (cx + pp.0) / 2.0;
+                    let ccy = sin_phi * cxp + cos_phi * cyp + (cy + pp.1) / 2.0;
+                    let ux = (x1p - cxp) / rx;
+                    let uy = (y1p - cyp) / ry;
+                    let theta1 = vec_angle(1.0, 0.0, ux, uy);
+                    let mut dtheta = vec_angle(ux, uy, -ux, -uy);
+                    let tau = std::f32::consts::TAU;
+                    if !sweep && dtheta > 0.0 {
+                        dtheta -= tau;
+                    } else if sweep && dtheta < 0.0 {
+                        dtheta += tau;
+                    }
+                    // 按 ≤90° 分段，每段用一条三次贝塞尔逼近
+                    let segs = ((dtheta.abs() / std::f32::consts::FRAC_PI_2).ceil() as i32).max(1);
+                    let delta = dtheta / segs as f32;
+                    let alpha = 4.0 / 3.0 * (delta / 4.0).tan();
+                    let mut theta = theta1;
+                    for _ in 0..segs {
+                        let (s1, c1) = theta.sin_cos();
+                        let (s2, c2) = (theta + delta).sin_cos();
+                        let p1x = ccx + rx * c1 * cos_phi - ry * s1 * sin_phi;
+                        let p1y = ccy + rx * c1 * sin_phi + ry * s1 * cos_phi;
+                        let p2x = ccx + rx * c2 * cos_phi - ry * s2 * sin_phi;
+                        let p2y = ccy + rx * c2 * sin_phi + ry * s2 * cos_phi;
+                        let d1x = -rx * s1 * cos_phi - ry * c1 * sin_phi;
+                        let d1y = -rx * s1 * sin_phi + ry * c1 * cos_phi;
+                        let d2x = -rx * s2 * cos_phi - ry * c2 * sin_phi;
+                        let d2y = -rx * s2 * sin_phi + ry * c2 * cos_phi;
+                        cb(
+                            'C',
+                            &[
+                                p1x + alpha * d1x,
+                                p1y + alpha * d1y,
+                                p2x - alpha * d2x,
+                                p2y - alpha * d2y,
+                                p2x,
+                                p2y,
+                            ],
+                        )?;
+                        theta += delta;
+                    }
+                }
                 cx = pp.0;
                 cy = pp.1;
                 have_cubic = false;
@@ -628,5 +709,51 @@ mod tests {
         use crate::icons::IconKind;
         use crate::icons_svg_defs::SVG_DEFS;
         assert_eq!(SVG_DEFS.len(), IconKind::ALL.len());
+    }
+
+    /// 圆弧（A）应转换为三次贝塞尔曲线而非直线
+    #[test]
+    fn parse_arc_to_bezier() {
+        let mut cmds: Vec<(char, Vec<f32>)> = vec![];
+        // 半径 10 的半圆：从 (0,0) 到 (20,0)
+        parse_svg_path("M 0 0 A 10 10 0 0 1 20 0", |c, a| {
+            cmds.push((c, a.to_vec()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(cmds[0].0, 'M');
+        // 半圆被分为 2 段 ≤90° 的贝塞尔
+        assert_eq!(cmds.len(), 3);
+        assert_eq!(cmds[1].0, 'C');
+        assert_eq!(cmds[2].0, 'C');
+        // 每段贝塞尔终点必须落在圆弧两端连线上（半圆中点 y≈-10 或 +10，端点 x=20）
+        let end = &cmds[2].1;
+        assert!(
+            (end[4] - 20.0).abs() < 0.01,
+            "贝塞尔终点 x 应为 20，实际 {}",
+            end[4]
+        );
+        assert!(end[5].abs() < 0.01, "贝塞尔终点 y 应为 0，实际 {}", end[5]);
+        // 中间控制点应使曲线鼓出直线（半圆顶点 |y| 接近 10）
+        let mid_y = cmds[1].1[5];
+        assert!(
+            mid_y.abs() > 5.0,
+            "半圆中点应明显偏离直线，实际 y={}",
+            mid_y
+        );
+    }
+
+    /// 退化的圆弧（半径为 0 或起终点相同）应退化为直线
+    #[test]
+    fn parse_degenerate_arc_as_line() {
+        let mut cmds: Vec<(char, Vec<f32>)> = vec![];
+        parse_svg_path("M 0 0 A 0 5 0 0 1 10 0 A 5 5 0 0 1 10 0", |c, a| {
+            cmds.push((c, a.to_vec()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(cmds.len(), 3);
+        assert_eq!(cmds[1].0, 'L');
+        assert_eq!(cmds[2].0, 'L');
     }
 }

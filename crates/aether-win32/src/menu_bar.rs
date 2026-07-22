@@ -274,6 +274,21 @@ impl MenuBar {
         if x < 0.0 || y < 0.0 || y > menu_height {
             return None;
         }
+        // 优先使用渲染端计算的 item_x_positions（含标题栏起始偏移），
+        // 保证命中区域与实际绘制位置一致；渲染尚未产生位置时回退到从 0 累计
+        if self.item_x_positions.len() == self.item_widths.len() && !self.item_widths.is_empty() {
+            for (i, (&pos, &width)) in self
+                .item_x_positions
+                .iter()
+                .zip(self.item_widths.iter())
+                .enumerate()
+            {
+                if x >= pos && x < pos + width {
+                    return Some(i);
+                }
+            }
+            return None;
+        }
         let mut current_x = 0.0;
         for (i, width) in self.item_widths.iter().enumerate() {
             if x >= current_x && x < current_x + width {

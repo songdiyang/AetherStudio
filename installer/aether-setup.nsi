@@ -1,5 +1,5 @@
 ﻿; ============================================================
-; Aether Editor 安装包脚本 (NSIS 3.x, Unicode)
+; Aether Studio 安装包脚本 (NSIS 3.x, Unicode)
 ;
 ; 本地编译:
 ;   makensis /DVERSION=0.1.0 installer\aether-setup.nsi
@@ -13,7 +13,7 @@
 ;     InstallDir 改 $PROGRAMFILES64，SetShellVarContext 改 all。
 ; ============================================================
 
-!define APP_NAME      "Aether Editor"
+!define APP_NAME      "Aether Studio"
 !define APP_EXE       "aether-app.exe"
 !define APP_PUBLISHER "Aether Team"
 !define APP_ID        "AetherEditor"          ; 注册表/快捷方式标识，勿随意改

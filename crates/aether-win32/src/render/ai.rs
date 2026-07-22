@@ -386,73 +386,380 @@ impl EditorState {
                 cy += 8.0;
             }
 
-            // ===== 历史记录下拉列表 =====
+            // ===== 历史记录面板（列表视图 / 详情视图）=====
             if self.ai_panel.history_open {
                 let hist_y = cy;
-                let item_h = 28.0f32;
-                let toggle_h = 20.0f32;
-                let max_items = 6usize;
-                let n = self.ai_panel.history.len().min(max_items);
-                let list_h = toggle_h + n as f32 * item_h + 8.0;
-                // 下拉背景
-                let hist_bg = color_f(0.12, 0.12, 0.14, 1.0);
-                if let Ok(hb) = self.render_ctx.brush_cache.get_brush(target, &hist_bg) {
-                    let hist_rect = D2D_RECT_F {
-                        left: x + margin,
-                        top: hist_y,
-                        right: x + width - margin,
-                        bottom: hist_y + list_h,
-                    };
+                let item_h = 30.0f32;
+                let header_h = 20.0f32;
+                let filter_h = 22.0f32;
+                let footer_h = 22.0f32;
+                let panel_left = x + margin;
+                let panel_right = x + width - margin;
+                let now = crate::ai_panel::now_secs();
+                let detail_mode = self.ai_panel.history_detail_id.is_some();
+                let page_indices = if detail_mode {
+                    Vec::new()
+                } else {
+                    self.ai_panel.history_page_indices()
+                };
+                let empty_hint_h = if !detail_mode && page_indices.is_empty() {
+                    20.0
+                } else {
+                    0.0
+                };
+                let list_h = if detail_mode {
+                    let msg_n = self
+                        .ai_panel
+                        .history_detail_conv
+                        .as_ref()
+                        .map(|c| c.messages.len().min(8))
+                        .unwrap_or(1);
+                    header_h + 18.0 + msg_n as f32 * 24.0 + 12.0
+                } else {
+                    header_h
+                        + filter_h
+                        + page_indices.len() as f32 * item_h
+                        + empty_hint_h
+                        + footer_h
+                        + 8.0
+                };
+                // 面板背景与边框
+                let hist_rect = D2D_RECT_F {
+                    left: panel_left,
+                    top: hist_y,
+                    right: panel_right,
+                    bottom: hist_y + list_h,
+                };
+                if let Ok(hb) = self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &color_f(0.12, 0.12, 0.14, 1.0))
+                {
                     target.FillRectangle(&hist_rect, &hb);
                 }
-                let hist_border = color_f(0.28, 0.28, 0.32, 1.0);
-                if let Ok(br) = self.render_ctx.brush_cache.get_brush(target, &hist_border) {
-                    let border_rect = D2D_RECT_F {
-                        left: x + margin,
-                        top: hist_y,
-                        right: x + width - margin,
-                        bottom: hist_y + list_h,
-                    };
-                    target.DrawRectangle(&border_rect, &br, 1.0, None);
+                if let Ok(br) = self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &color_f(0.28, 0.28, 0.32, 1.0))
+                {
+                    target.DrawRectangle(&hist_rect, &br, 1.0, None);
                 }
                 let mut iy = hist_y + 4.0;
-                // 「仅当前工作区」过滤开关
-                {
-                    let tgl_text: Vec<u16> = if self.ai_panel.history_workspace_only {
-                        "[√] 仅当前工作区"
-                    } else {
-                        "[  ] 仅当前工作区"
+
+                if detail_mode {
+                    // —— 详情视图：返回 / 恢复按钮 + 元信息 + 消息预览 ——
+                    let btn_h = 16.0f32;
+                    // ‹ 返回
+                    {
+                        let bw = 46.0f32;
+                        let bx = panel_left + 4.0;
+                        if let Ok(b) = self
+                            .render_ctx
+                            .brush_cache
+                            .get_brush(target, &color_f(0.20, 0.21, 0.24, 1.0))
+                        {
+                            target.FillRectangle(
+                                &D2D_RECT_F {
+                                    left: bx,
+                                    top: iy,
+                                    right: bx + bw,
+                                    bottom: iy + btn_h,
+                                },
+                                &b,
+                            );
+                        }
+                        let t: Vec<u16> = "‹ 返回".encode_utf16().chain(Some(0)).collect();
+                        target.DrawText(
+                            &t,
+                            &small_format,
+                            &D2D_RECT_F {
+                                left: bx + 5.0,
+                                top: iy + 1.0,
+                                right: bx + bw,
+                                bottom: iy + btn_h,
+                            },
+                            &white_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        self.ai_panel.history_detail_back_region = Some((bx, iy, bw, btn_h));
                     }
-                    .encode_utf16()
-                    .chain(Some(0))
-                    .collect();
+                    // 恢复此对话
+                    {
+                        let bw = 66.0f32;
+                        let bx = panel_right - 4.0 - bw;
+                        target.FillRectangle(
+                            &D2D_RECT_F {
+                                left: bx,
+                                top: iy,
+                                right: bx + bw,
+                                bottom: iy + btn_h,
+                            },
+                            &accent_brush,
+                        );
+                        let t: Vec<u16> = "恢复此对话".encode_utf16().chain(Some(0)).collect();
+                        target.DrawText(
+                            &t,
+                            &small_format,
+                            &D2D_RECT_F {
+                                left: bx + 6.0,
+                                top: iy + 1.0,
+                                right: bx + bw,
+                                bottom: iy + btn_h,
+                            },
+                            &white_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        self.ai_panel.history_detail_restore_region = Some((bx, iy, bw, btn_h));
+                    }
+                    iy += header_h;
+                    // 元信息行：标题 (N 条) · 模式 · 相对时间
+                    let meta_line = self
+                        .ai_panel
+                        .history_detail_id
+                        .as_ref()
+                        .and_then(|id| self.ai_panel.history.iter().find(|m| &m.id == id))
+                        .map(|m| {
+                            let mode = if m.mode.is_empty() {
+                                "-"
+                            } else {
+                                m.mode.as_str()
+                            };
+                            format!(
+                                "{}  ({} 条)  {}  {}",
+                                m.title,
+                                m.message_count,
+                                mode,
+                                crate::ai_panel::relative_time(m.updated_at, now)
+                            )
+                        })
+                        .unwrap_or_default();
+                    let ml: Vec<u16> = meta_line.encode_utf16().chain(Some(0)).collect();
                     target.DrawText(
-                        &tgl_text,
+                        &ml,
                         &small_format,
                         &D2D_RECT_F {
-                            left: x + margin + 6.0,
-                            top: iy + 2.0,
-                            right: x + width - margin - 6.0,
-                            bottom: iy + toggle_h,
+                            left: panel_left + 6.0,
+                            top: iy,
+                            right: panel_right - 6.0,
+                            bottom: iy + 14.0,
                         },
-                        &dim_brush,
+                        &white_brush,
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
                         DWRITE_MEASURING_MODE_NATURAL,
                     );
-                    self.ai_panel.history_ws_toggle_region =
-                        Some((x + margin + 2.0, iy, width - 2.0 * margin - 4.0, toggle_h));
-                    iy += toggle_h;
-                }
-                for (hi, hmeta) in self.ai_panel.history.iter().enumerate().take(n) {
-                    let item_rect = D2D_RECT_F {
-                        left: x + margin + 2.0,
-                        top: iy,
-                        right: x + width - margin - 2.0,
-                        bottom: iy + item_h - 2.0,
-                    };
-                    // 悬停高亮
-                    if let Some(hover) = self.ai_panel.hover_tab {
-                        if hover == hi {
+                    iy += 18.0;
+                    // 消息预览（最多 8 条，单条截断）
+                    if let Some(conv) = self.ai_panel.history_detail_conv.as_ref() {
+                        for msg in conv.messages.iter().take(8) {
+                            let role = match msg.role {
+                                crate::ai_panel::AiRole::User => "我",
+                                crate::ai_panel::AiRole::Assistant => "AI",
+                                crate::ai_panel::AiRole::System => "系统",
+                            };
+                            let content: String = msg.content.trim().chars().take(40).collect();
+                            let line: Vec<u16> = format!("{}: {}", role, content)
+                                .encode_utf16()
+                                .chain(Some(0))
+                                .collect();
+                            target.DrawText(
+                                &line,
+                                &small_format,
+                                &D2D_RECT_F {
+                                    left: panel_left + 6.0,
+                                    top: iy + 4.0,
+                                    right: panel_right - 6.0,
+                                    bottom: iy + 22.0,
+                                },
+                                &dim_brush,
+                                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                DWRITE_MEASURING_MODE_NATURAL,
+                            );
+                            iy += 24.0;
+                        }
+                    } else {
+                        let t: Vec<u16> = "（无法加载会话内容）"
+                            .encode_utf16()
+                            .chain(Some(0))
+                            .collect();
+                        target.DrawText(
+                            &t,
+                            &small_format,
+                            &D2D_RECT_F {
+                                left: panel_left + 6.0,
+                                top: iy + 4.0,
+                                right: panel_right - 6.0,
+                                bottom: iy + 22.0,
+                            },
+                            &dim_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                    }
+                } else {
+                    // —— 列表视图 ——
+                    // 头部：「仅当前工作区」开关 + 「清空」按钮
+                    {
+                        let tgl_text: Vec<u16> = if self.ai_panel.history_workspace_only {
+                            "[√] 仅当前工作区"
+                        } else {
+                            "[  ] 仅当前工作区"
+                        }
+                        .encode_utf16()
+                        .chain(Some(0))
+                        .collect();
+                        target.DrawText(
+                            &tgl_text,
+                            &small_format,
+                            &D2D_RECT_F {
+                                left: panel_left + 6.0,
+                                top: iy + 2.0,
+                                right: panel_right - 50.0,
+                                bottom: iy + header_h,
+                            },
+                            &dim_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        self.ai_panel.history_ws_toggle_region = Some((
+                            panel_left + 2.0,
+                            iy,
+                            panel_right - panel_left - 50.0,
+                            header_h,
+                        ));
+                        // 清空按钮
+                        let cw = 40.0f32;
+                        let cx = panel_right - 4.0 - cw;
+                        if let Ok(b) = self
+                            .render_ctx
+                            .brush_cache
+                            .get_brush(target, &color_f(0.45, 0.16, 0.16, 1.0))
+                        {
+                            target.FillRectangle(
+                                &D2D_RECT_F {
+                                    left: cx,
+                                    top: iy + 1.0,
+                                    right: cx + cw,
+                                    bottom: iy + header_h - 2.0,
+                                },
+                                &b,
+                            );
+                        }
+                        let ct: Vec<u16> = "清空".encode_utf16().chain(Some(0)).collect();
+                        target.DrawText(
+                            &ct,
+                            &small_format,
+                            &D2D_RECT_F {
+                                left: cx,
+                                top: iy + 3.0,
+                                right: cx + cw,
+                                bottom: iy + header_h - 2.0,
+                            },
+                            &white_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        self.ai_panel.history_clear_all_region =
+                            Some((cx, iy + 1.0, cw, header_h - 3.0));
+                        iy += header_h;
+                    }
+                    // 筛选行：时间筛选 + 类型筛选
+                    {
+                        let btn_h = 17.0f32;
+                        let mut fx = panel_left + 4.0;
+                        for (fi, f) in crate::ai_panel::HistoryTimeFilter::ALL.iter().enumerate() {
+                            let bw = 34.0f32;
+                            let active = self.ai_panel.history_time_filter == *f;
+                            let bg = if active {
+                                color_f(0.0, 0.47, 0.83, 1.0)
+                            } else {
+                                color_f(0.20, 0.21, 0.24, 1.0)
+                            };
+                            if let Ok(b) = self.render_ctx.brush_cache.get_brush(target, &bg) {
+                                target.FillRectangle(
+                                    &D2D_RECT_F {
+                                        left: fx,
+                                        top: iy,
+                                        right: fx + bw,
+                                        bottom: iy + btn_h,
+                                    },
+                                    &b,
+                                );
+                            }
+                            let t: Vec<u16> = f.label().encode_utf16().chain(Some(0)).collect();
+                            target.DrawText(
+                                &t,
+                                &small_format,
+                                &D2D_RECT_F {
+                                    left: fx,
+                                    top: iy + 2.0,
+                                    right: fx + bw,
+                                    bottom: iy + btn_h,
+                                },
+                                &white_brush,
+                                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                DWRITE_MEASURING_MODE_NATURAL,
+                            );
+                            self.ai_panel
+                                .history_time_filter_regions
+                                .push((fi, fx, iy, bw, btn_h));
+                            fx += bw + 3.0;
+                        }
+                        fx += 5.0;
+                        for (fi, tf) in crate::ai_panel::HISTORY_TYPE_FILTERS.iter().enumerate() {
+                            let label = tf.unwrap_or("全部");
+                            let bw = 38.0f32;
+                            let active = self.ai_panel.history_type_filter.as_deref() == *tf;
+                            let bg = if active {
+                                color_f(0.0, 0.47, 0.83, 1.0)
+                            } else {
+                                color_f(0.20, 0.21, 0.24, 1.0)
+                            };
+                            if let Ok(b) = self.render_ctx.brush_cache.get_brush(target, &bg) {
+                                target.FillRectangle(
+                                    &D2D_RECT_F {
+                                        left: fx,
+                                        top: iy,
+                                        right: fx + bw,
+                                        bottom: iy + btn_h,
+                                    },
+                                    &b,
+                                );
+                            }
+                            let t: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
+                            target.DrawText(
+                                &t,
+                                &small_format,
+                                &D2D_RECT_F {
+                                    left: fx,
+                                    top: iy + 2.0,
+                                    right: fx + bw,
+                                    bottom: iy + btn_h,
+                                },
+                                &white_brush,
+                                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                DWRITE_MEASURING_MODE_NATURAL,
+                            );
+                            self.ai_panel
+                                .history_type_filter_regions
+                                .push((fi, fx, iy, bw, btn_h));
+                            fx += bw + 3.0;
+                        }
+                        iy += filter_h;
+                    }
+                    // 当前页条目
+                    for hi in page_indices.iter().copied() {
+                        let hmeta = self.ai_panel.history[hi].clone();
+                        let del_w = 26.0f32;
+                        let item_rect = D2D_RECT_F {
+                            left: panel_left + 2.0,
+                            top: iy,
+                            right: panel_right - 2.0,
+                            bottom: iy + item_h - 2.0,
+                        };
+                        // 悬停高亮
+                        if self.ai_panel.hover_tab == Some(hi) {
                             if let Ok(hl) = self
                                 .render_ctx
                                 .brush_cache
@@ -461,72 +768,221 @@ impl EditorState {
                                 target.FillRectangle(&item_rect, &hl);
                             }
                         }
-                    }
-                    // 标题
-                    let title_text: Vec<u16> =
-                        format!("{}  ({})", hmeta.title, hmeta.message_count)
-                            .encode_utf16()
-                            .chain(Some(0))
-                            .collect();
-                    target.DrawText(
-                        &title_text,
-                        &small_format,
-                        &D2D_RECT_F {
-                            left: item_rect.left + 6.0,
-                            top: iy + 2.0,
-                            right: item_rect.right - 6.0,
-                            bottom: iy + 14.0,
-                        },
-                        &white_brush,
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        DWRITE_MEASURING_MODE_NATURAL,
-                    );
-                    // 预览（灰色小字）
-                    if !hmeta.preview.is_empty() {
-                        let prev_text: Vec<u16> =
-                            hmeta.preview.encode_utf16().chain(Some(0)).collect();
+                        // 标题：直接摘要用户问题（行业标准：不显示消息数）
+                        let title_text: Vec<u16> =
+                            hmeta.title.encode_utf16().chain(Some(0)).collect();
                         target.DrawText(
-                            &prev_text,
+                            &title_text,
                             &small_format,
                             &D2D_RECT_F {
                                 left: item_rect.left + 6.0,
-                                top: iy + 14.0,
-                                right: item_rect.right - 6.0,
-                                bottom: iy + 26.0,
+                                top: iy + 2.0,
+                                right: item_rect.right - del_w - 8.0,
+                                bottom: iy + 15.0,
+                            },
+                            &white_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        // 第二行：相对时间 + 模式（灰色小字）
+                        let mode = if hmeta.mode.is_empty() {
+                            "-".to_string()
+                        } else {
+                            hmeta.mode.clone()
+                        };
+                        let sub_text: Vec<u16> = format!(
+                            "{}  ·  {}",
+                            crate::ai_panel::relative_time(hmeta.updated_at, now),
+                            mode
+                        )
+                        .encode_utf16()
+                        .chain(Some(0))
+                        .collect();
+                        target.DrawText(
+                            &sub_text,
+                            &small_format,
+                            &D2D_RECT_F {
+                                left: item_rect.left + 6.0,
+                                top: iy + 15.0,
+                                right: item_rect.right - del_w - 8.0,
+                                bottom: iy + 28.0,
                             },
                             &dim_brush,
                             D2D1_DRAW_TEXT_OPTIONS_NONE,
                             DWRITE_MEASURING_MODE_NATURAL,
                         );
+                        // 删除按钮
+                        let dx = item_rect.right - 4.0 - del_w;
+                        if let Ok(b) = self
+                            .render_ctx
+                            .brush_cache
+                            .get_brush(target, &color_f(0.45, 0.16, 0.16, 1.0))
+                        {
+                            target.FillRectangle(
+                                &D2D_RECT_F {
+                                    left: dx,
+                                    top: iy + 5.0,
+                                    right: dx + del_w,
+                                    bottom: iy + item_h - 7.0,
+                                },
+                                &b,
+                            );
+                        }
+                        let dt: Vec<u16> = "删".encode_utf16().chain(Some(0)).collect();
+                        target.DrawText(
+                            &dt,
+                            &small_format,
+                            &D2D_RECT_F {
+                                left: dx,
+                                top: iy + 7.0,
+                                right: dx + del_w,
+                                bottom: iy + item_h - 7.0,
+                            },
+                            &white_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        self.ai_panel.history_delete_regions.push((
+                            hi,
+                            dx,
+                            iy + 5.0,
+                            del_w,
+                            item_h - 12.0,
+                        ));
+                        self.ai_panel.history_item_regions.push((
+                            hi,
+                            item_rect.left,
+                            iy,
+                            item_rect.right - item_rect.left - del_w - 6.0,
+                            item_h - 2.0,
+                        ));
+                        iy += item_h;
                     }
-                    self.ai_panel.history_item_regions.push((
-                        hi,
-                        item_rect.left,
-                        iy,
-                        item_rect.right - item_rect.left,
-                        item_h - 2.0,
-                    ));
-                    iy += item_h;
-                }
-                if self.ai_panel.history.len() > max_items {
-                    let more_text: Vec<u16> =
-                        format!("… 还有 {} 条", self.ai_panel.history.len() - max_items)
+                    if page_indices.is_empty() {
+                        let t: Vec<u16> = "暂无符合条件的历史记录"
                             .encode_utf16()
                             .chain(Some(0))
                             .collect();
-                    target.DrawText(
-                        &more_text,
-                        &small_format,
-                        &D2D_RECT_F {
-                            left: x + margin + 6.0,
-                            top: iy + 2.0,
-                            right: x + width - margin - 6.0,
-                            bottom: iy + 16.0,
-                        },
-                        &dim_brush,
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        DWRITE_MEASURING_MODE_NATURAL,
-                    );
+                        target.DrawText(
+                            &t,
+                            &small_format,
+                            &D2D_RECT_F {
+                                left: panel_left + 6.0,
+                                top: iy + 3.0,
+                                right: panel_right - 6.0,
+                                bottom: iy + 18.0,
+                            },
+                            &dim_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        iy += empty_hint_h;
+                    }
+                    // 页脚：分页
+                    {
+                        let pc = self.ai_panel.history_page_count().max(1);
+                        let page = self.ai_panel.history_page + 1;
+                        let pw = 52.0f32;
+                        let ph = 17.0f32;
+                        // ‹ 上一页
+                        let prev_enabled = self.ai_panel.history_page > 0;
+                        let px = panel_left + 4.0;
+                        let prev_bg = if prev_enabled {
+                            color_f(0.20, 0.21, 0.24, 1.0)
+                        } else {
+                            color_f(0.14, 0.14, 0.16, 1.0)
+                        };
+                        if let Ok(b) = self.render_ctx.brush_cache.get_brush(target, &prev_bg) {
+                            target.FillRectangle(
+                                &D2D_RECT_F {
+                                    left: px,
+                                    top: iy,
+                                    right: px + pw,
+                                    bottom: iy + ph,
+                                },
+                                &b,
+                            );
+                        }
+                        let t: Vec<u16> = "‹ 上一页".encode_utf16().chain(Some(0)).collect();
+                        target.DrawText(
+                            &t,
+                            &small_format,
+                            &D2D_RECT_F {
+                                left: px + 6.0,
+                                top: iy + 2.0,
+                                right: px + pw,
+                                bottom: iy + ph,
+                            },
+                            if prev_enabled {
+                                &white_brush
+                            } else {
+                                &dim_brush
+                            },
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        if prev_enabled {
+                            self.ai_panel.history_page_prev_region = Some((px, iy, pw, ph));
+                        }
+                        // 页码
+                        let pi: Vec<u16> = format!("{}/{}", page, pc)
+                            .encode_utf16()
+                            .chain(Some(0))
+                            .collect();
+                        target.DrawText(
+                            &pi,
+                            &small_format,
+                            &D2D_RECT_F {
+                                left: px + pw + 6.0,
+                                top: iy + 2.0,
+                                right: panel_right - pw - 10.0,
+                                bottom: iy + ph,
+                            },
+                            &dim_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        // 下一页 ›
+                        let next_enabled = page < pc;
+                        let nx = panel_right - 4.0 - pw;
+                        let next_bg = if next_enabled {
+                            color_f(0.20, 0.21, 0.24, 1.0)
+                        } else {
+                            color_f(0.14, 0.14, 0.16, 1.0)
+                        };
+                        if let Ok(b) = self.render_ctx.brush_cache.get_brush(target, &next_bg) {
+                            target.FillRectangle(
+                                &D2D_RECT_F {
+                                    left: nx,
+                                    top: iy,
+                                    right: nx + pw,
+                                    bottom: iy + ph,
+                                },
+                                &b,
+                            );
+                        }
+                        let t: Vec<u16> = "下一页 ›".encode_utf16().chain(Some(0)).collect();
+                        target.DrawText(
+                            &t,
+                            &small_format,
+                            &D2D_RECT_F {
+                                left: nx + 6.0,
+                                top: iy + 2.0,
+                                right: nx + pw,
+                                bottom: iy + ph,
+                            },
+                            if next_enabled {
+                                &white_brush
+                            } else {
+                                &dim_brush
+                            },
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                        if next_enabled {
+                            self.ai_panel.history_page_next_region = Some((nx, iy, pw, ph));
+                        }
+                    }
                 }
                 cy += list_h + 4.0;
             }
@@ -1326,332 +1782,7 @@ impl EditorState {
                 );
             }
 
-            // ===== 变更列表 + Diff 预览（Edit/Agent 模式） =====
-            if self.ai_panel.show_diff_view && !self.ai_panel.diff_view.is_empty() {
-                let input_top = y + height - 44.0;
-                let changes_y = (y + height - 340.0).max(chat_top + 4.0);
-                let changes_h = 150.0f32;
-
-                // 面板背景，避免与聊天内容视觉重叠
-                let panel_bg_brush = match self
-                    .render_ctx
-                    .brush_cache
-                    .get_brush(target, &color_f(0.10, 0.10, 0.12, 1.0))
-                {
-                    Ok(b) => b,
-                    Err(_) => return,
-                };
-                let panel_bg_rect = D2D_RECT_F {
-                    left: x + margin - 2.0,
-                    top: changes_y - 4.0,
-                    right: x + width - margin + 2.0,
-                    bottom: input_top - 6.0,
-                };
-                target.FillRectangle(&panel_bg_rect, &panel_bg_brush);
-
-                // 标题
-                let ch_title: Vec<u16> = "待确认变更".encode_utf16().chain(Some(0)).collect();
-                let ch_title_rect = D2D_RECT_F {
-                    left: x + margin,
-                    top: changes_y,
-                    right: x + width - margin,
-                    bottom: changes_y + 16.0,
-                };
-                target.DrawText(
-                    &ch_title,
-                    &small_format,
-                    &ch_title_rect,
-                    &yellow_brush,
-                    D2D1_DRAW_TEXT_OPTIONS_NONE,
-                    DWRITE_MEASURING_MODE_NATURAL,
-                );
-
-                // "全部接受" / "全部拒绝" 按钮（idx = usize::MAX 表示批量操作）
-                let accept_all_w = 60.0f32;
-                let reject_all_w = 60.0f32;
-                let btn_h2 = 20.0f32;
-                let accept_x = x + width - margin - reject_all_w - accept_all_w - 8.0;
-                let reject_x = x + width - margin - reject_all_w;
-                let accept_rect = D2D_RECT_F {
-                    left: accept_x,
-                    top: changes_y,
-                    right: accept_x + accept_all_w,
-                    bottom: changes_y + btn_h2,
-                };
-                let reject_rect = D2D_RECT_F {
-                    left: reject_x,
-                    top: changes_y,
-                    right: reject_x + reject_all_w,
-                    bottom: changes_y + btn_h2,
-                };
-                let accept_brush = match self
-                    .render_ctx
-                    .brush_cache
-                    .get_brush(target, &color_f(0.0, 0.55, 0.3, 1.0))
-                {
-                    Ok(b) => b,
-                    Err(_) => return,
-                };
-                let reject_brush = match self
-                    .render_ctx
-                    .brush_cache
-                    .get_brush(target, &color_f(0.6, 0.2, 0.2, 1.0))
-                {
-                    Ok(b) => b,
-                    Err(_) => return,
-                };
-                target.FillRectangle(&accept_rect, &accept_brush);
-                target.FillRectangle(&reject_rect, &reject_brush);
-                let accept_t: Vec<u16> = "全部接受".encode_utf16().chain(Some(0)).collect();
-                let reject_t: Vec<u16> = "全部拒绝".encode_utf16().chain(Some(0)).collect();
-                let accept_tr = D2D_RECT_F {
-                    left: accept_x,
-                    top: changes_y + 3.0,
-                    right: accept_x + accept_all_w,
-                    bottom: changes_y + btn_h2 - 1.0,
-                };
-                let reject_tr = D2D_RECT_F {
-                    left: reject_x,
-                    top: changes_y + 3.0,
-                    right: reject_x + reject_all_w,
-                    bottom: changes_y + btn_h2 - 1.0,
-                };
-                target.DrawText(
-                    &accept_t,
-                    &small_format,
-                    &accept_tr,
-                    &white_brush,
-                    D2D1_DRAW_TEXT_OPTIONS_NONE,
-                    DWRITE_MEASURING_MODE_NATURAL,
-                );
-                target.DrawText(
-                    &reject_t,
-                    &small_format,
-                    &reject_tr,
-                    &white_brush,
-                    D2D1_DRAW_TEXT_OPTIONS_NONE,
-                    DWRITE_MEASURING_MODE_NATURAL,
-                );
-                self.ai_panel.change_action_regions.push((
-                    usize::MAX,
-                    1,
-                    accept_x,
-                    changes_y,
-                    accept_all_w,
-                    btn_h2,
-                ));
-                self.ai_panel.change_action_regions.push((
-                    usize::MAX,
-                    2,
-                    reject_x,
-                    changes_y,
-                    reject_all_w,
-                    btn_h2,
-                ));
-
-                // 文件列表（最多显示 4 个）
-                let list_y = changes_y + 24.0;
-                let mut item_y = list_y;
-                let selected_idx = self.ai_panel.diff_view.selected_index;
-                let max_files_shown = 4usize;
-                for (idx, file) in self
-                    .ai_panel
-                    .diff_view
-                    .files
-                    .iter()
-                    .enumerate()
-                    .take(max_files_shown)
-                {
-                    if item_y + 20.0 > changes_y + changes_h {
-                        break;
-                    }
-                    // 选中行高亮
-                    if idx == selected_idx {
-                        let sel_rect = D2D_RECT_F {
-                            left: x + margin,
-                            top: item_y - 1.0,
-                            right: x + width - margin,
-                            bottom: item_y + 17.0,
-                        };
-                        if let Ok(sel_brush) = self
-                            .render_ctx
-                            .brush_cache
-                            .get_brush(target, &color_f(0.18, 0.20, 0.26, 1.0))
-                        {
-                            target.FillRectangle(&sel_rect, &sel_brush);
-                        }
-                    }
-                    let (del, ins) = file.change_count();
-                    let file_name = file
-                        .path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    let status = if file.accepted {
-                        "✓"
-                    } else if file.rejected {
-                        "✗"
-                    } else {
-                        "○"
-                    };
-                    let line = format!("{} {} (+{} -{})", status, file_name, ins, del);
-                    let line_wide: Vec<u16> = line.encode_utf16().chain(Some(0)).collect();
-                    let line_rect = D2D_RECT_F {
-                        left: x + margin + 4.0,
-                        top: item_y,
-                        right: x + width - margin - 130.0,
-                        bottom: item_y + 16.0,
-                    };
-                    target.DrawText(
-                        &line_wide,
-                        &small_format,
-                        &line_rect,
-                        if file.accepted {
-                            &green_brush
-                        } else if file.rejected {
-                            &dim_brush
-                        } else {
-                            text_brush
-                        },
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        DWRITE_MEASURING_MODE_NATURAL,
-                    );
-
-                    // 预览/接受/拒绝 三个小按钮
-                    let act_w = 36.0f32;
-                    let act_gap = 4.0;
-                    let act_start = x + width - margin - (act_w * 3.0 + act_gap * 2.0);
-                    for (ai, label) in ["预览", "接受", "拒绝"].iter().enumerate() {
-                        let ax = act_start + ai as f32 * (act_w + act_gap);
-                        let arect = D2D_RECT_F {
-                            left: ax,
-                            top: item_y,
-                            right: ax + act_w,
-                            bottom: item_y + 16.0,
-                        };
-                        let acolor = match ai {
-                            0 => color_f(0.2, 0.2, 0.25, 1.0),
-                            1 => color_f(0.0, 0.45, 0.25, 1.0),
-                            _ => color_f(0.45, 0.15, 0.15, 1.0),
-                        };
-                        let abrush = match self.render_ctx.brush_cache.get_brush(target, &acolor) {
-                            Ok(b) => b,
-                            Err(_) => continue,
-                        };
-                        target.FillRectangle(&arect, &abrush);
-                        let at: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
-                        let atr = D2D_RECT_F {
-                            left: ax,
-                            top: item_y + 2.0,
-                            right: ax + act_w,
-                            bottom: item_y + 14.0,
-                        };
-                        target.DrawText(
-                            &at,
-                            &small_format,
-                            &atr,
-                            &white_brush,
-                            D2D1_DRAW_TEXT_OPTIONS_NONE,
-                            DWRITE_MEASURING_MODE_NATURAL,
-                        );
-                        self.ai_panel
-                            .change_action_regions
-                            .push((idx, ai as u8, ax, item_y, act_w, 16.0));
-                    }
-                    item_y += 18.0;
-                }
-                if self.ai_panel.diff_view.files.len() > max_files_shown {
-                    let more = format!(
-                        "… 其余 {} 个文件",
-                        self.ai_panel.diff_view.files.len() - max_files_shown
-                    );
-                    let more_wide: Vec<u16> = more.encode_utf16().chain(Some(0)).collect();
-                    let more_rect = D2D_RECT_F {
-                        left: x + margin + 4.0,
-                        top: item_y,
-                        right: x + width - margin,
-                        bottom: item_y + 16.0,
-                    };
-                    target.DrawText(
-                        &more_wide,
-                        &small_format,
-                        &more_rect,
-                        &dim_brush,
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        DWRITE_MEASURING_MODE_NATURAL,
-                    );
-                    item_y += 18.0;
-                }
-
-                // ===== 选中文件的 Diff 预览行 =====
-                let preview_top = item_y + 4.0;
-                let preview_bottom = input_top - 8.0;
-                if preview_bottom - preview_top > 16.0 {
-                    if let Some(file) = self.ai_panel.diff_view.files.get(selected_idx) {
-                        let dl_h = 13.0f32;
-                        let mut ly = preview_top;
-                        for dline in &file.lines {
-                            if ly + dl_h > preview_bottom {
-                                break;
-                            }
-                            let (bg_color, fg_color, prefix) = match dline.kind {
-                                crate::diff_view::DiffLineKind::Delete => (
-                                    Some(color_f(0.32, 0.12, 0.12, 1.0)),
-                                    color_f(0.95, 0.6, 0.6, 1.0),
-                                    "-",
-                                ),
-                                crate::diff_view::DiffLineKind::Insert => (
-                                    Some(color_f(0.10, 0.30, 0.14, 1.0)),
-                                    color_f(0.7, 0.95, 0.7, 1.0),
-                                    "+",
-                                ),
-                                crate::diff_view::DiffLineKind::Context => {
-                                    (None, color_f(0.6, 0.6, 0.6, 1.0), " ")
-                                }
-                            };
-                            if let Some(bc) = bg_color {
-                                if let Ok(lb) = self.render_ctx.brush_cache.get_brush(target, &bc) {
-                                    let lr = D2D_RECT_F {
-                                        left: x + margin,
-                                        top: ly,
-                                        right: x + width - margin,
-                                        bottom: ly + dl_h,
-                                    };
-                                    target.FillRectangle(&lr, &lb);
-                                }
-                            }
-                            let fg_brush =
-                                match self.render_ctx.brush_cache.get_brush(target, &fg_color) {
-                                    Ok(b) => b,
-                                    Err(_) => break,
-                                };
-                            let raw = dline.text.trim_end_matches(['\n', '\r']);
-                            let shown: String = if raw.chars().count() > 120 {
-                                raw.chars().take(120).collect()
-                            } else {
-                                raw.to_string()
-                            };
-                            let dtext = format!("{}{}", prefix, shown);
-                            let dwide: Vec<u16> = dtext.encode_utf16().chain(Some(0)).collect();
-                            let dr = D2D_RECT_F {
-                                left: x + margin + 4.0,
-                                top: ly,
-                                right: x + width - margin - 2.0,
-                                bottom: ly + dl_h,
-                            };
-                            target.DrawText(
-                                &dwide,
-                                &small_format,
-                                &dr,
-                                &fg_brush,
-                                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                DWRITE_MEASURING_MODE_NATURAL,
-                            );
-                            ly += dl_h;
-                        }
-                    }
-                }
-            }
+            // ===== 变更列表 + Diff 预览已移除（Edit 模式删除，Agent 生成完成直接落盘） =====
 
             // ===== 输入框区域（新设计：参考图样式） =====
             let input_area_h = 80.0f32; // 输入区域总高度（与 chat_bottom 计算保持一致）

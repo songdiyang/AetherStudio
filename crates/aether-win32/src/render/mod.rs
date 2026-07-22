@@ -69,12 +69,8 @@ impl EditorState {
         crate::hit_test::clear_hit_regions();
 
         // AI-H01: 轮询后台 AI 请求结果，不阻塞 UI 线程
-        // 传入工作区目录，供 Edit/Agent 模式解析编辑相对路径生成正确 diff
         // 多会话并发：轮询所有会话（活动 + 后台），对本帧刚完成的每个会话处理 Agent 动作
-        let ai_current_folder = self.current_folder.clone();
-        let ai_completed = self
-            .ai_panel
-            .poll_all_background(ai_current_folder.as_deref());
+        let ai_completed = self.ai_panel.poll_all_background();
         self.ai_panel.sync_active_title();
         for conv_idx in ai_completed {
             self.process_ai_agent_actions_for(conv_idx);
@@ -106,6 +102,11 @@ impl EditorState {
             self.terminal_panel.flush_output();
             // AI Agent 排队命令：终端就绪后自动发送执行
             self.terminal_panel.flush_pending_commands();
+        }
+        // AI Agent 命令完成回环：输出回传给 AI 继续推理（哨兵检测，含超时兜底）
+        let agent_results = self.terminal_panel.poll_agent_results();
+        if !agent_results.is_empty() {
+            self.handle_agent_command_results(agent_results);
         }
 
         // 懒加载预扫描：确保所有 is_expanded 但未加载的目录节点子项已就绪

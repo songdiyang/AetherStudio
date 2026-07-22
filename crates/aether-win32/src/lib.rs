@@ -2,7 +2,6 @@
 #![allow(clippy::new_without_default)]
 
 pub mod conpty;
-pub mod diff_view;
 pub mod dirty_rect;
 pub mod events;
 pub mod focus_manager;
