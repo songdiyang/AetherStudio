@@ -26,7 +26,11 @@ pub enum ArchiveRequest {
         conv: AiConversation,
     },
     /// 归档所有脏会话
-    ArchiveAllDirty { sessions: Vec<AiConversation> },
+    /// reflect=false 用于退出场景：只落盘不做 LLM 反思，避免退出被网络请求阻塞
+    ArchiveAllDirty {
+        sessions: Vec<AiConversation>,
+        reflect: bool,
+    },
     /// 删除指定会话的临时日志
     RemoveHotLog { conv_id: String },
     /// 关闭归档线程
@@ -229,12 +233,12 @@ impl WarmDataStore {
                         Err(e) => ArchiveResult::Failed { conv_id, error: e },
                     });
                 }
-                ArchiveRequest::ArchiveAllDirty { sessions } => {
+                ArchiveRequest::ArchiveAllDirty { sessions, reflect } => {
                     let hash = workspace_hash.read().map(|g| g.clone()).unwrap_or_default();
                     for conv in sessions {
                         let conv_id = conv.id.clone();
                         let result = Self::archive_single(store.as_ref(), &conv_id, &conv, &hash);
-                        if result.is_ok() {
+                        if result.is_ok() && reflect {
                             Self::maybe_reflect(&store, &reflector_client, &conv);
                         }
                         let _ = result_tx.send(match result {
@@ -331,9 +335,10 @@ impl WarmDataStore {
     }
 
     /// 批量归档所有脏会话
-    pub fn request_archive_all(&self, sessions: Vec<AiConversation>) {
+    /// reflect=false 用于退出场景：只落盘不做 LLM 反思，避免退出被网络请求阻塞
+    pub fn request_archive_all(&self, sessions: Vec<AiConversation>, reflect: bool) {
         if let Some(tx) = &self.request_tx {
-            let _ = tx.send(ArchiveRequest::ArchiveAllDirty { sessions });
+            let _ = tx.send(ArchiveRequest::ArchiveAllDirty { sessions, reflect });
         }
     }
 
@@ -373,9 +378,20 @@ impl WarmDataStore {
                 updated_at: c.updated_at,
                 message_count: c.message_count as usize,
                 preview: preview.chars().take(50).collect(),
+                mode: c.mode,
             });
         }
         Ok(results)
+    }
+
+    /// 删除历史会话（级联删除消息与向量索引）
+    pub fn delete_conversation(&self, conv_id: &str) -> Result<(), String> {
+        self.store.delete_conversation(conv_id)
+    }
+
+    /// 清空全部历史会话；返回删除条数
+    pub fn clear_all_conversations(&self) -> Result<usize, String> {
+        self.store.clear_all_conversations()
     }
 
     /// 加载完整会话
@@ -424,6 +440,7 @@ impl WarmDataStore {
                     updated_at: msg.created_at,
                     message_count: 0,
                     preview: msg.content.chars().take(50).collect(),
+                    mode: String::new(),
                 },
                 // L2 距离 → 相似度得分（越大越相似）
                 1.0 / (1.0 + distance),

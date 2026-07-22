@@ -83,6 +83,15 @@ pub trait MemoryStore: Send + Sync {
     fn upsert_conversation(&self, conv: &Conversation) -> Result<(), String>;
     fn list_conversations(&self, limit: usize) -> Result<Vec<Conversation>, String>;
     fn delete_conversation(&self, conv_id: &str) -> Result<(), String>;
+    /// 清空全部会话（级联删除消息与向量索引）；返回删除条数
+    fn clear_all_conversations(&self) -> Result<usize, String> {
+        let all = self.list_conversations(1_000_000)?;
+        let n = all.len();
+        for c in all {
+            self.delete_conversation(&c.id)?;
+        }
+        Ok(n)
+    }
 
     // ---- 消息 ----
     fn append_message(&self, msg: &ChatMessage) -> Result<(), String>;
@@ -1044,6 +1053,38 @@ mod tests {
 
         store.delete_conversation("c1").unwrap();
         assert!(store.get_messages("c1").unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_clear_all_conversations() {
+        let (dir, store) = temp_store();
+        for i in 0..3 {
+            let cid = format!("c{}", i);
+            store
+                .upsert_conversation(&Conversation {
+                    id: cid.clone(),
+                    title: format!("会话{}", i),
+                    workspace_hash: "ws".into(),
+                    mode: "Agent".into(),
+                    created_at: 1,
+                    updated_at: 2 + i as u64,
+                    message_count: 1,
+                })
+                .unwrap();
+            store
+                .append_message(&sample_msg(&cid, 0, "你好", None))
+                .unwrap();
+        }
+        assert_eq!(store.list_conversations(10).unwrap().len(), 3);
+
+        let n = store.clear_all_conversations().unwrap();
+        assert_eq!(n, 3);
+        assert!(store.list_conversations(10).unwrap().is_empty());
+        // 级联删除消息
+        assert!(store.get_messages("c0").unwrap().is_empty());
+        // 空库清空返回 0
+        assert_eq!(store.clear_all_conversations().unwrap(), 0);
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -232,6 +232,32 @@ struct ResolvedEndpoint {
     port: u16,
 }
 
+/// 将消息列表拆分为 Claude 格式：system 消息合并为顶层 system 文本，
+/// 其余消息（user/assistant）原样保留。
+///
+/// Anthropic /messages 接口的 messages 数组只允许 user/assistant 角色，
+/// system 内容必须放在请求的顶层 system 字段，否则接口返回 400。
+fn split_claude_messages(messages: &[ChatMessage]) -> (Option<String>, Vec<serde_json::Value>) {
+    let mut system_parts: Vec<&str> = Vec::new();
+    let mut msgs: Vec<serde_json::Value> = Vec::new();
+    for m in messages {
+        if m.role == "system" {
+            system_parts.push(&m.content);
+        } else {
+            msgs.push(serde_json::json!({
+                "role": m.role,
+                "content": m.content,
+            }));
+        }
+    }
+    let system = if system_parts.is_empty() {
+        None
+    } else {
+        Some(system_parts.join("\n\n"))
+    };
+    (system, msgs)
+}
+
 impl AiClient {
     pub fn new(config: &AiSettings) -> Self {
         let config = AiConfig::from_settings(config);
@@ -648,21 +674,16 @@ impl AiClient {
         // 始终使用原始 base_url（含域名），TLS 证书验证才能匹配域名
         let url = format!("{}/messages", base_url);
 
-        let msgs: Vec<serde_json::Value> = messages
-            .iter()
-            .map(|m| {
-                serde_json::json!({
-                    "role": m.role,
-                    "content": m.content,
-                })
-            })
-            .collect();
+        let (system, msgs) = split_claude_messages(messages);
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": self.config.model,
             "messages": msgs,
             "max_tokens": 2048,
         });
+        if let Some(system) = system {
+            body["system"] = serde_json::json!(system);
+        }
 
         let response = self
             .http
@@ -727,16 +748,17 @@ impl AiClient {
         }
 
         let url = format!("{}/chat/completions", base_url);
-        let mut body_messages: Vec<serde_json::Value> = Vec::new();
-        if let Some(sys) = &self.config.system_prompt {
-            body_messages.push(serde_json::json!({"role": "system", "content": sys}));
-        }
-        body_messages.extend(messages.iter().map(|m| {
-            serde_json::json!({
-                "role": m.role,
-                "content": m.content,
+        // system 消息由调用方在消息列表中构建（见 build_chat_prompt，固定为第一条），
+        // 此处不再从 config.system_prompt 重复注入，避免同一提示词发送两遍。
+        let body_messages: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role,
+                    "content": m.content,
+                })
             })
-        }));
+            .collect();
 
         let mut body = serde_json::json!({
             "model": self.config.model,
@@ -779,15 +801,7 @@ impl AiClient {
         }
 
         let url = format!("{}/messages", base_url);
-        let msgs: Vec<serde_json::Value> = messages
-            .iter()
-            .map(|m| {
-                serde_json::json!({
-                    "role": m.role,
-                    "content": m.content,
-                })
-            })
-            .collect();
+        let (system, msgs) = split_claude_messages(messages);
         let max_tokens = self.config.max_tokens.unwrap_or(2048);
 
         let mut body = serde_json::json!({
@@ -796,8 +810,8 @@ impl AiClient {
             "max_tokens": max_tokens,
             "stream": true,
         });
-        if let Some(sys) = &self.config.system_prompt {
-            body["system"] = serde_json::json!(sys);
+        if let Some(system) = system {
+            body["system"] = serde_json::json!(system);
         }
         if let Some(t) = self.config.temperature {
             body["temperature"] = serde_json::json!(t);
@@ -1154,6 +1168,36 @@ mod tests {
         let a = ChatMessage::assistant(String::from("hi there"));
         assert_eq!(a.role, "assistant");
         assert_eq!(a.content, "hi there");
+    }
+
+    #[test]
+    fn split_claude_messages_extracts_system_to_top_level() {
+        let messages = vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: "sys-1".to_string(),
+            },
+            ChatMessage::user("hello"),
+            ChatMessage {
+                role: "system".to_string(),
+                content: "sys-2".to_string(),
+            },
+            ChatMessage::assistant("hi".to_string()),
+        ];
+        let (system, msgs) = split_claude_messages(&messages);
+        // system 消息合并到顶层，messages 数组只含 user/assistant
+        assert_eq!(system, Some("sys-1\n\nsys-2".to_string()));
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[1]["role"], "assistant");
+    }
+
+    #[test]
+    fn split_claude_messages_without_system_returns_none() {
+        let messages = vec![ChatMessage::user("hello")];
+        let (system, msgs) = split_claude_messages(&messages);
+        assert_eq!(system, None);
+        assert_eq!(msgs.len(), 1);
     }
 
     // ==================== AiClient ====================

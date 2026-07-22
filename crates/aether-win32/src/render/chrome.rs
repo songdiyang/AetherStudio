@@ -386,7 +386,8 @@ impl EditorState {
             let tool_btn_gap = 2.0f32;
 
             // 从右往左计算位置：关闭/最大化/最小化 → 用户 → 设置 → 面板按钮 → 分隔线 → 前进/返回
-            let user_btn_size = 24.0f32;
+            // 用户按钮与其他工具按钮统一为 28px（行业标准一致尺寸）
+            let user_btn_size = tool_btn_size;
             let user_btn_x = minimize_x - tool_btn_gap - user_btn_size;
             let user_btn_y = y + (height - user_btn_size) / 2.0;
 
@@ -641,12 +642,12 @@ impl EditorState {
                 bottom: y + btn_height,
             };
             target.FillRectangle(&min_rect, &min_bg_brush);
-            // 最小化图标（横线）
-            let line_y = y + height / 2.0 + 4.0;
+            // 最小化图标（横线，10px 居中，与 Windows 标准标题栏一致）
+            let line_y = y + (height - 1.0) / 2.0;
             let line_rect = D2D_RECT_F {
-                left: minimize_x + 18.0,
+                left: minimize_x + (btn_width - 10.0) / 2.0,
                 top: line_y,
-                right: minimize_x + btn_width - 18.0,
+                right: minimize_x + (btn_width + 10.0) / 2.0,
                 bottom: line_y + 1.0,
             };
             target.FillRectangle(&line_rect, &icon_brush);
@@ -669,30 +670,39 @@ impl EditorState {
                 bottom: y + btn_height,
             };
             target.FillRectangle(&max_rect, &max_bg_brush);
-            // 最大化/还原图标
+            // 最大化/还原图标（10px 居中，与 Windows 标准标题栏一致）
+            let glyph = 10.0f32;
+            let glyph_x = maximize_x + (btn_width - glyph) / 2.0;
+            let glyph_y = y + (height - glyph) / 2.0;
             if self.is_maximized {
-                // 还原图标（两个重叠矩形）
-                let outer_rect = D2D_RECT_F {
-                    left: maximize_x + 16.0,
-                    top: y + 10.0,
-                    right: maximize_x + 30.0,
-                    bottom: y + 20.0,
+                // 还原图标：后窗轮廓 + 前窗（先填底色遮挡重叠部分再描边）
+                let back_rect = D2D_RECT_F {
+                    left: glyph_x - 2.0,
+                    top: glyph_y - 2.0,
+                    right: glyph_x + glyph - 2.0,
+                    bottom: glyph_y + glyph - 2.0,
                 };
-                target.DrawRectangle(&outer_rect, &icon_brush, 1.0, None);
-                let inner_rect = D2D_RECT_F {
-                    left: maximize_x + 18.0,
-                    top: y + 12.0,
-                    right: maximize_x + 28.0,
-                    bottom: y + 18.0,
+                target.DrawRectangle(&back_rect, &icon_brush, 1.0, None);
+                let front_rect = D2D_RECT_F {
+                    left: glyph_x + 2.0,
+                    top: glyph_y + 2.0,
+                    right: glyph_x + glyph + 2.0,
+                    bottom: glyph_y + glyph + 2.0,
                 };
-                target.FillRectangle(&inner_rect, &icon_brush);
+                let mask_brush = self
+                    .render_ctx
+                    .brush_cache
+                    .get_brush(target, &default_bg)
+                    .unwrap();
+                target.FillRectangle(&front_rect, &mask_brush);
+                target.DrawRectangle(&front_rect, &icon_brush, 1.0, None);
             } else {
                 // 最大化图标（空心矩形）
                 let outer_rect = D2D_RECT_F {
-                    left: maximize_x + 16.0,
-                    top: y + 10.0,
-                    right: maximize_x + 30.0,
-                    bottom: y + 22.0,
+                    left: glyph_x,
+                    top: glyph_y,
+                    right: glyph_x + glyph,
+                    bottom: glyph_y + glyph,
                 };
                 target.DrawRectangle(&outer_rect, &icon_brush, 1.0, None);
             }
@@ -758,6 +768,10 @@ impl EditorState {
                 }
             };
             let tool_top = y + (btn_height - tool_btn_size) / 2.0;
+            // 行业标准（VS Code）：28px 按钮内绘制 16px 图标，居中
+            let tool_icon_size = 16.0f32;
+            let tool_icon_offset = (tool_btn_size - tool_icon_size) / 2.0;
+            let tool_icon_top = tool_top + tool_icon_offset;
 
             // 返回按钮 ←
             target.FillRectangle(
@@ -777,10 +791,10 @@ impl EditorState {
             self.icons.draw(
                 target,
                 crate::icons::IconKind::Back,
-                back_btn_x,
-                tool_top,
-                tool_btn_size,
-                tool_btn_size,
+                back_btn_x + tool_icon_offset,
+                tool_icon_top,
+                tool_icon_size,
+                tool_icon_size,
                 arrow_brush,
             );
 
@@ -802,10 +816,10 @@ impl EditorState {
             self.icons.draw(
                 target,
                 crate::icons::IconKind::Forward,
-                forward_btn_x,
-                tool_top,
-                tool_btn_size,
-                tool_btn_size,
+                forward_btn_x + tool_icon_offset,
+                tool_icon_top,
+                tool_icon_size,
+                tool_icon_size,
                 arrow_brush,
             );
 
@@ -823,7 +837,7 @@ impl EditorState {
             };
             target.FillRectangle(&divider_rect, &divider_brush);
 
-            // 左侧边栏按钮：小矩形在左侧
+            // 左侧边栏按钮：Lucide panel-left 图标
             target.FillRectangle(
                 &tool_btn_rect(left_sidebar_btn_x),
                 if self.titlebar_hover_button == Some(7) {
@@ -837,22 +851,17 @@ impl EditorState {
             } else {
                 &icon_brush
             };
-            let ls_outer = D2D_RECT_F {
-                left: left_sidebar_btn_x + 7.0,
-                top: tool_top + 5.0,
-                right: left_sidebar_btn_x + tool_btn_size - 7.0,
-                bottom: tool_top + tool_btn_size - 5.0,
-            };
-            target.DrawRectangle(&ls_outer, ls_brush, 1.0, None);
-            let ls_inner = D2D_RECT_F {
-                left: left_sidebar_btn_x + 9.0,
-                top: tool_top + 5.0,
-                right: left_sidebar_btn_x + 13.0,
-                bottom: tool_top + tool_btn_size - 5.0,
-            };
-            target.FillRectangle(&ls_inner, ls_brush);
+            self.icons.draw(
+                target,
+                crate::icons::IconKind::Sidebar,
+                left_sidebar_btn_x + tool_icon_offset,
+                tool_icon_top,
+                tool_icon_size,
+                tool_icon_size,
+                ls_brush,
+            );
 
-            // 底部面板按钮：小矩形在底部
+            // 底部面板按钮：Lucide panel-bottom 图标
             target.FillRectangle(
                 &tool_btn_rect(bottom_panel_btn_x),
                 if self.titlebar_hover_button == Some(6) {
@@ -866,22 +875,17 @@ impl EditorState {
             } else {
                 &icon_brush
             };
-            let bp_outer = D2D_RECT_F {
-                left: bottom_panel_btn_x + 7.0,
-                top: tool_top + 5.0,
-                right: bottom_panel_btn_x + tool_btn_size - 7.0,
-                bottom: tool_top + tool_btn_size - 5.0,
-            };
-            target.DrawRectangle(&bp_outer, bp_brush, 1.0, None);
-            let bp_inner = D2D_RECT_F {
-                left: bottom_panel_btn_x + 7.0,
-                top: tool_top + tool_btn_size - 11.0,
-                right: bottom_panel_btn_x + tool_btn_size - 7.0,
-                bottom: tool_top + tool_btn_size - 5.0,
-            };
-            target.FillRectangle(&bp_inner, bp_brush);
+            self.icons.draw(
+                target,
+                crate::icons::IconKind::PanelBottom,
+                bottom_panel_btn_x + tool_icon_offset,
+                tool_icon_top,
+                tool_icon_size,
+                tool_icon_size,
+                bp_brush,
+            );
 
-            // 右侧面板按钮：小矩形在右侧
+            // 右侧面板按钮：Lucide panel-right 图标
             target.FillRectangle(
                 &tool_btn_rect(right_panel_btn_x),
                 if self.titlebar_hover_button == Some(5) {
@@ -895,20 +899,15 @@ impl EditorState {
             } else {
                 &icon_brush
             };
-            let rp_outer = D2D_RECT_F {
-                left: right_panel_btn_x + 7.0,
-                top: tool_top + 5.0,
-                right: right_panel_btn_x + tool_btn_size - 7.0,
-                bottom: tool_top + tool_btn_size - 5.0,
-            };
-            target.DrawRectangle(&rp_outer, rp_brush, 1.0, None);
-            let rp_inner = D2D_RECT_F {
-                left: right_panel_btn_x + tool_btn_size - 13.0,
-                top: tool_top + 5.0,
-                right: right_panel_btn_x + tool_btn_size - 9.0,
-                bottom: tool_top + tool_btn_size - 5.0,
-            };
-            target.FillRectangle(&rp_inner, rp_brush);
+            self.icons.draw(
+                target,
+                crate::icons::IconKind::PanelRight,
+                right_panel_btn_x + tool_icon_offset,
+                tool_icon_top,
+                tool_icon_size,
+                tool_icon_size,
+                rp_brush,
+            );
 
             // 设置按钮：齿轮图标
             target.FillRectangle(
@@ -928,10 +927,10 @@ impl EditorState {
             self.icons.draw(
                 target,
                 crate::icons::IconKind::Settings,
-                settings_btn_x,
-                tool_top,
-                tool_btn_size,
-                tool_btn_size,
+                settings_btn_x + tool_icon_offset,
+                tool_icon_top,
+                tool_icon_size,
+                tool_icon_size,
                 settings_brush,
             );
 
@@ -964,10 +963,10 @@ impl EditorState {
             self.icons.draw(
                 target,
                 crate::icons::IconKind::User,
-                user_btn_x,
-                user_btn_top,
-                user_btn_size,
-                user_btn_size,
+                user_btn_x + tool_icon_offset,
+                user_btn_top + tool_icon_offset,
+                tool_icon_size,
+                tool_icon_size,
                 user_brush,
             );
 

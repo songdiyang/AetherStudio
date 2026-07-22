@@ -52,6 +52,33 @@ pub struct TerminalPanel {
     conpty_start_time: Option<std::time::Instant>,
     /// AI Agent 待执行命令队列（终端就绪后自动发送）
     pending_commands: std::collections::VecDeque<String>,
+    /// AI Agent 命令监视队列（等待输出回传，与 pending_commands 中 agent 命令一一对应）
+    agent_requests: std::collections::VecDeque<AgentCommandWatch>,
+    /// Agent 命令哨兵序号（保证每条命令的完成标记唯一）
+    agent_counter: u64,
+    /// Agent 输出扫描起点（output_lines 下标，之前的行已归属更早的命令）
+    agent_scan_from: usize,
+    /// 当前 shell 是否为 PowerShell（决定哨兵命令的连接符语法）
+    shell_is_powershell: bool,
+}
+
+/// AI Agent 命令监视：等待终端输出中出现完成哨兵
+pub struct AgentCommandWatch {
+    /// 所属 AI 会话下标（结果回传到对应会话）
+    pub conv_idx: usize,
+    /// 原始命令（未包裹哨兵）
+    pub command: String,
+    /// 完成哨兵文本（独占一行出现即视为命令结束）
+    pub sentinel: String,
+    /// 入队时间（用于超时兜底）
+    pub queued_at: std::time::Instant,
+}
+
+/// AI Agent 命令执行完成的结果
+pub struct AgentCommandResult {
+    pub conv_idx: usize,
+    pub command: String,
+    pub output: String,
 }
 
 impl TerminalPanel {
@@ -76,6 +103,10 @@ impl TerminalPanel {
             size_synced: false,
             conpty_start_time: None,
             pending_commands: std::collections::VecDeque::new(),
+            agent_requests: std::collections::VecDeque::new(),
+            agent_counter: 0,
+            agent_scan_from: 0,
+            shell_is_powershell: false,
         }
     }
 
@@ -128,6 +159,8 @@ impl TerminalPanel {
         }
 
         let (shell, args) = detect_default_shell();
+        self.shell_is_powershell =
+            shell.to_lowercase().contains("powershell") || shell.to_lowercase().contains("pwsh");
         // 构建完整命令行。可执行文件路径含空格（如 "C:\Program Files\PowerShell\7\pwsh.exe"）
         // 时必须给路径加引号，否则 CreateProcessW（lpApplicationName=NULL）会把首个空格前的
         // "C:\Program" 当成程序名，报 0x80070002（系统找不到指定的文件）。
@@ -265,6 +298,80 @@ impl TerminalPanel {
     /// AI Agent：将命令加入待执行队列，终端就绪后自动发送执行。
     pub fn queue_command(&mut self, command: String) {
         self.pending_commands.push_back(command);
+    }
+
+    /// AI Agent：将命令加入队列并监视其完成（输出中出现哨兵后回传结果）。
+    ///
+    /// 实现方式：在命令后追加 `echo <哨兵>`，哨兵独占一行出现即视为命令结束，
+    /// 哨兵之前的输出即为命令结果。连接符按 shell 区分（PowerShell 用 `;`，cmd 用 `&`）。
+    pub fn queue_agent_command(&mut self, conv_idx: usize, command: String) {
+        self.agent_counter += 1;
+        let sentinel = format!("__AETHER_DONE_{}__", self.agent_counter);
+        let wrapped = if self.shell_is_powershell {
+            format!("{} ; echo \"{}\"", command, sentinel)
+        } else {
+            format!("{} & echo {}", command, sentinel)
+        };
+        self.pending_commands.push_back(wrapped);
+        self.agent_requests.push_back(AgentCommandWatch {
+            conv_idx,
+            command,
+            sentinel,
+            queued_at: std::time::Instant::now(),
+        });
+    }
+
+    /// 轮询 Agent 命令执行结果（主线程每帧调用）。
+    /// 返回本帧完成的命令结果；超时（120 秒未见哨兵）也返回，output 为超时说明。
+    pub fn poll_agent_results(&mut self) -> Vec<AgentCommandResult> {
+        const AGENT_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+        let mut results = Vec::new();
+        while let Some(req) = self.agent_requests.front() {
+            let start = self.agent_scan_from.min(self.output_lines.len());
+            // 哨兵独占一行才算完成（命令回显行包含哨兵文本但有其他内容，不会误判）
+            let found = self
+                .output_lines
+                .iter()
+                .enumerate()
+                .skip(start)
+                .find(|(_, line)| line.trim() == req.sentinel)
+                .map(|(i, _)| i);
+            match found {
+                Some(i) => {
+                    let output: String = self
+                        .output_lines
+                        .iter()
+                        .skip(start)
+                        .take(i - start)
+                        // 过滤含哨兵的命令回显行与空行
+                        .filter(|l| !l.contains("__AETHER_DONE_"))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    self.agent_scan_from = i + 1;
+                    let req = self.agent_requests.pop_front().unwrap();
+                    results.push(AgentCommandResult {
+                        conv_idx: req.conv_idx,
+                        command: req.command,
+                        output: output.trim().to_string(),
+                    });
+                }
+                None => {
+                    if req.queued_at.elapsed() > AGENT_CMD_TIMEOUT {
+                        let req = self.agent_requests.pop_front().unwrap();
+                        self.agent_scan_from = self.output_lines.len();
+                        results.push(AgentCommandResult {
+                            conv_idx: req.conv_idx,
+                            command: req.command,
+                            output: "（等待命令输出超时，命令可能仍在执行或已卡住）".to_string(),
+                        });
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        results
     }
 
     /// 是否有待执行的命令
