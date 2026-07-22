@@ -78,7 +78,7 @@ impl DebugSession {
         let seq = self.seq_generator.next();
         let args = serde_json::json!({
             "clientID": "aether",
-            "clientName": "Aether Editor",
+            "clientName": "Aether Studio",
             "adapterID": "aether-debug",
             "linesStartAt1": true,
             "columnsStartAt1": true,

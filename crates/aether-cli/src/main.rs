@@ -8,7 +8,7 @@ use clap::Parser;
 use aether_shared::launch::{parse_goto, GotoPosition, LaunchArgs};
 
 #[derive(Parser, Debug)]
-#[command(name = "aether", about = "Aether Editor 命令行接口", version)]
+#[command(name = "aether", about = "Aether Studio 命令行接口", version)]
 struct Cli {
     /// 要打开的文件或文件夹路径
     paths: Vec<PathBuf>,

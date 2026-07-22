@@ -489,7 +489,7 @@ impl EditorState {
                     eprintln!("[H-14] D2D 操作失败 (设备丢失?): {:?}", e);
                     panic!("D2D device lost")
                 });
-            let brand_sub: Vec<u16> = "Aether Editor — 纯 Rust 原生编辑器"
+            let brand_sub: Vec<u16> = "Aether Studio — 纯 Rust 原生编辑器"
                 .encode_utf16()
                 .chain(Some(0))
                 .collect();

@@ -451,19 +451,19 @@ pub(crate) unsafe fn on_size(hwnd: HWND, _msg: u32, wparam: WPARAM, _lparam: LPA
         let height = (client_rect.bottom - client_rect.top) as u32;
         let is_max = wparam.0 == SIZE_MAXIMIZED as usize;
         let is_min = wparam.0 == SIZE_MINIMIZED as usize;
-        EDITOR_STATE.with(|s| {
-            if let Some(state) = s.borrow().as_ref() {
-                let mut st = state.borrow_mut();
-                st.is_maximized = is_max;
-                if !is_min {
-                    st.resize(width, height);
-                }
-                drop(st);
-                if !is_min {
-                    invalidate_window(hwnd);
-                }
+        // 按 hwnd 取状态（而非线程局部活跃状态），
+        // 避免多窗口/启动最大化时把尺寸更新到错误的窗口状态上
+        if let Some(state) = get_and_set_state(hwnd) {
+            let mut st = state.borrow_mut();
+            st.is_maximized = is_max;
+            if !is_min {
+                st.resize(width, height);
             }
-        });
+            drop(st);
+            if !is_min {
+                invalidate_window(hwnd);
+            }
+        }
     }
     LRESULT(0)
 }
@@ -533,13 +533,27 @@ pub(crate) unsafe fn on_ncactivate(
 
 /// WM_NCCALCSIZE
 pub(crate) unsafe fn on_nccalcsize(
-    _hwnd: HWND,
+    hwnd: HWND,
     _msg: u32,
-    _wparam: WPARAM,
-    _lparam: LPARAM,
+    wparam: WPARAM,
+    lparam: LPARAM,
 ) -> LRESULT {
     // 移除系统非客户区边框，避免白色边框线
     // 返回 0 表示客户区覆盖整个窗口，不绘制系统边框
+    //
+    // 修复（最大化后鼠标与 UI 偏移）：窗口带 WS_THICKFRAME 时，Windows 在
+    // 最大化时会把窗口矩形向外膨胀一圈不可见缩放边框（原点移到屏幕外负坐标），
+    // 若客户区不收缩，渲染与鼠标命中会整体偏移一个边框宽度。
+    // 最大化时把客户区向内收缩边框厚度，使客户区与可视区域一致。
+    if wparam.0 != 0 && IsZoomed(hwnd).as_bool() {
+        let params = &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS);
+        let frame_x = GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+        let frame_y = GetSystemMetrics(SM_CYFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+        params.rgrc[0].left += frame_x;
+        params.rgrc[0].top += frame_y;
+        params.rgrc[0].right -= frame_x;
+        params.rgrc[0].bottom -= frame_y;
+    }
     LRESULT(0)
 }
 

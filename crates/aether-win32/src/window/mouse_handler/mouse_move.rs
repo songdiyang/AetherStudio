@@ -451,6 +451,7 @@ unsafe fn omm_ai_hover(
     let mut st = state.borrow_mut();
     let right_panel_region = layout.right_panel_region();
     if layout.right_panel_visible && right_panel_region.contains(mouse_x, mouse_y) {
+        // Apply 按钮悬停
         let rel_x = mouse_x - right_panel_region.x;
         let rel_y = mouse_y - right_panel_region.y;
         let margin = 10.0;
@@ -463,11 +464,26 @@ unsafe fn omm_ai_hover(
             && rel_x < apply_btn_x + apply_btn_w
             && rel_y >= apply_y
             && rel_y < apply_y + apply_btn_h;
-        old_apply_hover != st.ai_panel.hover_apply_button
+        // 历史条目悬停（命中区为绝对坐标）
+        let old_tab_hover = st.ai_panel.hover_tab;
+        st.ai_panel.hover_tab = if st.ai_panel.history_open {
+            st.ai_panel
+                .history_item_regions
+                .iter()
+                .find(|(_, rx, ry, rw, rh)| {
+                    mouse_x >= *rx && mouse_x < *rx + *rw && mouse_y >= *ry && mouse_y < *ry + *rh
+                })
+                .map(|(i, ..)| *i)
+        } else {
+            None
+        };
+        old_apply_hover != st.ai_panel.hover_apply_button || old_tab_hover != st.ai_panel.hover_tab
     } else {
         let old = st.ai_panel.hover_apply_button;
+        let old_tab = st.ai_panel.hover_tab;
         st.ai_panel.hover_apply_button = false;
-        old
+        st.ai_panel.hover_tab = None;
+        old || old_tab.is_some()
     }
 }
 
