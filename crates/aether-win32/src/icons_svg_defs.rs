@@ -208,6 +208,15 @@ const UI_PANEL_BOTTOM: SvgDef = SvgDef {
     ],
 };
 
+/// Lucide "panel-right" - 右侧面板
+const UI_PANEL_RIGHT: SvgDef = SvgDef {
+    viewbox: (0.0, 0.0, 24.0, 24.0),
+    shapes: &[
+        SvgShape::Rect(3.0, 3.0, 18.0, 18.0, None, Some(2.0)),
+        SvgShape::Path("M15 3v18", None),
+    ],
+};
+
 /// Lucide "hash" - # 符号
 const UI_HASH: SvgDef = SvgDef {
     viewbox: (0.0, 0.0, 24.0, 24.0),
@@ -890,4 +899,5 @@ pub(crate) const SVG_DEFS: &[SvgDef] = &[
     /* 63 FileSwift     */ FILE_SWIFT,
     /* 64 FileKotlin    */ FILE_KOTLIN,
     /* 65 FileDocker    */ FILE_DOCKER,
+    /* 66 PanelRight    */ UI_PANEL_RIGHT,
 ];

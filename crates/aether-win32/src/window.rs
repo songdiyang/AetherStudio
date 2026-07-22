@@ -242,11 +242,6 @@ pub(crate) unsafe fn create_editor_window(
     )
     .unwrap();
 
-    // P0.2b: 若上次退出时处于最大化状态,创建后立即最大化
-    if restore_maximized {
-        let _ = ShowWindow(hwnd, SW_MAXIMIZE);
-    }
-
     // 启用 DWM Acrylic / Mica 效果
     enable_dwm_acrylic(hwnd);
 
@@ -258,6 +253,13 @@ pub(crate) unsafe fn create_editor_window(
 
     // 初始化编辑器状态并关联到窗口
     init_editor_state(hwnd, is_main_window);
+
+    // P0.2b: 若上次退出时处于最大化状态,创建后立即最大化。
+    // 必须在 init_editor_state 之后：此时 GWLP_USERDATA 已就绪，
+    // 最大化触发的 WM_SIZE 才能正确路由到本窗口的状态。
+    if restore_maximized {
+        let _ = ShowWindow(hwnd, SW_MAXIMIZE);
+    }
 
     hwnd
 }

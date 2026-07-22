@@ -293,7 +293,10 @@ pub(crate) unsafe fn on_destroy(
             EDITOR_STATE.with(|s| *s.borrow_mut() = None);
         }
         {
-            let state = rc.borrow();
+            let mut state = rc.borrow_mut();
+            // 退出前同步归档 AI 会话到 SQLite（等待落盘完成），
+            // 保证聊完不足 30 秒就退出的场景对话不丢失
+            state.ai_panel.archive_all_on_exit();
             if state.is_main_window {
                 persist_window_state(&state, hwnd);
             }

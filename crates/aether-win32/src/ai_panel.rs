@@ -1,14 +1,11 @@
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use aether_ai::{AiClient, AiStreamEvent, ChatMessage};
 use aether_shared::settings::AiSettings;
 
-use crate::ai_agent::{parse_edits, AiEdit};
 use crate::ai_context::{truncate_middle, AiContextAttachment};
 use crate::ai_prompt::{build_chat_prompt, AiMode};
-use crate::diff_view::DiffView;
 use crate::editor::EditorState;
 
 /// 脱敏错误消息，避免泄漏 API 密钥等敏感信息
@@ -184,13 +181,9 @@ pub struct AiConversation {
     pub stick_to_bottom: bool,
     pub mode: AiMode,
     pub attachments: Vec<AiContextAttachment>,
-    pub pending_edits: Vec<AiEdit>,
-    pub diff_view: DiffView,
-    pub show_diff_view: bool,
-    pub selected_change_index: usize,
     pub stream_state: Arc<Mutex<AiStreamState>>,
     pub should_stop: Arc<AtomicBool>,
-    /// 本轮注入过的 playbook 条目 ID（用于接受/拒绝编辑时的反馈归因）
+    /// 本轮注入过的 playbook 条目 ID（用于反馈归因）
     pub used_bullet_ids: Vec<String>,
 }
 
@@ -212,10 +205,6 @@ impl AiConversation {
             stick_to_bottom: true,
             mode: AiMode::Agent,
             attachments: Vec::new(),
-            pending_edits: Vec::new(),
-            diff_view: DiffView::new(),
-            show_diff_view: false,
-            selected_change_index: 0,
             stream_state: Arc::new(Mutex::new(AiStreamState::default())),
             should_stop: Arc::new(AtomicBool::new(false)),
             used_bullet_ids: Vec::new(),
@@ -246,18 +235,9 @@ impl AiConversation {
             .map(|m| m.content.clone())
     }
 
-    fn parse_pending_edits(&mut self, current_folder: Option<&Path>) {
-        let Some(text) = self.last_assistant_text() else {
-            return;
-        };
-        self.pending_edits = parse_edits(&text, None);
-        self.diff_view = DiffView::from_edits(&self.pending_edits, current_folder);
-        self.show_diff_view = !self.pending_edits.is_empty();
-    }
-
     /// 后台（非活动）会话的流式轮询：把新 token 追加到消息，返回本帧是否刚完成。
     /// 与 `AiPanel::check_background_result` 逻辑一致，但作用于本会话，支持并发。
-    pub fn drain_background(&mut self, current_folder: Option<&Path>) -> bool {
+    pub fn drain_background(&mut self) -> bool {
         if !self.is_generating {
             return false;
         }
@@ -313,9 +293,6 @@ impl AiConversation {
                         last.reasoning_collapsed = true;
                     }
                 }
-                if matches!(self.mode, AiMode::Edit) {
-                    self.parse_pending_edits(current_folder);
-                }
                 just_completed = true;
             }
         }
@@ -331,6 +308,74 @@ pub struct ConversationMeta {
     pub updated_at: u64,
     pub message_count: usize,
     pub preview: String,
+    /// 会话模式（"Ask" / "Agent"；旧数据可能为空串）
+    #[serde(default)]
+    pub mode: String,
+}
+
+/// 历史记录时间筛选
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HistoryTimeFilter {
+    /// 全部
+    All,
+    /// 最近 24 小时
+    Today,
+    /// 最近 7 天
+    Week,
+    /// 最近 30 天
+    Month,
+}
+
+impl HistoryTimeFilter {
+    pub const ALL: [HistoryTimeFilter; 4] = [
+        HistoryTimeFilter::All,
+        HistoryTimeFilter::Today,
+        HistoryTimeFilter::Week,
+        HistoryTimeFilter::Month,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            HistoryTimeFilter::All => "全部",
+            HistoryTimeFilter::Today => "今天",
+            HistoryTimeFilter::Week => "本周",
+            HistoryTimeFilter::Month => "本月",
+        }
+    }
+
+    /// 时间下限（Unix 秒）；None 表示不限
+    pub fn cutoff(self, now: u64) -> Option<u64> {
+        match self {
+            HistoryTimeFilter::All => None,
+            HistoryTimeFilter::Today => Some(now.saturating_sub(24 * 3600)),
+            HistoryTimeFilter::Week => Some(now.saturating_sub(7 * 24 * 3600)),
+            HistoryTimeFilter::Month => Some(now.saturating_sub(30 * 24 * 3600)),
+        }
+    }
+}
+
+/// 历史列表可选的类型筛选项（None = 全部）
+pub const HISTORY_TYPE_FILTERS: [Option<&str>; 3] = [None, Some("Ask"), Some("Agent")];
+
+/// 历史列表每页条数
+pub const HISTORY_PAGE_SIZE: usize = 6;
+
+/// 相对时间显示（历史列表用）
+pub fn relative_time(updated_at: u64, now: u64) -> String {
+    let d = now.saturating_sub(updated_at);
+    if d < 60 {
+        "刚刚".to_string()
+    } else if d < 3600 {
+        format!("{} 分钟前", d / 60)
+    } else if d < 86400 {
+        format!("{} 小时前", d / 3600)
+    } else if d < 7 * 86400 {
+        format!("{} 天前", d / 86400)
+    } else if d < 30 * 86400 {
+        format!("{} 周前", d / (7 * 86400))
+    } else {
+        format!("{} 个月前", d / (30 * 86400))
+    }
 }
 
 /// AI 助手面板状态
@@ -352,7 +397,7 @@ pub struct AiPanel {
     pub stream_state: Arc<Mutex<AiStreamState>>,
     /// C-10: 输入框是否聚焦。仅当聚焦时才拦截键盘输入，避免面板可见即劫持编辑器
     pub input_focused: bool,
-    /// 当前 AI 模式（Ask / Edit / Agent）
+    /// 当前 AI 模式（Ask / Agent）
     pub mode: AiMode,
     /// 底部工具栏"当前模型"下拉是否展开（在对话框内切换当前使用的模型）
     pub model_menu_open: bool,
@@ -362,18 +407,8 @@ pub struct AiPanel {
     pub mode_button_regions: Vec<(AiMode, f32, f32, f32, f32)>,
     /// 附件 chip 命中区域 (index, x, y, w, h)
     pub attachment_chip_regions: Vec<(usize, f32, f32, f32, f32)>,
-    /// 变更列表项命中区域 (index, x, y, w, h) — 0=预览, 1=接受, 2=拒绝
-    pub change_action_regions: Vec<(usize, u8, f32, f32, f32, f32)>,
     /// 悬停的附件 chip 索引
     pub hover_attachment: Option<usize>,
-    /// 当前等待用户确认的 AI 编辑（Agent/Edit 模式）
-    pub pending_edits: Vec<AiEdit>,
-    /// Diff 预览视图
-    pub diff_view: DiffView,
-    /// 是否显示 diff 预览
-    pub show_diff_view: bool,
-    /// 变更列表中当前选中的索引
-    pub selected_change_index: usize,
     /// 上一帧渲染的消息内容总高度（用于滚动条与自动滚底）
     pub content_height: f32,
     /// 代码块保存按钮区域 (msg_index, seg_index, x, y, w, h, suggested_filename)
@@ -427,11 +462,39 @@ pub struct AiPanel {
     pub playbook_delete_regions: Vec<(usize, f32, f32, f32, f32)>,
     /// 历史面板「仅当前工作区」开关命中区 (x, y, w, h)
     pub history_ws_toggle_region: Option<(f32, f32, f32, f32)>,
+    /// 历史列表当前页码（0 起）
+    pub history_page: usize,
+    /// 历史时间筛选
+    pub history_time_filter: HistoryTimeFilter,
+    /// 历史类型筛选（None=全部，否则匹配 mode 字符串，如 "Ask"/"Agent"）
+    pub history_type_filter: Option<String>,
+    /// 历史详情视图：当前查看的会话 id（Some 时历史面板显示详情而非列表）
+    pub history_detail_id: Option<String>,
+    /// 历史详情缓存的完整会话（懒加载）
+    pub history_detail_conv: Option<AiConversation>,
+    /// 历史条目删除按钮命中区 (history_index, x, y, w, h)
+    pub history_delete_regions: Vec<(usize, f32, f32, f32, f32)>,
+    /// 历史分页「上一页」命中区
+    pub history_page_prev_region: Option<(f32, f32, f32, f32)>,
+    /// 历史分页「下一页」命中区
+    pub history_page_next_region: Option<(f32, f32, f32, f32)>,
+    /// 历史时间筛选按钮命中区 (HistoryTimeFilter::ALL 下标, x, y, w, h)
+    pub history_time_filter_regions: Vec<(usize, f32, f32, f32, f32)>,
+    /// 历史类型筛选按钮命中区 (HISTORY_TYPE_FILTERS 下标, x, y, w, h)
+    pub history_type_filter_regions: Vec<(usize, f32, f32, f32, f32)>,
+    /// 「清空全部」按钮命中区
+    pub history_clear_all_region: Option<(f32, f32, f32, f32)>,
+    /// 详情视图「返回」按钮命中区
+    pub history_detail_back_region: Option<(f32, f32, f32, f32)>,
+    /// 详情视图「恢复此对话」按钮命中区
+    pub history_detail_restore_region: Option<(f32, f32, f32, f32)>,
+    /// Agent 自动续跑轮次计数（用户手动发消息时重置；防止工具回环无限迭代）
+    pub agent_iter_count: u32,
 }
 
 impl AiPanel {
     pub fn new() -> Self {
-        Self {
+        let mut panel = Self {
             visible: false,
             messages: vec![AiMessage::new(AiRole::System, AI_WELCOME.to_string())],
             input: String::new(),
@@ -445,12 +508,7 @@ impl AiPanel {
             attachments: Vec::new(),
             mode_button_regions: Vec::new(),
             attachment_chip_regions: Vec::new(),
-            change_action_regions: Vec::new(),
             hover_attachment: None,
-            pending_edits: Vec::new(),
-            diff_view: DiffView::new(),
-            show_diff_view: false,
-            selected_change_index: 0,
             content_height: 0.0,
             code_save_regions: Vec::new(),
             stick_to_bottom: true,
@@ -480,7 +538,23 @@ impl AiPanel {
             playbook_button_region: None,
             playbook_delete_regions: Vec::new(),
             history_ws_toggle_region: None,
-        }
+            history_page: 0,
+            history_time_filter: HistoryTimeFilter::All,
+            history_type_filter: None,
+            history_detail_id: None,
+            history_detail_conv: None,
+            history_delete_regions: Vec::new(),
+            history_page_prev_region: None,
+            history_page_next_region: None,
+            history_time_filter_regions: Vec::new(),
+            history_type_filter_regions: Vec::new(),
+            history_clear_all_region: None,
+            history_detail_back_region: None,
+            history_detail_restore_region: None,
+            agent_iter_count: 0,
+        };
+        panel.restore_latest_conversation();
+        panel
     }
 
     /// 初始化热数据存储
@@ -541,12 +615,7 @@ impl AiPanel {
             attachments: self.attachments.clone(),
             mode_button_regions: self.mode_button_regions.clone(),
             attachment_chip_regions: self.attachment_chip_regions.clone(),
-            change_action_regions: self.change_action_regions.clone(),
             hover_attachment: self.hover_attachment,
-            pending_edits: self.pending_edits.clone(),
-            diff_view: self.diff_view.clone(),
-            show_diff_view: self.show_diff_view,
-            selected_change_index: self.selected_change_index,
             content_height: self.content_height,
             code_save_regions: self.code_save_regions.clone(),
             stick_to_bottom: self.stick_to_bottom,
@@ -573,6 +642,20 @@ impl AiPanel {
             playbook_button_region: None,
             playbook_delete_regions: Vec::new(),
             history_ws_toggle_region: None,
+            history_page: self.history_page,
+            history_time_filter: self.history_time_filter,
+            history_type_filter: self.history_type_filter.clone(),
+            history_detail_id: None,
+            history_detail_conv: None,
+            history_delete_regions: Vec::new(),
+            history_page_prev_region: None,
+            history_page_next_region: None,
+            history_time_filter_regions: Vec::new(),
+            history_type_filter_regions: Vec::new(),
+            history_clear_all_region: None,
+            history_detail_back_region: None,
+            history_detail_restore_region: None,
+            agent_iter_count: 0,
         }
     }
 
@@ -609,9 +692,46 @@ impl AiPanel {
                     .map(|c| (*c).clone())
                     .collect();
                 if let Some(warm_store) = self.warm_data_store.as_ref() {
-                    warm_store.request_archive_all(dirty_sessions);
+                    warm_store.request_archive_all(dirty_sessions, true);
                 }
             }
+        }
+    }
+
+    /// 应用退出前调用：同步归档所有有效会话并关闭归档线程。
+    /// 与空闲归档的区别：不限于脏会话（覆盖聊完不足 30 秒就退出的场景），
+    /// 且 shutdown() 会等待后台线程把队列写完，保证数据真正落盘。
+    /// 跳过 LLM 反思，避免退出被网络请求阻塞。
+    pub fn archive_all_on_exit(&mut self) {
+        self.snapshot_active_into_slot();
+        let sessions: Vec<AiConversation> = self
+            .conversations
+            .iter()
+            .filter(|c| c.messages.len() > 1 && c.messages.iter().any(|m| m.role == AiRole::User))
+            .cloned()
+            .collect();
+        if let Some(warm_store) = self.warm_data_store.as_mut() {
+            if !sessions.is_empty() {
+                warm_store.request_archive_all(sessions, false);
+            }
+            warm_store.shutdown();
+        }
+    }
+
+    /// 启动时恢复最近一次的会话（若数据库中有归档），否则保持新建的"新对话"
+    fn restore_latest_conversation(&mut self) {
+        let Some(store) = self.warm_data_store.as_ref() else {
+            return;
+        };
+        let Ok(meta_list) = store.load_history_meta() else {
+            return;
+        };
+        let Some(latest) = meta_list.first() else {
+            return;
+        };
+        if let Ok(conv) = store.load_conversation(&latest.id) {
+            self.conversations[0] = conv;
+            self.load_slot_into_active(0);
         }
     }
 
@@ -659,10 +779,6 @@ impl AiPanel {
         slot.stick_to_bottom = self.stick_to_bottom;
         slot.mode = self.mode;
         slot.attachments = self.attachments.clone();
-        slot.pending_edits = self.pending_edits.clone();
-        slot.diff_view = self.diff_view.clone();
-        slot.show_diff_view = self.show_diff_view;
-        slot.selected_change_index = self.selected_change_index;
         slot.stream_state = Arc::clone(&self.stream_state);
         slot.should_stop = Arc::clone(&self.should_stop);
         slot.updated_at = now_secs();
@@ -684,10 +800,6 @@ impl AiPanel {
         self.stick_to_bottom = slot.stick_to_bottom;
         self.mode = slot.mode;
         self.attachments = slot.attachments;
-        self.pending_edits = slot.pending_edits;
-        self.diff_view = slot.diff_view;
-        self.show_diff_view = slot.show_diff_view;
-        self.selected_change_index = slot.selected_change_index;
         self.stream_state = slot.stream_state;
         self.should_stop = slot.should_stop;
         self.active = idx;
@@ -750,6 +862,7 @@ impl AiPanel {
                 updated_at: conv.updated_at,
                 message_count: msg_count,
                 preview,
+                mode: format!("{:?}", conv.mode),
             };
             // 去重：同 id 替换旧记录
             if let Some(pos) = self.history.iter().position(|h| h.id == meta.id) {
@@ -842,9 +955,9 @@ impl AiPanel {
 
     /// 并发轮询所有会话：活动会话走扁平逻辑，其余走后台 drain。
     /// 返回本帧"刚完成"的会话下标列表，供调用方逐个处理 Agent 动作。
-    pub fn poll_all_background(&mut self, current_folder: Option<&Path>) -> Vec<usize> {
+    pub fn poll_all_background(&mut self) -> Vec<usize> {
         let mut completed = Vec::new();
-        if self.check_background_result(current_folder) {
+        if self.check_background_result() {
             completed.push(self.active);
         }
         let active = self.active;
@@ -852,7 +965,7 @@ impl AiPanel {
             if i == active {
                 continue;
             }
-            if self.conversations[i].drain_background(current_folder) {
+            if self.conversations[i].drain_background() {
                 completed.push(i);
             }
         }
@@ -920,6 +1033,7 @@ impl AiPanel {
 
     /// 发送消息（AI-H01: 非阻塞 — HTTP 调用在后台线程执行，结果通过 stream_state 流式返回）
     pub fn send_message(&mut self, settings: &AiSettings) -> Result<String, String> {
+        self.agent_iter_count = 0;
         self.send_message_internal(settings, self.input.clone(), AiMode::Ask, None)
     }
 
@@ -930,6 +1044,7 @@ impl AiPanel {
         editor: &EditorState,
         mode: AiMode,
     ) -> Result<String, String> {
+        self.agent_iter_count = 0;
         let context = editor.gather_context(&self.attachments);
         self.send_message_internal(settings, self.input.clone(), mode, Some(context))
     }
@@ -941,7 +1056,24 @@ impl AiPanel {
         context: String,
         mode: AiMode,
     ) -> Result<String, String> {
+        self.agent_iter_count = 0;
         self.send_message_internal(settings, self.input.clone(), mode, Some(context))
+    }
+
+    /// Agent 工具结果回喂：把终端命令输出作为上下文再次发起请求，驱动
+    /// 「推理 → 执行 → 结果回喂 → 继续推理」循环。受最大轮次限制防止无限回环。
+    pub fn continue_agent_with_tool_result(
+        &mut self,
+        settings: &AiSettings,
+        feedback: String,
+        mode: AiMode,
+    ) -> Result<String, String> {
+        const MAX_AGENT_ITERATIONS: u32 = 5;
+        if self.agent_iter_count >= MAX_AGENT_ITERATIONS {
+            return Err(format!("已达最大自动执行轮次（{}）", MAX_AGENT_ITERATIONS));
+        }
+        self.agent_iter_count += 1;
+        self.send_message_internal(settings, feedback, mode, None)
     }
 
     fn send_message_internal(
@@ -974,7 +1106,6 @@ impl AiPanel {
         self.caret_pos = 0;
         self.is_generating = true;
         self.should_stop.store(false, Ordering::SeqCst);
-        self.clear_pending_changes();
         // 重置流式状态
         if let Ok(mut s) = self.stream_state.lock() {
             *s = AiStreamState::default();
@@ -1260,10 +1391,9 @@ impl AiPanel {
 
     /// AI-H01: 轮询后台线程结果，应在渲染循环中调用
     ///
-    /// `current_folder` 用于 Edit/Agent 模式解析编辑相对路径，生成正确的 diff 预览。
     /// 返回 `true` 表示本帧生成刚刚完成（done 边沿），调用方应在此时处理 Agent 动作
     /// （创建/修改文件、执行终端命令）。
-    pub fn check_background_result(&mut self, current_folder: Option<&Path>) -> bool {
+    pub fn check_background_result(&mut self) -> bool {
         if !self.is_generating {
             return false;
         }
@@ -1319,95 +1449,12 @@ impl AiPanel {
                         last.reasoning_collapsed = true;
                     }
                 }
-                // 仅 Edit 模式构建差异预览等待用户确认；Agent 模式由
-                // EditorState::process_ai_agent_actions 直接落盘应用。
-                if matches!(self.mode, AiMode::Edit) {
-                    self.parse_pending_edits(None, current_folder);
-                }
                 just_completed = true;
                 // 同步热数据（生成完成，消息已最终确定）
                 self.sync_hot_data();
             }
         }
         just_completed
-    }
-
-    /// 从最后一条助手消息中提取文件创建编辑（search 为空的编辑）
-    pub fn extract_file_creates(&self) -> Vec<crate::ai_agent::AiEdit> {
-        let Some(text) = self.last_assistant_text() else {
-            return Vec::new();
-        };
-        let edits = parse_edits(&text, None);
-        edits.into_iter().filter(|e| e.is_create_new()).collect()
-    }
-
-    /// 解析最后一条助手消息中的编辑标记，生成 diff 预览
-    ///
-    /// `current_folder` 用于将相对路径解析为工作区绝对路径，以正确读取原文件内容。
-    pub fn parse_pending_edits(
-        &mut self,
-        default_path: Option<&Path>,
-        current_folder: Option<&Path>,
-    ) {
-        let Some(text) = self.last_assistant_text() else {
-            return;
-        };
-        let default = default_path.map(|p| p.to_string_lossy().to_string());
-        self.pending_edits = parse_edits(&text, default.as_deref());
-        self.diff_view = DiffView::from_edits(&self.pending_edits, current_folder);
-        self.show_diff_view = !self.pending_edits.is_empty();
-    }
-
-    /// 在已知工作区目录的情况下重新生成 diff 视图
-    pub fn rebuild_diff_view(&mut self, current_folder: Option<&Path>) {
-        self.diff_view = DiffView::from_edits(&self.pending_edits, current_folder);
-    }
-
-    /// 清除当前待确认的编辑
-    pub fn clear_pending_changes(&mut self) {
-        self.pending_edits.clear();
-        self.diff_view = DiffView::new();
-        self.show_diff_view = false;
-        self.selected_change_index = 0;
-    }
-
-    /// 接受所有已接受的编辑并应用到编辑器
-    pub fn apply_accepted_changes(
-        &mut self,
-        editor: &mut EditorState,
-    ) -> std::result::Result<Vec<PathBuf>, String> {
-        let edits: Vec<AiEdit> = self.diff_view.to_edits();
-        if edits.is_empty() {
-            return Ok(Vec::new());
-        }
-        let applied = editor.apply_ai_workspace_edits(&edits)?;
-        self.clear_pending_changes();
-        // ACE 反馈：编辑被采纳 → 本轮注入的策略条目记为有效
-        self.feedback_bullets(true);
-        Ok(applied)
-    }
-
-    /// 拒绝所有待确认编辑
-    pub fn reject_all_changes(&mut self) {
-        self.clear_pending_changes();
-        // ACE 反馈：编辑被拒绝 → 本轮注入的策略条目记为无效
-        self.feedback_bullets(false);
-    }
-
-    /// 将活动会话本轮使用的 playbook 条目反馈给权重计数器
-    fn feedback_bullets(&mut self, helpful: bool) {
-        let Some(slot) = self.conversations.get_mut(self.active) else {
-            return;
-        };
-        if slot.used_bullet_ids.is_empty() {
-            return;
-        }
-        let ids = std::mem::take(&mut slot.used_bullet_ids);
-        if let Some(warm) = self.warm_data_store.as_ref() {
-            for id in ids {
-                let _ = warm.bullet_feedback(&id, helpful);
-            }
-        }
     }
 
     /// 从最后一条助手消息中提取代码块
@@ -1579,21 +1626,10 @@ impl AiPanel {
         None
     }
 
-    /// 命中测试：变更列表操作按钮 (文件索引, 操作类型 0=预览 1=接受 2=拒绝)
-    pub fn hit_test_change_action(&self, px: f32, py: f32) -> Option<(usize, u8)> {
-        for (idx, action, x, y, w, h) in &self.change_action_regions {
-            if px >= *x && px <= *x + *w && py >= *y && py <= *y + *h {
-                return Some((*idx, *action));
-            }
-        }
-        None
-    }
-
     /// 清除所有命中区域（每帧渲染前调用）
     pub fn clear_hit_regions(&mut self) {
         self.mode_button_regions.clear();
         self.attachment_chip_regions.clear();
-        self.change_action_regions.clear();
         self.code_save_regions.clear();
         self.tab_regions.clear();
         self.tab_close_regions.clear();
@@ -1604,6 +1640,14 @@ impl AiPanel {
         self.playbook_button_region = None;
         self.playbook_delete_regions.clear();
         self.history_ws_toggle_region = None;
+        self.history_delete_regions.clear();
+        self.history_page_prev_region = None;
+        self.history_page_next_region = None;
+        self.history_time_filter_regions.clear();
+        self.history_type_filter_regions.clear();
+        self.history_clear_all_region = None;
+        self.history_detail_back_region = None;
+        self.history_detail_restore_region = None;
     }
 
     // ===== Playbook 管理面板 =====
@@ -1640,6 +1684,136 @@ impl AiPanel {
     /// 切换历史列表的工作区过滤
     pub fn toggle_history_workspace_only(&mut self) {
         self.history_workspace_only = !self.history_workspace_only;
+        self.history_page = 0;
+    }
+
+    // ===== 历史记录：筛选 / 分页 / 详情 / 清除 =====
+
+    /// 应用时间 + 类型筛选后的历史下标（对应 self.history 的原始下标）
+    pub fn filtered_history_indices(&self) -> Vec<usize> {
+        let cutoff = self.history_time_filter.cutoff(now_secs());
+        self.history
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                let time_ok = cutoff.map(|c| m.updated_at >= c).unwrap_or(true);
+                let type_ok = self
+                    .history_type_filter
+                    .as_ref()
+                    .map(|t| m.mode.eq_ignore_ascii_case(t))
+                    .unwrap_or(true);
+                time_ok && type_ok
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// 筛选后的总页数（至少 1 页）
+    pub fn history_page_count(&self) -> usize {
+        let n = self.filtered_history_indices().len();
+        (n + HISTORY_PAGE_SIZE - 1) / HISTORY_PAGE_SIZE.max(1)
+    }
+
+    /// 把当前页码收敛到合法范围（筛选/删除/刷新后调用）
+    pub fn clamp_history_page(&mut self) {
+        let pc = self.history_page_count().max(1);
+        if self.history_page >= pc {
+            self.history_page = pc - 1;
+        }
+    }
+
+    /// 当前页显示的历史下标
+    pub fn history_page_indices(&self) -> Vec<usize> {
+        let start = self.history_page * HISTORY_PAGE_SIZE;
+        self.filtered_history_indices()
+            .into_iter()
+            .skip(start)
+            .take(HISTORY_PAGE_SIZE)
+            .collect()
+    }
+
+    /// 设置时间筛选（回到第一页）
+    pub fn set_history_time_filter(&mut self, f: HistoryTimeFilter) {
+        self.history_time_filter = f;
+        self.history_page = 0;
+    }
+
+    /// 设置类型筛选（回到第一页）
+    pub fn set_history_type_filter(&mut self, f: Option<String>) {
+        self.history_type_filter = f;
+        self.history_page = 0;
+    }
+
+    /// 下一页（到末页为止）
+    pub fn history_next_page(&mut self) {
+        if self.history_page + 1 < self.history_page_count() {
+            self.history_page += 1;
+        }
+    }
+
+    /// 上一页
+    pub fn history_prev_page(&mut self) {
+        self.history_page = self.history_page.saturating_sub(1);
+    }
+
+    /// 删除一条历史记录（内存索引 + SQLite 级联删除）
+    pub fn delete_history_item(&mut self, hist_idx: usize) -> Result<(), String> {
+        let meta = self
+            .history
+            .get(hist_idx)
+            .cloned()
+            .ok_or_else(|| "历史记录不存在".to_string())?;
+        if let Some(warm) = self.warm_data_store.as_ref() {
+            warm.delete_conversation(&meta.id)?;
+        }
+        self.history.remove(hist_idx);
+        if self.history_detail_id.as_deref() == Some(meta.id.as_str()) {
+            self.close_history_detail();
+        }
+        self.clamp_history_page();
+        Ok(())
+    }
+
+    /// 清空全部历史记录；返回删除条数
+    pub fn clear_all_history(&mut self) -> Result<usize, String> {
+        let n = if let Some(warm) = self.warm_data_store.as_ref() {
+            warm.clear_all_conversations()?
+        } else {
+            self.history.len()
+        };
+        self.history.clear();
+        self.history_page = 0;
+        self.close_history_detail();
+        Ok(n)
+    }
+
+    /// 打开历史详情视图（懒加载完整会话消息）
+    pub fn open_history_detail(&mut self, hist_idx: usize) {
+        let Some(meta) = self.history.get(hist_idx) else {
+            return;
+        };
+        let id = meta.id.clone();
+        self.history_detail_conv = self
+            .warm_data_store
+            .as_ref()
+            .and_then(|s| s.load_conversation(&id).ok());
+        self.history_detail_id = Some(id);
+    }
+
+    /// 关闭历史详情视图，返回列表
+    pub fn close_history_detail(&mut self) {
+        self.history_detail_id = None;
+        self.history_detail_conv = None;
+    }
+
+    /// 从详情视图恢复该会话为活动标签页
+    pub fn restore_history_detail(&mut self) {
+        if let Some(id) = self.history_detail_id.clone() {
+            self.close_history_detail();
+            if let Some(idx) = self.history.iter().position(|m| m.id == id) {
+                self.restore_from_history(idx);
+            }
+        }
     }
 }
 
@@ -1793,5 +1967,164 @@ mod tests {
     fn empty_history_yields_empty() {
         let out = AiPanel::history_to_chat_messages(&[]);
         assert!(out.is_empty());
+    }
+
+    // ===== 历史记录列表：筛选 / 分页 / 详情 / 清除 =====
+
+    fn test_panel() -> AiPanel {
+        let mut p = AiPanel::new();
+        // 测试不触碰真实持久化层
+        p.warm_data_store = None;
+        p.hot_data_store = None;
+        p
+    }
+
+    fn meta(id: &str, updated_at: u64, mode: &str) -> ConversationMeta {
+        ConversationMeta {
+            id: id.to_string(),
+            title: format!("会话{}", id),
+            updated_at,
+            message_count: 3,
+            preview: String::new(),
+            mode: mode.to_string(),
+        }
+    }
+
+    #[test]
+    fn history_time_filter_keeps_recent_only() {
+        let now = now_secs();
+        let mut p = test_panel();
+        p.history = vec![
+            meta("a", now, "Ask"),
+            meta("b", now.saturating_sub(3 * 86400), "Agent"),
+            meta("c", now.saturating_sub(40 * 86400), "Ask"),
+        ];
+        p.set_history_time_filter(HistoryTimeFilter::Today);
+        assert_eq!(p.filtered_history_indices(), vec![0]);
+        p.set_history_time_filter(HistoryTimeFilter::Week);
+        assert_eq!(p.filtered_history_indices(), vec![0, 1]);
+        p.set_history_time_filter(HistoryTimeFilter::All);
+        assert_eq!(p.filtered_history_indices(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn history_type_filter_matches_mode_case_insensitive() {
+        let now = now_secs();
+        let mut p = test_panel();
+        p.history = vec![meta("a", now, "Ask"), meta("b", now, "Agent")];
+        p.set_history_type_filter(Some("ask".to_string()));
+        assert_eq!(p.filtered_history_indices(), vec![0]);
+        p.set_history_type_filter(Some("Agent".to_string()));
+        assert_eq!(p.filtered_history_indices(), vec![1]);
+        p.set_history_type_filter(None);
+        assert_eq!(p.filtered_history_indices(), vec![0, 1]);
+    }
+
+    #[test]
+    fn history_filter_resets_page() {
+        let now = now_secs();
+        let mut p = test_panel();
+        p.history = (0..13)
+            .map(|i| meta(&format!("c{}", i), now, "Ask"))
+            .collect();
+        p.history_page = 2;
+        p.set_history_time_filter(HistoryTimeFilter::Week);
+        assert_eq!(p.history_page, 0);
+        p.history_page = 1;
+        p.set_history_type_filter(Some("Agent".to_string()));
+        assert_eq!(p.history_page, 0);
+    }
+
+    #[test]
+    fn history_pagination_pages_and_bounds() {
+        let now = now_secs();
+        let mut p = test_panel();
+        p.history = (0..13)
+            .map(|i| meta(&format!("c{}", i), now, "Ask"))
+            .collect();
+        assert_eq!(p.history_page_count(), 3); // 6 + 6 + 1
+        assert_eq!(p.history_page_indices().len(), HISTORY_PAGE_SIZE);
+        p.history_next_page();
+        assert_eq!(p.history_page, 1);
+        p.history_next_page();
+        assert_eq!(p.history_page, 2);
+        assert_eq!(p.history_page_indices().len(), 1);
+        // 末页后继续 next 不变
+        p.history_next_page();
+        assert_eq!(p.history_page, 2);
+        p.history_prev_page();
+        assert_eq!(p.history_page, 1);
+        // 首页 prev 保持 0
+        p.history_prev_page();
+        p.history_prev_page();
+        assert_eq!(p.history_page, 0);
+        // 筛选后页数收缩时 clamp 收敛页码
+        p.history_page = 2;
+        p.clamp_history_page();
+        assert_eq!(p.history_page, 2);
+        p.set_history_time_filter(HistoryTimeFilter::Today);
+        p.clamp_history_page();
+        assert_eq!(p.history_page, 0);
+    }
+
+    #[test]
+    fn delete_history_item_removes_entry_and_closes_detail() {
+        let now = now_secs();
+        let mut p = test_panel();
+        p.history = vec![meta("a", now, "Ask"), meta("b", now, "Agent")];
+        p.open_history_detail(0);
+        assert_eq!(p.history_detail_id.as_deref(), Some("a"));
+        p.delete_history_item(0).unwrap();
+        assert_eq!(p.history.len(), 1);
+        assert_eq!(p.history[0].id, "b");
+        // 详情指向被删会话时自动关闭
+        assert!(p.history_detail_id.is_none());
+        // 越界删除报错
+        assert!(p.delete_history_item(5).is_err());
+    }
+
+    #[test]
+    fn clear_all_history_empties_list_and_resets_page() {
+        let now = now_secs();
+        let mut p = test_panel();
+        p.history = (0..8)
+            .map(|i| meta(&format!("c{}", i), now, "Ask"))
+            .collect();
+        p.history_page = 1;
+        p.open_history_detail(0);
+        let n = p.clear_all_history().unwrap();
+        assert_eq!(n, 8);
+        assert!(p.history.is_empty());
+        assert_eq!(p.history_page, 0);
+        assert!(p.history_detail_id.is_none());
+    }
+
+    #[test]
+    fn history_detail_open_and_restore() {
+        let now = now_secs();
+        let mut p = test_panel();
+        p.history = vec![meta("a", now, "Ask")];
+        // 无 warm store：详情打开但消息为空（会话仍在 conversations 中可直接恢复）
+        p.open_history_detail(0);
+        assert_eq!(p.history_detail_id.as_deref(), Some("a"));
+        assert!(p.history_detail_conv.is_none());
+        p.close_history_detail();
+        assert!(p.history_detail_id.is_none());
+        // 越界打开为 no-op
+        p.open_history_detail(9);
+        assert!(p.history_detail_id.is_none());
+    }
+
+    #[test]
+    fn relative_time_buckets() {
+        let now = 1_000_000_000u64;
+        assert_eq!(relative_time(now, now), "刚刚");
+        assert_eq!(relative_time(now - 120, now), "2 分钟前");
+        assert_eq!(relative_time(now - 7200, now), "2 小时前");
+        assert_eq!(relative_time(now - 2 * 86400, now), "2 天前");
+        assert_eq!(relative_time(now - 14 * 86400, now), "2 周前");
+        assert_eq!(relative_time(now - 60 * 86400, now), "2 个月前");
+        // 未来时间戳不回绕
+        assert_eq!(relative_time(now + 100, now), "刚刚");
     }
 }

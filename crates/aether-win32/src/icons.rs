@@ -48,6 +48,7 @@ pub enum IconKind {
     Sidebar,
     PanelLeft,
     PanelBottom,
+    PanelRight,
     // 转到
     GotoFile,
     Hash,
@@ -113,7 +114,7 @@ pub enum IconKind {
 
 impl IconKind {
     /// 所有图标变体索引（与 SVG_DEFS 数组下标对应）
-    pub const ALL: [IconKind; 66] = [
+    pub const ALL: [IconKind; 67] = [
         IconKind::OpenFolder,
         IconKind::NewFile,
         IconKind::Clone,
@@ -180,6 +181,7 @@ impl IconKind {
         IconKind::FileSwift,
         IconKind::FileKotlin,
         IconKind::FileDocker,
+        IconKind::PanelRight,
     ];
 
     /// 索引到 SVG_DEFS 数组下标
@@ -315,10 +317,10 @@ impl IconCache {
 mod tests {
     use super::IconKind;
 
-    /// 验证 ALL 数组长度为 66
+    /// 验证 ALL 数组长度为 67
     #[test]
-    fn all_icons_count_is_66() {
-        assert_eq!(IconKind::ALL.len(), 66);
+    fn all_icons_count_is_67() {
+        assert_eq!(IconKind::ALL.len(), 67);
     }
 
     /// 验证 ALL 数组中无重复项

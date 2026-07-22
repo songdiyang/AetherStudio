@@ -79,13 +79,6 @@ impl EditorState {
     /// 处理指定会话（conv_idx）刚完成生成时的 Agent 动作：创建/修改文件、执行终端命令。
     /// 支持后台并发会话——反馈写回对应会话，而非总是活动会话。
     pub fn process_ai_agent_actions_for(&mut self, conv_idx: usize) {
-        // Edit 模式走差异预览确认流程，不在此处直接落盘。
-        if matches!(
-            self.ai_panel.mode_of(conv_idx),
-            crate::ai_prompt::AiMode::Edit
-        ) {
-            return;
-        }
         let Some(text) = self.ai_panel.last_assistant_text_of(conv_idx) else {
             return;
         };
@@ -171,6 +164,57 @@ impl EditorState {
             self.dirty_tracker.mark_full_window();
         }
     }
+    /// AI Agent：终端命令执行完成后的结果处理（主线程每帧轮询驱动）。
+    ///
+    /// 1. 把命令输出以助手消息展示到对应会话；
+    /// 2. 活动会话：把输出作为上下文再次发起请求，继续 Agent 推理循环
+    ///    （受 ai_panel.agent_iter_count 最大轮次限制）。
+    pub fn handle_agent_command_results(
+        &mut self,
+        results: Vec<crate::terminal::AgentCommandResult>,
+    ) {
+        for result in results {
+            // 展示用输出（截断，避免刷屏）
+            let display_output = truncate_chars(&result.output, 2000);
+            let display_output = if display_output.is_empty() {
+                "（无输出）".to_string()
+            } else {
+                display_output
+            };
+            self.ai_panel.add_assistant_message_to(
+                result.conv_idx,
+                format!(
+                    "✓ `{}` 执行完成，输出：\n```\n{}\n```",
+                    result.command, display_output
+                ),
+            );
+
+            // 回喂续跑：仅活动会话，避免后台会话并发请求失控
+            if result.conv_idx == self.ai_panel.active {
+                let feedback_output = truncate_chars(&result.output, 4000);
+                let feedback = format!(
+                    "[终端命令执行结果]\n命令: {}\n输出:\n{}",
+                    result.command,
+                    if feedback_output.is_empty() {
+                        "（无输出）"
+                    } else {
+                        &feedback_output
+                    }
+                );
+                let settings = self.app_settings.ai.clone();
+                let mode = self.ai_panel.mode;
+                if let Err(e) = self
+                    .ai_panel
+                    .continue_agent_with_tool_result(&settings, feedback, mode)
+                {
+                    self.ai_panel
+                        .add_assistant_message(format!("（{}，如需继续请手动发消息）", e));
+                }
+            }
+        }
+        self.dirty_tracker.mark_full_window();
+    }
+
     /// 刷新 AI 历史索引。
     /// 从 SQLite（温数据层）加载元数据到内存 history；可按工作区过滤。
     pub fn refresh_ai_history(&mut self) {
@@ -186,6 +230,7 @@ impl EditorState {
                             updated_at: c.updated_at,
                             message_count: c.message_count as usize,
                             preview: String::new(),
+                            mode: c.mode,
                         })
                         .collect();
                 } else {
@@ -193,13 +238,12 @@ impl EditorState {
                 }
             }
         }
+        self.ai_panel.clamp_history_page();
     }
 
-    /// 打开历史记录中的某条会话。
-    /// 基础版：从内存 history 恢复会话元数据到新标签页。
-    /// Phase 2 将支持从磁盘懒加载 conv-{id}.json 完整消息。
+    /// 打开历史记录中的某条会话详情（懒加载完整消息；由详情视图再恢复会话）。
     pub fn open_ai_history_item(&mut self, idx: usize) {
-        self.ai_panel.restore_from_history(idx);
+        self.ai_panel.open_history_detail(idx);
     }
 
     /// 把当前文件的 LSP 诊断发送给 AI 修复
@@ -212,63 +256,8 @@ impl EditorState {
         let _ = self.ai_panel.send_message_with_prepared_context(
             &settings,
             context,
-            crate::ai_prompt::AiMode::Edit,
+            crate::ai_prompt::AiMode::Agent,
         );
-    }
-    /// 自动应用 AI 面板中待确认的编辑到工作区
-    pub fn ai_apply_pending_changes(&mut self) {
-        if self.ai_panel.is_generating || self.ai_panel.diff_view.files.is_empty() {
-            return;
-        }
-        let edits = {
-            let diff_view = &mut self.ai_panel.diff_view;
-            diff_view.accept_all();
-            diff_view.to_edits()
-        };
-        if !edits.is_empty() {
-            match self.apply_ai_workspace_edits(&edits) {
-                Ok(paths) => {
-                    self.status_message = format!("已应用 AI 编辑: {} 个文件", paths.len())
-                }
-                Err(e) => self.status_message = format!("AI 编辑应用失败: {}", e),
-            }
-        }
-        self.ai_panel.clear_pending_changes();
-    }
-    /// 接受并立即应用变更列表中的单个文件（变更列表预览“接受”按钮）
-    pub fn ai_accept_change_file(&mut self, idx: usize) {
-        let edit = match self.ai_panel.diff_view.files.get(idx) {
-            Some(f) => crate::ai_agent::AiEdit {
-                path: f.path.clone(),
-                search: f.original.clone(),
-                replace: f.proposed.clone(),
-            },
-            None => return,
-        };
-        match self.apply_ai_workspace_edits(&[edit]) {
-            Ok(_) => {
-                if idx < self.ai_panel.diff_view.files.len() {
-                    self.ai_panel.diff_view.files.remove(idx);
-                }
-                self.status_message = "已应用该文件变更".to_string();
-            }
-            Err(e) => self.status_message = format!("AI 编辑应用失败: {}", e),
-        }
-        self.ai_panel.diff_view.selected_index = 0;
-        if self.ai_panel.diff_view.files.is_empty() {
-            self.ai_panel.clear_pending_changes();
-        }
-    }
-    /// 拒绝变更列表中的单个文件（仅从列表移除，不修改磁盘）
-    pub fn ai_reject_change_file(&mut self, idx: usize) {
-        if idx < self.ai_panel.diff_view.files.len() {
-            self.ai_panel.diff_view.files.remove(idx);
-        }
-        self.ai_panel.diff_view.selected_index = 0;
-        if self.ai_panel.diff_view.files.is_empty() {
-            self.ai_panel.clear_pending_changes();
-        }
-        self.status_message = "已拒绝该文件变更".to_string();
     }
     /// 将设置面板中的 AI 配置应用到 app_settings 并持久化到磁盘
     ///
@@ -664,4 +653,14 @@ impl EditorState {
             .map(|root| root.join(path))
             .unwrap_or_else(|| path.to_path_buf())
     }
+}
+
+/// 按字符数截断字符串（不切断 UTF-8 字符），超长时附加省略提示
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max).collect();
+    out.push_str("\n…（输出过长已截断）");
+    out
 }

@@ -126,7 +126,7 @@ jobs:
               console.log('未能读取 PR 发布说明: ' + e.message);
             }
 
-            let body = `## Aether Editor ${version}\n\n**构建日期**: ${date}\n**提交**: ${sha}\n`;
+            let body = `## Aether Studio ${version}\n\n**构建日期**: ${date}\n**提交**: ${sha}\n`;
             if (featuresText) { body += `\n### ✨ 新增功能\n${featuresText}\n`; }
             if (fixesText) { body += `\n### 🐛 修复的问题\n${fixesText}\n`; }
             if (!featuresText && !fixesText) { body += `\n本次为常规维护与改进。\n`; }
@@ -137,7 +137,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: version,
-              name: `Aether Editor ${version}`,
+              name: `Aether Studio ${version}`,
               body: body,
               draft: false,
               prerelease: false
