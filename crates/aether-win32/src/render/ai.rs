@@ -497,8 +497,7 @@ impl EditorState {
                             },
                             &accent_brush,
                         );
-                        let t: Vec<u16> =
-                            "恢复此对话".encode_utf16().chain(Some(0)).collect();
+                        let t: Vec<u16> = "恢复此对话".encode_utf16().chain(Some(0)).collect();
                         target.DrawText(
                             &t,
                             &small_format,
@@ -522,7 +521,11 @@ impl EditorState {
                         .as_ref()
                         .and_then(|id| self.ai_panel.history.iter().find(|m| &m.id == id))
                         .map(|m| {
-                            let mode = if m.mode.is_empty() { "-" } else { m.mode.as_str() };
+                            let mode = if m.mode.is_empty() {
+                                "-"
+                            } else {
+                                m.mode.as_str()
+                            };
                             format!(
                                 "{}  ({} 条)  {}  {}",
                                 m.title,
@@ -619,8 +622,12 @@ impl EditorState {
                             D2D1_DRAW_TEXT_OPTIONS_NONE,
                             DWRITE_MEASURING_MODE_NATURAL,
                         );
-                        self.ai_panel.history_ws_toggle_region =
-                            Some((panel_left + 2.0, iy, panel_right - panel_left - 50.0, header_h));
+                        self.ai_panel.history_ws_toggle_region = Some((
+                            panel_left + 2.0,
+                            iy,
+                            panel_right - panel_left - 50.0,
+                            header_h,
+                        ));
                         // 清空按钮
                         let cw = 40.0f32;
                         let cx = panel_right - 4.0 - cw;
@@ -661,10 +668,7 @@ impl EditorState {
                     {
                         let btn_h = 17.0f32;
                         let mut fx = panel_left + 4.0;
-                        for (fi, f) in crate::ai_panel::HistoryTimeFilter::ALL
-                            .iter()
-                            .enumerate()
-                        {
+                        for (fi, f) in crate::ai_panel::HistoryTimeFilter::ALL.iter().enumerate() {
                             let bw = 34.0f32;
                             let active = self.ai_panel.history_time_filter == *f;
                             let bg = if active {
@@ -683,8 +687,7 @@ impl EditorState {
                                     &b,
                                 );
                             }
-                            let t: Vec<u16> =
-                                f.label().encode_utf16().chain(Some(0)).collect();
+                            let t: Vec<u16> = f.label().encode_utf16().chain(Some(0)).collect();
                             target.DrawText(
                                 &t,
                                 &small_format,
@@ -766,7 +769,8 @@ impl EditorState {
                             }
                         }
                         // 标题：直接摘要用户问题（行业标准：不显示消息数）
-                        let title_text: Vec<u16> = hmeta.title.encode_utf16().chain(Some(0)).collect();
+                        let title_text: Vec<u16> =
+                            hmeta.title.encode_utf16().chain(Some(0)).collect();
                         target.DrawText(
                             &title_text,
                             &small_format,
@@ -909,7 +913,11 @@ impl EditorState {
                                 right: px + pw,
                                 bottom: iy + ph,
                             },
-                            if prev_enabled { &white_brush } else { &dim_brush },
+                            if prev_enabled {
+                                &white_brush
+                            } else {
+                                &dim_brush
+                            },
                             D2D1_DRAW_TEXT_OPTIONS_NONE,
                             DWRITE_MEASURING_MODE_NATURAL,
                         );
@@ -963,7 +971,11 @@ impl EditorState {
                                 right: nx + pw,
                                 bottom: iy + ph,
                             },
-                            if next_enabled { &white_brush } else { &dim_brush },
+                            if next_enabled {
+                                &white_brush
+                            } else {
+                                &dim_brush
+                            },
                             D2D1_DRAW_TEXT_OPTIONS_NONE,
                             DWRITE_MEASURING_MODE_NATURAL,
                         );

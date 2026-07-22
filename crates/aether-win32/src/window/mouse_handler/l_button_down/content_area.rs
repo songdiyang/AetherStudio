@@ -534,7 +534,8 @@ unsafe fn lbd_right_panel_tabs(
         if let Some(fi) = filter_hit {
             let mut st = state.borrow_mut();
             if let Some(tf) = crate::ai_panel::HISTORY_TYPE_FILTERS.get(fi) {
-                st.ai_panel.set_history_type_filter(tf.map(|s| s.to_string()));
+                st.ai_panel
+                    .set_history_type_filter(tf.map(|s| s.to_string()));
             }
             drop(st);
             invalidate_window(hwnd);
